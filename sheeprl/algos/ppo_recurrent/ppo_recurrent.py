@@ -151,7 +151,7 @@ def recurrent_states(
 ) -> Tuple[Tensor, Tensor]:
     """The recurrent states before every step of a rollout (`[Rollout_Steps, Num_Envs, Hidden_Size]`), unrolled with the
     current weights of `agent` from the states before its first step (`initial_states`), and reset after the end of
-    every episode as the player does when `reset_on_done` (`algo.reset_recurrent_state_on_done`)."""
+    every episode as the policy does when `reset_on_done` (`algo.reset_recurrent_state_on_done`)."""
     rnn = agent.rnn
     x = rnn._pre_mlp(torch.cat((agent.feature_extractor(obs), prev_actions), dim=-1))
     rnn._lstm.flatten_parameters()

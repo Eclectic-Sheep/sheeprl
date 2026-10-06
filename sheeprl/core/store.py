@@ -1,4 +1,4 @@
-"""Where the players write the collected data and the algorithms read their training data from.
+"""Where the writers write the collected data and the algorithms read their training data from.
 
 Every algorithm writes its steps in a `ReplayStore`: a `ReplayBuffer` read by a sampler of `sheeprl.data.samplers`. The
 on-policy algorithms in the one of their rollout (`rollout_store`), whose `EpochSampler` draws the minibatches of an

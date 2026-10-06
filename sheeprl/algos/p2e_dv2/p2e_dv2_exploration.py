@@ -2,7 +2,7 @@
 
 Written on the shared training loop of `sheeprl.core`. The agent plays with an exploration actor, rewarded by the
 disagreement of an ensemble of models of the dynamics (the novelty of the states); a task actor learns the task from
-the same experience (zero-shot). The player is the one of Dreamer-V2 (`sheeprl.algos.dreamer_v2.dreamer_v2`).
+the same experience (zero-shot). The writer is the one of Dreamer-V2 (`sheeprl.algos.dreamer_v2.dreamer_v2`).
 """
 
 from __future__ import annotations

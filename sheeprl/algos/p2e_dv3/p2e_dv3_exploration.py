@@ -2,7 +2,7 @@
 
 Written on the shared training loop of `sheeprl.core`. The agent plays with an exploration actor, rewarded by the
 disagreement of an ensemble of models of the dynamics (the novelty of the states) and optionally by the task rewards;
-a task actor learns the task from the same experience (zero-shot). The player and the world-model and task phases of a
+a task actor learns the task from the same experience (zero-shot). The writer and the world-model and task phases of a
 gradient step are the ones of Dreamer-V3 (`sheeprl.algos.dreamer_v3.dreamer_v3`).
 """
 

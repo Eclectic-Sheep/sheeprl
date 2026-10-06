@@ -436,13 +436,13 @@ Every process has its own environments and its own copy of the agent, which inte
 
 Every iteration of `sheeprl.core.run(fabric, cfg, algo)`:
 
-1. **plays**: the player of the algorithm chooses the actions for the current observations and steps the environments `algo.steps_per_iteration` times, writing every step in the *store* of the collected data (the rollout of the on-policy algorithms, the replay buffer of the off-policy ones) and returning it: the loop counts the policy steps (`TrainSchedule`) and logs the episodes that have ended;
+1. **plays**: the `Collector` (`sheeprl.core.Collector`) steps the environments `algo.steps_per_iteration` times with the actions the policy of the algorithm chooses for the current observations (random actions before `algo.learning_starts` for the off-policy algorithms), and the writer of the algorithm writes every step in the *store* of the collected data (the rollout of the on-policy algorithms, the replay buffer of the off-policy ones). The collector resets the state of the policy (e.g. a recurrent state) for the environments that start a new episode, counts the policy steps (`TrainSchedule`) and logs the episodes that have ended;
 2. **trains**: `algo.batches()` yields one batch per gradient step and `algo.train_step()` does the step, returning its metrics. The on-policy algorithms train on their rollout (epochs × minibatches); the off-policy ones start after `algo.learning_starts` policy steps (optionally with `algo.per_rank_pretrain_steps` gradient steps first) and then do `algo.replay_ratio` gradient steps per policy step (`TrainSchedule`);
 3. **logs and saves**: the metrics are aggregated on the device and read on the host once every `metric.log_every` policy steps, and a checkpoint is saved every `checkpoint.every` policy steps (`Cadence`).
 
 ### The environments
 
-The players step the environments through an `Environment` (`sheeprl.core.Environment`): the `num_envs` environments of the process, with their current observations (`obs`), `step(actions)`, `random_actions()`, `reset()` and `close()`. Every step returns an `EnvStep`: the observations the actions were chosen from and the next ones, the rewards, `terminated` and `truncated`, the last observations of the episodes that have just ended (`final_obs`: an environment whose episode ends starts the next one in the same step), the environments created again after a crash (`restarted`), the episodes that have just ended (`episodes`) and the `info` of the environments, which neither the training loop nor the players read.
+The collector steps the environments through an `Environment` (`sheeprl.core.Environment`): the `num_envs` environments of the process, with their current observations (`obs`), `step(actions)`, `random_actions()`, `reset()` and `close()`. Every step returns an `EnvStep`: the observations the actions were chosen from and the next ones, the rewards, `terminated` and `truncated`, the last observations of the episodes that have just ended (`final_obs`: an environment whose episode ends starts the next one in the same step), the environments created again after a crash (`restarted`), the episodes that have just ended (`episodes`) and the `info` of the environments, which neither the training loop nor the writers read.
 
 `GymEnvironment` implements it with the gymnasium environments created by `make_env` from the `env` configs, seeded differently on every process. Another backend only has to return the same `EnvStep`s: the algorithms, the logging and the checkpoints don't change.
 
@@ -451,13 +451,14 @@ The players step the environments through an `Environment` (`sheeprl.core.Enviro
 An algorithm is implemented in its `<algorithm>.py` file, as a subclass of `sheeprl.core.Algorithm` with the following methods:
 
 - `build()`: creates the training state (modules, optimizers, ...) and the store of the collected data, a `ReplayStore`: a `ReplayBuffer` and its sampler (for the on-policy algorithms, the `EpochSampler` of the minibatches of an update of their rollout: `sheeprl.core.rollout_store`).
-- `player()`: returns the `Player`, whose `step(env, store)` plays the current policy for one step of the environments, writes what happened in the store and returns the `EnvStep`.
+- `policy()`: returns the `Policy` that plays in the environments, sharing its weights with the trained modules: `act(obs)` returns an `Act`, the actions to play in the environments (`env_actions`) with the columns to store (e.g. the actions one-hot, their log-probabilities, the values) and anything else the writer needs (`extras`); `random(env)` returns random actions and `reset(env_idxes)` resets the state of the environments that start a new episode. The policy modules of the algorithms implement it (e.g. `class PPOPolicy(nn.Module, Policy)`), so it can also be compiled or exported.
+- `writer()`: returns the `Writer`, whose `write(store, step, act)` writes a step of the environments (the `EnvStep`) played with the actions `act` in the store.
 - `batches()`: prepares the training data of an iteration and yields one batch per gradient step.
 - `train_step()`: executes one gradient step on a batch and returns the metrics to log, as tensors.
 - `end_iteration()`: optional, updates what changes once per iteration (e.g. annealed coefficients).
 - `test()`: plays a test episode with the trained policy, at the end of the training and to evaluate a checkpoint.
 
-Its class attributes tell the loop how to drive it: `steps_per_iteration` (e.g. the rollout length of the on-policy algorithms, 1 for the off-policy ones), `off_policy` (training on a replay buffer, with the learning starts and the replay ratio above) and `restart_crashed_envs` (a crashed environment is created again instead of stopping the run).
+Its class attributes tell the loop how to drive it: `steps_per_iteration` (e.g. the rollout length of the on-policy algorithms, 1 for the off-policy ones), `off_policy` (training on a replay buffer, with the learning starts and the replay ratio above), `random_warmup` (random actions until `algo.learning_starts`, e.g. not when finetuning a policy) and `restart_crashed_envs` (a crashed environment is created again instead of stopping the run).
 
 Every algorithm of SheepRL (A2C, PPO, PPO Recurrent, SAC, DroQ, SAC-AE, DreamerV1, DreamerV2, DreamerV3, DreamerV3.5 and the exploration and finetuning of Plan2Explore) is implemented this way: the environments, the logging, the checkpoints and the resuming of a run are the same for all of them.
 

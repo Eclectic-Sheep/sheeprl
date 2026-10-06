@@ -1,4 +1,4 @@
-"""Where every algorithm writes the steps it plays and reads what it trains on: a `ReplayBuffer`, where the player
+"""Where every algorithm writes the steps it plays and reads what it trains on: a `ReplayBuffer`, where the writer
 writes the steps, and a sampler, which draws the batches of the training from it (`sheeprl.data.samplers`)."""
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class ReplayStore:
 
     The off-policy algorithms sample their batches (`batches`, `sample`) from the steps of the whole training. The
     on-policy algorithms read their rollout whole (`read`), compute from it what they train on (e.g. the advantages),
-    and draw the minibatches of its epochs from that with an `EpochSampler` (`minibatches`); the player keeps in
+    and draw the minibatches of its epochs from that with an `EpochSampler` (`minibatches`); the writer keeps in
     `context` what follows the last step of the rollout (e.g. the observations whose value bootstraps the returns).
 
     The store of an off-policy algorithm is saved in the checkpoints with its storage and its sampler, whose generator
@@ -63,7 +63,7 @@ class ReplayStore:
         self.device = torch.device(device)
         self.from_numpy = from_numpy
         self.prefetch = prefetch
-        # What follows the last step written, set by the player (e.g. the observations after a rollout)
+        # What follows the last step written, set by the writer (e.g. the observations after a rollout)
         self.context: Dict[str, Any] = {}
         self._init_transient()
 

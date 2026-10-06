@@ -11,7 +11,7 @@ Compared with DreamerV3 of the 2023 paper (`sheeprl.algos.dreamer_v3`), besides 
 - the critic is also trained on the replayed sequences (`algo.critic.replay_loss`), towards lambda-returns that
   bootstrap from the imagined ones, also backpropagating into the world model;
 - the critic is regularized towards a slow copy of itself, and bootstraps from itself (not from the slow copy);
-- the replay buffer keeps the latent states of the steps (computed by the player and refreshed by every training on
+- the replay buffer keeps the latent states of the steps (computed by the policy and refreshed by every training on
   them): a sequence starts from the latent state of the step before it (`algo.replay_context`) instead of zeros;
 - the batches start with the sequences of the new steps (the online queue of the replay buffer, `buffer.online`), and
   only the rest of them is sampled uniformly: every step is trained on soon after it is played;

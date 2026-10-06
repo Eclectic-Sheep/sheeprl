@@ -38,7 +38,7 @@ MODELS_TO_REGISTER = {"agent"}
 
 ## Algorithm implementation
 
-The algorithm is implemented in the `ext_sota.py` file: the training state, the player, the subclass of `Algorithm` and the entrypoint decorated with `register_algorithm`. It is the `sota.py` file of [the how-to on how to register a new algorithm](./register_new_algorithm.md#algorithm-implementation), with the modules of `my_awesome_algo` in place of the ones of `sheeprl.algos.sota`:
+The algorithm is implemented in the `ext_sota.py` file: the training state, the writer, the subclass of `Algorithm` and the entrypoint decorated with `register_algorithm`. It is the `sota.py` file of [the how-to on how to register a new algorithm](./register_new_algorithm.md#algorithm-implementation), with the modules of `my_awesome_algo` in place of the ones of `sheeprl.algos.sota`:
 
 ```python
 """An actor-critic written on the shared training loop of SheepRL."""
@@ -62,13 +62,13 @@ from my_awesome_algo.loss import policy_loss, value_loss
 from my_awesome_algo.utils import normalize_obs, prepare_obs, test
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
 from sheeprl.core import (
+    Act,
     Algorithm,
-    Environment,
     EnvStep,
-    Player,
     ReplayStore,
     TrainSchedule,
     TrainState,
+    Writer,
     autocast,
     rollout_store,
     run,
@@ -86,34 +86,24 @@ class ExtSOTAState(TrainState):
     optimizer: Optimizer
 
 
-class RolloutPlayer(Player):
-    """Plays the policy in the environments and writes every step in the rollout."""
+class RolloutWriter(Writer):
+    """Writes every step in the rollout, with the columns of the actions of `PPOPolicy.act`."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPolicy) -> None:
-        self.fabric = fabric
-        self.cfg = cfg
-        self.policy = policy
+    def __init__(self, cfg: Dict[str, Any]) -> None:
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    def step(self, env: Environment, rollout: ReplayStore) -> EnvStep:
-        num_envs = env.num_envs
-        obs = {k: env.obs[k] for k in self.obs_keys}
-        torch_obs = prepare_obs(self.fabric, obs, cnn_keys=self.cfg.algo.cnn_keys.encoder, num_envs=num_envs)
-        actions, logprobs, values = self.policy(torch_obs)
-
-        # The environments take the indices of the discrete actions, the rollout stores them one-hot
-        step = env.step(self.policy.env_actions(actions).cpu().numpy())
-
+    def write(self, rollout: ReplayStore, step: EnvStep, act: Act) -> None:
+        num_envs = len(step.rewards)
         dones = np.logical_or(step.terminated, step.truncated)
         data = {k: step.obs[k][np.newaxis] for k in self.obs_keys}
-        data["actions"] = torch.cat(actions, dim=-1).cpu().numpy()[np.newaxis]
-        data["values"] = values.cpu().numpy()[np.newaxis]
+        # The environments played the indices of the discrete actions, the rollout stores them one-hot
+        data["actions"] = act.columns["actions"][np.newaxis]
+        data["values"] = act.columns["values"][np.newaxis]
         data["rewards"] = step.rewards.reshape(1, num_envs, 1).astype(np.float32)
         data["dones"] = dones.reshape(1, num_envs, 1).astype(np.uint8)
         rollout.add(data)
         # The observations after the last step of the rollout bootstrap its returns
         rollout.context["next_obs"] = step.next_obs
-        return step
 
 
 class ExtSOTA(Algorithm):
@@ -142,10 +132,18 @@ class ExtSOTA(Algorithm):
 
     def policy(self, state: ExtSOTAState) -> PPOPolicy:
         """The policy to play with: it shares its modules, and so its weights, with the trained agent."""
-        return PPOPolicy(state.agent.feature_extractor, state.agent.actor, state.agent.critic)
+        cfg = self.cfg
+        return PPOPolicy(
+            state.agent.feature_extractor,
+            state.agent.actor,
+            state.agent.critic,
+            fabric=self.fabric,
+            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+            cnn_keys=cfg.algo.cnn_keys.encoder,
+        )
 
-    def player(self, state: ExtSOTAState) -> RolloutPlayer:
-        return RolloutPlayer(self.fabric, self.cfg, self.policy(state))
+    def writer(self, state: ExtSOTAState, policy: PPOPolicy) -> RolloutWriter:
+        return RolloutWriter(self.cfg)
 
     def batches(
         self, state: ExtSOTAState, rollout: ReplayStore, n_steps: Optional[int], iteration: int

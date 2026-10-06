@@ -1,7 +1,7 @@
 # Register a new algorithm
 Suppose that we want to add a new SoTA algorithm to sheeprl called `sota` so that we can train an agent simply with `python sheeprl.py exp=sota env=... env.id=...`.
 
-Every algorithm in sheeprl is written on the same training loop, `sheeprl.core.loop.run`: the algorithm says how to build its models, how to play in the environments and how to train; the loop does the rest (the environments, the iterations, the logging, the checkpoints, resuming a run, the processes of a distributed run).
+Every algorithm in sheeprl is written on the same training loop, `sheeprl.core.loop.run`: the algorithm says how to build its models, how its policy chooses the actions, how to store what happens in the environments and how to train; the loop does the rest (the environments, the iterations, the logging, the checkpoints, resuming a run, the processes of a distributed run).
 
 We start by creating a new folder called `sota` under `./sheeprl/algos/`, containing the following files:
 
@@ -24,13 +24,18 @@ algos
 ```python
 state, store = algo.build(observation_space, action_space, schedule, log_dir)
 # When resuming: `state.load_state_dict(checkpoint)` and, for off-policy algorithms, the replay buffer of the checkpoint
-player = algo.player(state)
+policy = algo.policy(state)
+collector = Collector(env, policy, algo.writer(state, policy), store, schedule, cadence, algo.random_warmup)
+# Reset the environments and the state of the policy (`policy.reset()`)
+collector.reset()
 for iteration in schedule.iterations():
-    # Play `algo.steps_per_iteration` steps in every environment
-    for _ in range(algo.steps_per_iteration):
-        step = player.step(env, store)
-        # Count the policy steps and log the episodes ended in `step`
-        schedule.policy_step += schedule.policy_steps_per_step
+    # Play `algo.steps_per_iteration` steps in every environment. At every step the collector:
+    # - chooses the actions: `act = policy.act(env.obs)`, or `policy.random(env)` before `algo.learning_starts`;
+    # - steps the environments: `step = env.step(act.env_actions)`;
+    # - writes the step in the store: `writer.write(store, step, act)`;
+    # - resets the state of the policy for the environments that start a new episode: `policy.reset(env_idxes)`;
+    # - counts the policy steps and logs the episodes ended in `step`
+    collector.collect(algo.steps_per_iteration)
     # Train: `n_steps` is None for on-policy algorithms, the gradient steps asked by `algo.replay_ratio` for
     # off-policy ones (0 before `algo.learning_starts`: no training then)
     n_steps = schedule.gradient_steps(iteration)
@@ -41,7 +46,7 @@ for iteration in schedule.iterations():
     # Log the metrics every `metric.log_every` policy steps, save a checkpoint every `checkpoint.every` policy steps
 ```
 
-- `env` is an `Environment` (`sheeprl/core/runner.py`): the `cfg.env.num_envs` vectorized environments of the process. `env.obs` holds the current observations, `env.step(actions)` steps the environments and returns an `EnvStep` (the observations the actions were chosen from, the next observations, the rewards, `terminated`, `truncated`, `final_obs` with the last observation of the episodes that have just ended, `restarted` with the environments created again after a crash, `episodes` with the episodes that have just ended, and the `info` of the environments, which the core and the players don't read), and `env.random_actions()` samples random actions. The training loop creates a `GymEnvironment`: gymnasium environments created with `make_env` and seeded differently on every process. The player steps the environments once per `player.step` and returns the `EnvStep`: the training loop records the rewards and the lengths of its ended episodes (`episodes`; `Rewards/rew_avg`, `Game/ep_len_avg`).
+- `env` is an `Environment` (`sheeprl/core/runner.py`): the `cfg.env.num_envs` vectorized environments of the process. `env.obs` holds the current observations, `env.step(actions)` steps the environments and returns an `EnvStep` (the observations the actions were chosen from, the next observations, the rewards, `terminated`, `truncated`, `final_obs` with the last observation of the episodes that have just ended, `restarted` with the environments created again after a crash, `episodes` with the episodes that have just ended, and the `info` of the environments, which the core and the writers don't read), and `env.random_actions()` samples random actions. The training loop creates a `GymEnvironment`: gymnasium environments created with `make_env` and seeded differently on every process. The collector records the rewards and the lengths of the episodes ended in every `EnvStep` (`episodes`; `Rewards/rew_avg`, `Game/ep_len_avg`).
 - `schedule` is a `TrainSchedule` (`sheeprl/core/schedule.py`): the policy steps played so far (`schedule.policy_step`), the number of iterations (`algo.total_steps` policy steps), the random actions before `algo.learning_starts` and the gradient steps of the off-policy algorithms (`algo.replay_ratio`), and where a resumed run starts.
 - The checkpoints hold the training state returned by `build`, the counters needed to resume the run and, for off-policy algorithms with `buffer.checkpoint=True`, the replay buffer.
 
@@ -54,8 +59,11 @@ from __future__ import annotations
 from typing import Any, Dict, Sequence
 
 import gymnasium
+import numpy as np
 import torch
 from torch import Tensor
+
+from sheeprl.core import Act, Policy
 
 
 class SOTAAgent(torch.nn.Module):
@@ -66,13 +74,19 @@ class SOTAAgent(torch.nn.Module):
         ...
 
 
-class SOTAPlayer(torch.nn.Module):
+class SOTAPolicy(torch.nn.Module, Policy):
     """The policy that plays in the environments: it is built from the modules of the agent."""
 
     def __init__(self, ...):
         ...
 
     def forward(self, obs: Dict[str, Tensor]) -> ...:
+        """The actions sampled from the observations as tensors: pure torch, so it can be compiled or exported."""
+        ...
+
+    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+        """The actions to play for the observations of the environments (`Policy`), with the columns the writer stores
+        (e.g. their log-probabilities)."""
         ...
 
     def get_actions(self, obs: Dict[str, Tensor], greedy: bool = False) -> Sequence[Tensor]:
@@ -143,13 +157,15 @@ def value_loss(values: Tensor, returns: Tensor) -> Tensor:
 The algorithm is implemented in the `sota.py` file. It contains:
 
 1. **The training state**: a dataclass that subclasses `TrainState` and lists everything that changes during the training (modules, optimizers, learning-rate schedulers, annealed coefficients as tensors, counters). The training loop saves it in the checkpoints, one entry per field with the name of the field, and restores it when a run is resumed. It holds no logic.
-2. **The player**: an object with a `step(env, store)` method that chooses the actions for `env.obs`, steps the environments with `env.step(actions)` and writes what happened in the store.
+2. **The writer**: a `Writer` (`sheeprl/core/collector.py`) whose `write(store, step, act)` writes in the store a step of the environments (`EnvStep`) played with the actions `act`. The actions come from the policy, a `Policy` (usually the policy module of the agent): `act(obs)` returns an `Act` with the actions to play in the environments (`env_actions`), the columns to store (`columns`, e.g. the actions one-hot, their log-probabilities, the values of the observations) and anything else the writer needs (`extras`); `random(env)` returns random actions (by default those of the environments), and `reset(env_idxes)` resets the state of the environments that start a new episode (e.g. a recurrent state; nothing by default).
 3. **The algorithm**: a subclass of `Algorithm` (`sheeprl/core/algorithm.py`), with:
    - `steps_per_iteration`: the steps played by every environment in an iteration (the rollout length of an on-policy algorithm; 1, the default, for an off-policy one);
    - `off_policy`: whether it trains on a replay buffer (see [Off-policy algorithms](#off-policy-algorithms));
-   - `restart_crashed_envs`: whether a crashed environment is created again instead of stopping the run;
+   - `random_warmup`: whether an off-policy algorithm plays random actions until `algo.learning_starts` (the default) or its policy from the first step (e.g. to finetune a policy);
+   - `restart_crashed_envs`: whether a crashed environment is created again instead of stopping the run (its writer then handles `EnvStep.restarted`);
    - `build(obs_space, action_space, schedule, log_dir)`: creates the training state and the store of the collected data;
-   - `player(state)`: returns the player;
+   - `policy(state)`: returns the policy, which shares its weights with the trained modules of `state`;
+   - `writer(state, policy)`: returns the writer;
    - `batches(state, store, n_steps, iteration)`: prepares the training data of an iteration and yields one batch per gradient step;
    - `train_step(state, batch, step)`: one gradient step on a batch; it returns the metrics to log, as tensors (don't read them with `.item()`: they are read once per log interval). `step` counts the gradient steps of the process since the start of the training, e.g. to update a target network every few steps;
    - `end_iteration(state, iteration)` (optional): what changes once per iteration, after the training (e.g. annealed coefficients); it returns values logged at every iteration.
@@ -183,13 +199,13 @@ from sheeprl.algos.sota.agent import build_agent
 from sheeprl.algos.sota.loss import policy_loss, value_loss
 from sheeprl.algos.sota.utils import normalize_obs, prepare_obs, test
 from sheeprl.core import (
+    Act,
     Algorithm,
-    Environment,
     EnvStep,
-    Player,
     ReplayStore,
     TrainSchedule,
     TrainState,
+    Writer,
     autocast,
     rollout_store,
     run,
@@ -207,34 +223,24 @@ class SOTAState(TrainState):
     optimizer: Optimizer
 
 
-class RolloutPlayer(Player):
-    """Plays the policy in the environments and writes every step in the rollout."""
+class RolloutWriter(Writer):
+    """Writes every step in the rollout, with the columns of the actions of `PPOPolicy.act`."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPolicy) -> None:
-        self.fabric = fabric
-        self.cfg = cfg
-        self.policy = policy
+    def __init__(self, cfg: Dict[str, Any]) -> None:
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    def step(self, env: Environment, rollout: ReplayStore) -> EnvStep:
-        num_envs = env.num_envs
-        obs = {k: env.obs[k] for k in self.obs_keys}
-        torch_obs = prepare_obs(self.fabric, obs, cnn_keys=self.cfg.algo.cnn_keys.encoder, num_envs=num_envs)
-        actions, logprobs, values = self.policy(torch_obs)
-
-        # The environments take the indices of the discrete actions, the rollout stores them one-hot
-        step = env.step(self.policy.env_actions(actions).cpu().numpy())
-
+    def write(self, rollout: ReplayStore, step: EnvStep, act: Act) -> None:
+        num_envs = len(step.rewards)
         dones = np.logical_or(step.terminated, step.truncated)
         data = {k: step.obs[k][np.newaxis] for k in self.obs_keys}
-        data["actions"] = torch.cat(actions, dim=-1).cpu().numpy()[np.newaxis]
-        data["values"] = values.cpu().numpy()[np.newaxis]
+        # The environments played the indices of the discrete actions, the rollout stores them one-hot
+        data["actions"] = act.columns["actions"][np.newaxis]
+        data["values"] = act.columns["values"][np.newaxis]
         data["rewards"] = step.rewards.reshape(1, num_envs, 1).astype(np.float32)
         data["dones"] = dones.reshape(1, num_envs, 1).astype(np.uint8)
         rollout.add(data)
         # The observations after the last step of the rollout bootstrap its returns
         rollout.context["next_obs"] = step.next_obs
-        return step
 
 
 class SOTA(Algorithm):
@@ -263,10 +269,18 @@ class SOTA(Algorithm):
 
     def policy(self, state: SOTAState) -> PPOPolicy:
         """The policy to play with: it shares its modules, and so its weights, with the trained agent."""
-        return PPOPolicy(state.agent.feature_extractor, state.agent.actor, state.agent.critic)
+        cfg = self.cfg
+        return PPOPolicy(
+            state.agent.feature_extractor,
+            state.agent.actor,
+            state.agent.critic,
+            fabric=self.fabric,
+            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+            cnn_keys=cfg.algo.cnn_keys.encoder,
+        )
 
-    def player(self, state: SOTAState) -> RolloutPlayer:
-        return RolloutPlayer(self.fabric, self.cfg, self.policy(state))
+    def writer(self, state: SOTAState, policy: PPOPolicy) -> RolloutWriter:
+        return RolloutWriter(self.cfg)
 
     def batches(
         self, state: SOTAState, rollout: ReplayStore, n_steps: Optional[int], iteration: int
@@ -333,22 +347,7 @@ With several processes, every process plays its own environments and trains on i
 An off-policy algorithm sets `off_policy = True` and returns a replay buffer (from `sheeprl.data.buffers`) as its store. Then:
 
 - its configuration must have `algo.learning_starts` (the policy steps played with random actions before the training starts), `algo.replay_ratio` (the gradient steps per policy step) and `algo.per_rank_pretrain_steps` (the gradient steps the first training does besides the ones of the replay ratio);
-- the player plays random actions while `schedule.warmup(schedule.policy_step)` is true, as SAC does (`sheeprl/algos/sac/sac.py`):
-
-  ```python
-  def step(self, env: Environment, buffer: ReplayBuffer) -> EnvStep:
-      if self.schedule.warmup(self.schedule.policy_step):
-          actions = env.random_actions()
-      else:
-          obs = prepare_obs(self.fabric, env.obs, mlp_keys=self.mlp_keys, num_envs=env.num_envs)
-          actions = self.policy(obs).cpu().numpy()
-      step = env.step(actions)
-      ...
-      buffer.add(data, validate_args=self.cfg.buffer.validate_args)
-      return step
-  ```
-
-  (keep `schedule` from `build`, which receives it);
+- the collector plays the random actions of `policy.random(env)` while `schedule.warmup(schedule.policy_step)` is true (unless `random_warmup = False`): by default the random actions of the environments, as SAC does (`sheeprl/algos/sac/sac.py`). A policy that stores its actions in another form overrides it, e.g. the Dreamers store the random discrete actions one-hot (`DreamerPolicy` in `sheeprl/algos/dreamer_v2/agent.py`);
 - `batches` receives the number of gradient steps of the iteration, `n_steps`, and yields exactly `n_steps` batches sampled from the buffer;
 - the replay buffer is saved in the checkpoints when `buffer.checkpoint=True`. A run resumed with its buffer doesn't play random actions again; one resumed without it fills a new buffer with its policy for `algo.learning_starts` policy steps first.
 
