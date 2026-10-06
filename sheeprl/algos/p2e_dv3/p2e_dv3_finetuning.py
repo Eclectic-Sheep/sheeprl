@@ -17,12 +17,12 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
-from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, sequential_store
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES
 from sheeprl.algos.dreamer_v3.agent import DreamerV3Policy
 from sheeprl.algos.dreamer_v3.dreamer_v3 import SequenceWriter, train
 from sheeprl.algos.dreamer_v3.utils import Moments, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
-from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run
+from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, load_replay_buffer, run, sequence_store
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import fs
 from sheeprl.utils.fabric import get_single_device_fabric
@@ -156,7 +156,7 @@ class P2EDV3Finetuning(Algorithm):
             ),
         )
         # One buffer of sequences per environment, sampled independently
-        buffer = sequential_store(
+        buffer = sequence_store(
             fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size=4), cfg.algo.per_rank_sequence_length
         )
 

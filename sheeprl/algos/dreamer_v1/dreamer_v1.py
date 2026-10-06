@@ -26,8 +26,8 @@ from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstructio
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter as DV2SequenceWriter
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
-from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, sequential_store, test
-from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, test
+from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope, update
@@ -478,13 +478,6 @@ def train(
     return metrics
 
 
-def build_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int) -> ReplayStore:
-    """One buffer of sequences per environment."""
-    return sequential_store(
-        fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size), cfg.algo.per_rank_sequence_length
-    )
-
-
 def sample_batches_of_iteration(
     algo: Algorithm, buffer: ReplayStore, n_steps: int, iteration: int
 ) -> Iterator[Dict[str, Tensor]]:
@@ -546,7 +539,9 @@ class DreamerV1(Algorithm):
         # The exploration noise of the policy decays with the policy steps
         self._policy.schedule = schedule
         self.schedule = schedule
-        return state, build_store(fabric, cfg, log_dir, dry_run_size=2)
+        return state, sequence_store(
+            fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size=2), cfg.algo.per_rank_sequence_length
+        )
 
     def policy(self, state: DreamerV1State) -> DreamerV1Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""

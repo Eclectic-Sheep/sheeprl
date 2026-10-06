@@ -26,12 +26,11 @@ from sheeprl.algos.dreamer_v2.utils import (
     MAX_SAMPLED_BATCHES,
     actor_objective,
     build_optimizer,
-    build_store,
     compute_lambda_values,
     test,
 )
 from sheeprl.algos.p2e_dv2.agent import build_agent
-from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
+from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
@@ -546,7 +545,14 @@ class P2EDV2Exploration(Algorithm):
             actor_exploration_optimizer=optimizer(cfg.algo.actor.optimizer, actor_exploration),
             critic_exploration_optimizer=optimizer(cfg.algo.critic.optimizer, critic_exploration),
         )
-        return state, build_store(fabric, cfg, log_dir, dry_run_size=4)
+        return state, sequence_store(
+            fabric,
+            cfg,
+            log_dir,
+            env_buffer_size(fabric, cfg, dry_run_size=4),
+            cfg.algo.per_rank_sequence_length,
+            buffer_type=cfg.buffer.type,
+        )
 
     def policy(self, state: P2EDV2ExplorationState) -> DreamerV2Policy:
         """The policy to play with: the exploration actor, which it shares its weights with (`build_agent`)."""

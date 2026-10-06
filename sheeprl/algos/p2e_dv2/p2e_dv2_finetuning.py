@@ -17,9 +17,9 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy, WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter, actions_dim_of, check_keys, train
-from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, build_optimizer, build_store, test
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, build_optimizer, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
-from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run
+from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, load_replay_buffer, run, sequence_store
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import fs
 from sheeprl.utils.fabric import get_single_device_fabric
@@ -117,7 +117,14 @@ class P2EDV2Finetuning(Algorithm):
             actor_task_optimizer=optimizer(cfg.algo.actor.optimizer, actor_task),
             critic_task_optimizer=optimizer(cfg.algo.critic.optimizer, critic_task),
         )
-        buffer = build_store(fabric, cfg, log_dir, dry_run_size=4)
+        buffer = sequence_store(
+            fabric,
+            cfg,
+            log_dir,
+            env_buffer_size(fabric, cfg, dry_run_size=4),
+            cfg.algo.per_rank_sequence_length,
+            buffer_type=cfg.buffer.type,
+        )
 
         # A new finetuning starts from the exploration (a resumed one from its own checkpoint, restored by the loop):
         # its models and optimizers

@@ -18,11 +18,8 @@ from torch.optim import Optimizer
 from sheeprl.algos.sac.agent import SACAgent, SACPolicy, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import test
-from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run, update
-from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.data.samplers import TransitionSampler
+from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run, transition_store, update
 from sheeprl.data.store import ReplayStore
-from sheeprl.utils import fs
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.registry import register_algorithm
@@ -98,25 +95,6 @@ class ReplayWriter(Writer):
             data["next_observations"] = next_obs[np.newaxis]
         data["rewards"] = self.cast(step.rewards.reshape(num_envs, -1))[np.newaxis]
         buffer.add(data, validate_args=self.cfg.buffer.validate_args)
-
-
-def build_store(
-    fabric: Fabric, cfg: Dict[str, Any], log_dir: str, obs_keys: Tuple[str, ...] = ("observations",)
-) -> ReplayStore:
-    """The replay buffer of this process: `buffer.size` steps split among the environments of all the processes (1 in
-    a dry run), sampled one step at a time (`TransitionSampler`, with the next observations with
-    `buffer.sample_next_obs` and the online queue with `buffer.online`). Every process trains on its own data, as the
-    Dreamers do, and `update` averages the gradients over the processes."""
-    storage = ReplayBuffer(
-        cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1,
-        cfg.env.num_envs,
-        obs_keys=obs_keys,
-        memmap=cfg.buffer.memmap and not cfg.buffer.on_device,
-        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
-        device=fabric.device if cfg.buffer.on_device else None,
-    )
-    sampler = TransitionSampler(cfg.buffer.sample_next_obs, cfg.buffer.online, seed=cfg.seed + fabric.global_rank)
-    return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy, cfg.buffer.prefetch)
 
 
 def train(
@@ -236,7 +214,7 @@ class SAC(Algorithm):
             agent=agent, qf_optimizer=qf_optimizer, actor_optimizer=actor_optimizer, alpha_optimizer=alpha_optimizer
         )
         self.schedule = schedule
-        return state, build_store(fabric, cfg, log_dir)
+        return state, transition_store(fabric, cfg, log_dir)
 
     def policy(self, state: SACState) -> SACPolicy:
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""

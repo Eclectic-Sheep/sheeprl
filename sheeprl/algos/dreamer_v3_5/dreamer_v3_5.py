@@ -35,13 +35,13 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
-from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, sequential_store
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES
 from sheeprl.algos.dreamer_v3.dreamer_v3 import SequenceWriter
 from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3_5.agent import Actor, DreamerV3_5Policy, build_agent
 from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return, mse, symlog_mse
 from sheeprl.algos.dreamer_v3_5.utils import Moments, test
-from sheeprl.core import Act, Algorithm, TrainSchedule, TrainState, run
+from sheeprl.core import Act, Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
@@ -602,7 +602,7 @@ class DreamerV3_5(Algorithm):
         sampling_cfg = dotdict(copy.deepcopy(cfg.as_dict()))
         sampling_cfg.algo.per_rank_sequence_length = self.sampled_length
         self.buffer_size = env_buffer_size(fabric, sampling_cfg, dry_run_size=2)
-        return state, sequential_store(fabric, cfg, log_dir, self.buffer_size, self.sampled_length)
+        return state, sequence_store(fabric, cfg, log_dir, self.buffer_size, self.sampled_length)
 
     def policy(self, state: DreamerV3_5State) -> DreamerV3_5Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""

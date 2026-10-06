@@ -11,10 +11,6 @@ from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
-from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.data.samplers import EpisodeSampler, SequenceSampler
-from sheeprl.data.store import ReplayStore
-from sheeprl.utils import fs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 
@@ -104,63 +100,6 @@ def build_optimizer(optimizer_cfg: Dict[str, Any], params: Any) -> torch.optim.O
 # The most batches sampled (and moved to the device) at once: the first training can do many gradient steps
 # (`algo.per_rank_pretrain_steps`)
 MAX_SAMPLED_BATCHES = 16
-
-
-def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> int:
-    """The capacity of the replay buffer of every environment: `buffer.size` split among the environments of all the
-    processes, or `dry_run_size` in a dry run. It must hold a sequence of `algo.per_rank_sequence_length` steps (a dry
-    run makes it large enough)."""
-    sequence_length = cfg.algo.per_rank_sequence_length
-    if cfg.dry_run:
-        return max(dry_run_size, sequence_length)
-    size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size)
-    if size < sequence_length:
-        raise ValueError(
-            f"The replay buffer of every environment holds `buffer.size // (env.num_envs * world_size)` = {size} "
-            f"steps, fewer than a sequence (`algo.per_rank_sequence_length={sequence_length}`): increase `buffer.size`"
-        )
-    return size
-
-
-def sequential_store(
-    fabric: Fabric, cfg: Dict[str, Any], log_dir: str, buffer_size: int, sequence_length: int
-) -> ReplayStore:
-    """A buffer of `buffer_size` steps per environment, every environment written at its own row (its first steps after
-    the end of an episode), sampled in sequences of `sequence_length` steps of a single environment
-    (`SequenceSampler`, with the online queue with `buffer.online`)."""
-    storage = ReplayBuffer(
-        buffer_size,
-        n_envs=cfg.env.num_envs,
-        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-        memmap=cfg.buffer.memmap and not cfg.buffer.on_device,
-        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
-        device=fabric.device if cfg.buffer.on_device else None,
-    )
-    sampler = SequenceSampler(sequence_length, online=cfg.buffer.online, seed=cfg.seed + fabric.global_rank)
-    return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy, cfg.buffer.prefetch)
-
-
-def build_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int) -> ReplayStore:
-    """The replay buffer of `buffer.type`, sampled in sequences of a single environment: anywhere (`sequential`), or
-    inside the episodes that ended (`episode`, with their ends prioritized with `buffer.prioritize_ends`).
-
-    Every process holds `buffer.size // world_size` steps, split among its environments, or `dry_run_size` steps per
-    environment in a dry run. Every process samples its buffer with a generator of its own.
-    """
-    buffer_type = cfg.buffer.type.lower()
-    if buffer_type not in ("sequential", "episode"):
-        raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
-    store = sequential_store(
-        fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size), cfg.algo.per_rank_sequence_length
-    )
-    if buffer_type == "episode":
-        store.sampler = EpisodeSampler(
-            cfg.algo.per_rank_sequence_length,
-            prioritize_ends=cfg.buffer.prioritize_ends,
-            online=cfg.buffer.online,
-            seed=cfg.seed + fabric.global_rank,
-        )
-    return store
 
 
 def reinforce_weight(objective_mix: Optional[float], is_continuous: bool) -> float:

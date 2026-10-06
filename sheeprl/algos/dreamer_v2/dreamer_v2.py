@@ -28,11 +28,20 @@ from sheeprl.algos.dreamer_v2.utils import (
     MAX_SAMPLED_BATCHES,
     actor_objective,
     build_optimizer,
-    build_store,
     compute_lambda_values,
     test,
 )
-from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run
+from sheeprl.core import (
+    Act,
+    Algorithm,
+    EnvStep,
+    TrainSchedule,
+    TrainState,
+    Writer,
+    env_buffer_size,
+    run,
+    sequence_store,
+)
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
@@ -645,7 +654,14 @@ class DreamerV2(Algorithm):
             actor_optimizer=actor_optimizer,
             critic_optimizer=critic_optimizer,
         )
-        return state, build_store(fabric, cfg, log_dir, dry_run_size=2)
+        return state, sequence_store(
+            fabric,
+            cfg,
+            log_dir,
+            env_buffer_size(fabric, cfg, dry_run_size=2),
+            cfg.algo.per_rank_sequence_length,
+            buffer_type=cfg.buffer.type,
+        )
 
     def policy(self, state: DreamerV2State) -> DreamerV2Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""

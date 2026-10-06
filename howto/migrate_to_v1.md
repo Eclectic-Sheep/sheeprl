@@ -42,7 +42,7 @@ The modules are not wrapped in `DistributedDataParallel`: `sheeprl.core.update` 
 | `ReplayBuffer`, `SequentialReplayBuffer`, `EnvIndependentReplayBuffer` | `ReplayBuffer`: one storage `[buffer_size, n_envs, ...]` with a write position per environment (`add(data, env_idxes)`), read by a sampler |
 | `EpisodeBuffer` | a `ReplayBuffer` read by an `EpisodeSampler` |
 | `rb.sample(...)`, `rb.sample_tensors(...)` | `ReplayStore(storage, sampler).sample(batch_size, n_samples)`, on the device, or `sampler.sample(storage, batch_size, n_samples)` |
-| transitions, sequences | `TransitionSampler`, `SequenceSampler` (`online` for the online queue of DreamerV3) |
+| transitions, sequences | `TransitionSampler`, `SequenceSampler` (`online` for the online queue of DreamerV3); the replay buffers are `ReplayStore`s built by `sheeprl.core.transition_store` and `sheeprl.core.sequence_store` |
 | the minibatches of an on-policy update | `EpochSampler`; the rollout is a `ReplayStore` built by `sheeprl.core.rollout_store` (`read()`, `minibatches(data, epochs)`) |
 
 All of them are in `sheeprl.data`.

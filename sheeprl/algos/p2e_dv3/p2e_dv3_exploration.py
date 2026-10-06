@@ -21,7 +21,7 @@ from torch import Tensor, nn
 from torch.distributions import Independent
 from torch.optim import Optimizer
 
-from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, reinforce_weight, sequential_store
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, reinforce_weight
 from sheeprl.algos.dreamer_v3.agent import DreamerV3Policy, WorldModel
 from sheeprl.algos.dreamer_v3.dreamer_v3 import (
     SequenceWriter,
@@ -33,7 +33,7 @@ from sheeprl.algos.dreamer_v3.dreamer_v3 import (
 )
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
-from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
+from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
 from sheeprl.core.algorithm import load_module_state_dict
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled
@@ -521,7 +521,7 @@ class P2EDV3Exploration(Algorithm):
             critics_exploration=critics_exploration,
         )
         # One buffer of sequences per environment, sampled independently
-        buffer = sequential_store(
+        buffer = sequence_store(
             fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size=4), cfg.algo.per_rank_sequence_length
         )
         return state, buffer

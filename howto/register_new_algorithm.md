@@ -344,7 +344,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 With several processes, every process plays its own environments and trains on its own data, while `update` averages the gradients of the processes: every process must do the same number of gradient steps. To train on the data of all the processes instead, gather it in `batches` with `fabric.all_gather` and split it with a `DistributedSampler`, as PPO does with `buffer.share_data=True` (`sheeprl/algos/ppo/ppo.py`).
 
 ### Off-policy algorithms
-An off-policy algorithm sets `off_policy = True` and returns a replay buffer (from `sheeprl.data.buffers`) as its store. Then:
+An off-policy algorithm sets `off_policy = True` and returns a replay buffer as its store: `sheeprl.core.transition_store` to train on single steps (as SAC does), `sheeprl.core.sequence_store` to train on sequences of one environment (as the Dreamers do). Then:
 
 - its configuration must have `algo.learning_starts` (the policy steps played with random actions before the training starts), `algo.replay_ratio` (the gradient steps per policy step) and `algo.per_rank_pretrain_steps` (the gradient steps the first training does besides the ones of the replay ratio);
 - the collector plays the random actions of `policy.random(env)` while `schedule.warmup(schedule.policy_step)` is true (unless `random_warmup = False`): by default the random actions of the environments, as SAC does (`sheeprl/algos/sac/sac.py`). A policy that stores its actions in another form overrides it, e.g. the Dreamers store the random discrete actions one-hot (`DreamerPolicy` in `sheeprl/algos/dreamer_v2/agent.py`);

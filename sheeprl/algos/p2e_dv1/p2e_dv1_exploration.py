@@ -21,19 +21,13 @@ from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v1.agent import DreamerV1Policy, WorldModel
-from sheeprl.algos.dreamer_v1.dreamer_v1 import (
-    SequenceWriter,
-    build_store,
-    imagine,
-    sample_batches_of_iteration,
-    value_loss_fn,
-)
+from sheeprl.algos.dreamer_v1.dreamer_v1 import SequenceWriter, imagine, sample_batches_of_iteration, value_loss_fn
 from sheeprl.algos.dreamer_v1.loss import actor_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
-from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
+from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
@@ -468,7 +462,9 @@ class P2EDV1Exploration(Algorithm):
         # The exploration noise of the policy decays with the policy steps
         self._policy.schedule = schedule
         self.schedule = schedule
-        return state, build_store(fabric, cfg, log_dir, dry_run_size=2)
+        return state, sequence_store(
+            fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size=2), cfg.algo.per_rank_sequence_length
+        )
 
     def policy(self, state: P2EDV1ExplorationState) -> DreamerV1Policy:
         """The policy to play with: the exploration actor, which it shares its weights with (`build_agent`)."""

@@ -22,13 +22,8 @@ from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v2 import dreamer_v2
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import (
-    MAX_SAMPLED_BATCHES,
-    actor_objective,
-    build_optimizer,
-    build_store,
-    env_buffer_size,
-)
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, actor_objective, build_optimizer
+from sheeprl.core import env_buffer_size, sequence_store
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import EpisodeSampler, SequenceSampler
 from sheeprl.data.store import ReplayStore
@@ -94,7 +89,9 @@ def test_the_buffer_holds_buffer_size_steps_of_the_process(buffer_type, tmp_path
             "algo": {"per_rank_sequence_length": 5, "cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
         }
     )
-    store = build_store(SimpleNamespace(world_size=2, global_rank=0, device="cpu"), cfg, str(tmp_path), dry_run_size=2)
+    fabric = SimpleNamespace(world_size=2, global_rank=0, device="cpu")
+    buffer_size = env_buffer_size(fabric, cfg, dry_run_size=2)
+    store = sequence_store(fabric, cfg, str(tmp_path), buffer_size, 5, buffer_type=buffer_type)
     # Split among the environments of the process, also the episodes
     assert isinstance(store.storage, ReplayBuffer) and store.storage.buffer_size == 125
     assert isinstance(store.sampler, EpisodeSampler if buffer_type == "episode" else SequenceSampler)

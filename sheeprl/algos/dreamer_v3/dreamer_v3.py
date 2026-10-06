@@ -21,17 +21,21 @@ from torch import Tensor, nn
 from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
 
-from sheeprl.algos.dreamer_v2.utils import (
-    MAX_SAMPLED_BATCHES,
-    actor_objective,
-    env_buffer_size,
-    reinforce_weight,
-    sequential_store,
-)
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, actor_objective, reinforce_weight
 from sheeprl.algos.dreamer_v3.agent import Actor, DreamerV3Policy, MinedojoActor, WorldModel, build_agent, clip_actions
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
-from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run
+from sheeprl.core import (
+    Act,
+    Algorithm,
+    EnvStep,
+    TrainSchedule,
+    TrainState,
+    Writer,
+    env_buffer_size,
+    run,
+    sequence_store,
+)
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import (
@@ -786,7 +790,7 @@ class DreamerV3(Algorithm):
             moments=moments,
         )
         # One buffer of sequences per environment, sampled independently
-        buffer = sequential_store(
+        buffer = sequence_store(
             fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size=2), cfg.algo.per_rank_sequence_length
         )
         return state, buffer
