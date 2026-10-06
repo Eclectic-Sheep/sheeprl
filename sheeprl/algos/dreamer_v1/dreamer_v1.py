@@ -2,7 +2,7 @@
 Adapted from the original implementation from https://github.com/danijar/dreamer
 
 Written on the shared training loop of `sheeprl.core`: `DreamerV1` says how to build, play and train;
-`sheeprl.core.loop.run` does the rest. Plan2Explore (`sheeprl.algos.p2e_dv1`) reuses the player (`SequencePlayer`) and,
+`sheeprl.core.loop.run` does the rest. Plan2Explore (`sheeprl.algos.p2e_dv1`) reuses the writer (`SequenceWriter`) and,
 to finetune, the two phases of a gradient step (`world_model_learning`, `behaviour_learning`).
 """
 
@@ -24,7 +24,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v1.agent import Actor, DreamerV1Policy, MinedojoActor, WorldModel, build_agent
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
-from sheeprl.algos.dreamer_v2.dreamer_v2 import SequencePlayer as DV2SequencePlayer
+from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter as DV2SequenceWriter
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, sequential_store, test
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
@@ -50,12 +50,11 @@ class DreamerV1State(TrainState):
     critic_optimizer: Optimizer
 
 
-class SequencePlayer(DV2SequencePlayer):
-    """The player of DreamerV2 (`sheeprl.algos.dreamer_v2.dreamer_v2.SequencePlayer`): the rows hold the observations
-    with the actions that led to them. The policy (`DreamerV1Policy`) plays with its exploration noise, and a dry run
-    doesn't end the episodes at the first observations (there is no episode buffer)."""
+class SequenceWriter(DV2SequenceWriter):
+    """The writer of DreamerV2 (`sheeprl.algos.dreamer_v2.dreamer_v2.SequenceWriter`): the rows hold the observations
+    with the actions that led to them. A dry run doesn't end the episodes at the first observations (there is no episode
+    buffer)."""
 
-    exploration_noise = True
     dry_run_episodes = False
 
 
@@ -544,6 +543,8 @@ class DreamerV1(Algorithm):
             actor_optimizer=actor_optimizer,
             critic_optimizer=critic_optimizer,
         )
+        # The exploration noise of the policy decays with the policy steps
+        self._policy.schedule = schedule
         self.schedule = schedule
         return state, build_store(fabric, cfg, log_dir, dry_run_size=2)
 
@@ -554,18 +555,8 @@ class DreamerV1(Algorithm):
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
 
-    def player(self, state: DreamerV1State) -> SequencePlayer:
-        # Random actions until `algo.learning_starts`, except with MineDojo (its action masks)
-        random_warmup = "minedojo" not in self.cfg.env.wrapper._target_.lower()
-        return SequencePlayer(
-            self.fabric,
-            self.cfg,
-            self.policy(state),
-            self.schedule,
-            self.actions_dim,
-            self.is_continuous,
-            random_warmup,
-        )
+    def writer(self, state: DreamerV1State, policy: DreamerV1Policy) -> SequenceWriter:
+        return SequenceWriter(self.cfg, self.actions_dim)
 
     def batches(
         self, state: DreamerV1State, buffer: ReplayStore, n_steps: int, iteration: int

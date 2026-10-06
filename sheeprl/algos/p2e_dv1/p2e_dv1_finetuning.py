@@ -17,7 +17,7 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v1.agent import DreamerV1Policy, WorldModel
-from sheeprl.algos.dreamer_v1.dreamer_v1 import SequencePlayer, build_store, sample_batches_of_iteration, train
+from sheeprl.algos.dreamer_v1.dreamer_v1 import SequenceWriter, build_store, sample_batches_of_iteration, train
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
@@ -46,6 +46,8 @@ class P2EDV1Finetuning(Algorithm):
     """Dreamer-V1 on the task, starting from the models (and optionally the replay buffer) of the exploration."""
 
     off_policy = True
+    # No random actions: the policy trained by the exploration plays from the first step
+    random_warmup = False
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Optional[Dict[str, Any]] = None) -> None:
         """`exploration_cfg` is the configuration of the exploration to start from. Without it the algorithm only
@@ -124,6 +126,8 @@ class P2EDV1Finetuning(Algorithm):
             state.load_state_dict(exploration)
             if cfg.buffer.load_from_exploration and self.exploration_cfg.buffer.checkpoint:
                 buffer = load_replay_buffer(fabric, exploration["rb"], buffer)
+        # The exploration noise of the policy decays with the policy steps
+        self._policy.schedule = schedule
         self.schedule = schedule
         return state, buffer
 
@@ -145,17 +149,8 @@ class P2EDV1Finetuning(Algorithm):
         # The task actor plays
         test(self.task_policy(state), self.fabric, self.cfg, log_dir, test_name, policy_step=policy_step)
 
-    def player(self, state: P2EDV1FinetuningState) -> SequencePlayer:
-        # No random actions
-        return SequencePlayer(
-            self.fabric,
-            self.cfg,
-            self.policy(state),
-            self.schedule,
-            self.actions_dim,
-            self.is_continuous,
-            random_warmup=False,
-        )
+    def writer(self, state: P2EDV1FinetuningState, policy: DreamerV1Policy) -> SequenceWriter:
+        return SequenceWriter(self.cfg, self.actions_dim)
 
     def batches(
         self, state: P2EDV1FinetuningState, buffer: ReplayStore, n_steps: int, iteration: int

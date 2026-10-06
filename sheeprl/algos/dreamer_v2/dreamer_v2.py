@@ -15,7 +15,6 @@ from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
 import gymnasium as gym
 import numpy as np
 import torch
-import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
@@ -31,10 +30,9 @@ from sheeprl.algos.dreamer_v2.utils import (
     build_optimizer,
     build_store,
     compute_lambda_values,
-    prepare_obs,
     test,
 )
-from sheeprl.core import Algorithm, Environment, EnvStep, Player, TrainSchedule, TrainState, run
+from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
@@ -61,50 +59,31 @@ class DreamerV2State(TrainState):
     critic_optimizer: Optimizer
 
 
-class SequencePlayer(Player):
-    """Plays in the environments and writes in the replay buffer the sequences the world model learns from.
+class SequenceWriter(Writer):
+    """Writes in the replay buffer the sequences the world model learns from.
 
     Every row holds an observation, the action that led to it and the reward, `terminated`, `truncated` and `is_first`
     of that step. The first row of every environment holds its first observation, with a zero action and `is_first`.
     When an episode ends, its row holds the final observation, and a further row the first observation of the new
     episode (zero action and reward, `is_first`).
-
-    With `random_warmup`, the actions are uniformly random until `algo.learning_starts`; otherwise they come from
-    `policy` (`DreamerV2Policy`), whose recurrent state is reset at the start of every episode.
     """
 
-    # The actions of the policy with its exploration noise (`get_exploration_actions` of DreamerV1)
-    exploration_noise: bool = False
-    # In a dry run, the first observations also end the episodes (for the episode buffer)
+    # Whether a dry run ends the episodes at every step, for the episode buffer
     dry_run_episodes: bool = True
 
-    def __init__(
-        self,
-        fabric: Fabric,
-        cfg: Dict[str, Any],
-        policy: DreamerV2Policy,
-        schedule: TrainSchedule,
-        actions_dim: Sequence[int],
-        is_continuous: bool,
-        random_warmup: bool,
-    ) -> None:
-        self.fabric = fabric
+    def __init__(self, cfg: Dict[str, Any], actions_dim: Sequence[int]) -> None:
         self.cfg = cfg
-        self.policy = policy
-        self.schedule = schedule
         self.actions_dim = actions_dim
-        self.is_continuous = is_continuous
-        self.random_warmup = random_warmup
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
         # The row written at the last step; created, and written, from the first observations of the environments
         self.step_data: Optional[Dict[str, np.ndarray]] = None
 
-    def step(self, env: Environment, buffer: ReplayStore) -> EnvStep:
+    def write(self, buffer: ReplayStore, step: EnvStep, act: Act) -> None:
         cfg = self.cfg
-        num_envs = env.num_envs
+        num_envs = len(step.rewards)
         if self.step_data is None:
             # The first observations start the episodes (in a dry run they also end them, for the episode buffer)
-            self.step_data = {k: env.obs[k][np.newaxis] for k in self.obs_keys}
+            self.step_data = {k: step.obs[k][np.newaxis] for k in self.obs_keys}
             self.step_data["terminated"] = np.zeros((1, num_envs, 1))
             self.step_data["truncated"] = np.zeros((1, num_envs, 1))
             if cfg.dry_run and self.dry_run_episodes:
@@ -114,42 +93,10 @@ class SequencePlayer(Player):
             self.step_data["rewards"] = np.zeros((1, num_envs, 1))
             self.step_data["is_first"] = np.ones_like(self.step_data["terminated"])
             buffer.add(self.step_data, validate_args=cfg.buffer.validate_args)
-            self.policy.init_states()
         step_data = self.step_data
-
-        # The actions are stored one-hot for discrete actions, while the environments take their indices
-        if self.random_warmup and self.schedule.warmup(self.schedule.policy_step):
-            real_actions = actions = np.array(env.random_actions())
-            if not self.is_continuous:
-                # One row per environment, one column per discrete action: one-hot each column
-                per_action = actions.reshape(num_envs, len(self.actions_dim)).T
-                actions = np.concatenate(
-                    [
-                        F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                        for act, act_dim in zip(per_action, self.actions_dim)
-                    ],
-                    axis=-1,
-                )
-        else:
-            torch_obs = prepare_obs(self.fabric, env.obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=num_envs)
-            mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
-            if self.exploration_noise:
-                # The noise depends on the policy steps played at the end of this step
-                policy_step = self.schedule.policy_step + self.schedule.policy_steps_per_step
-                real_actions = actions = self.policy.get_exploration_actions(
-                    torch_obs, mask=mask if len(mask) > 0 else None, step=policy_step
-                )
-            else:
-                real_actions = actions = self.policy.get_actions(torch_obs, mask=mask if len(mask) > 0 else None)
-            actions = torch.cat(actions, -1).view(num_envs, -1).cpu().numpy()
-            if self.is_continuous:
-                real_actions = torch.stack(real_actions, -1).cpu().numpy()
-            else:
-                real_actions = torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()
 
         # The row of this step starts an episode when the previous one ended it
         step_data["is_first"] = copy.deepcopy(np.logical_or(step_data["terminated"], step_data["truncated"]))
-        step = env.step(real_actions)
         dones = np.logical_or(step.terminated, step.truncated).astype(np.uint8)
         if cfg.dry_run and self.dry_run_episodes and cfg.buffer.type.lower() == "episode":
             dones = np.ones_like(dones)
@@ -164,7 +111,8 @@ class SequencePlayer(Player):
             step_data[k] = real_next_obs[k][np.newaxis]
         step_data["terminated"] = step.terminated.reshape((1, num_envs, -1))
         step_data["truncated"] = step.truncated.reshape((1, num_envs, -1))
-        step_data["actions"] = actions.reshape((1, num_envs, -1))
+        # The actions are stored one-hot for discrete actions, while the environments take their indices
+        step_data["actions"] = act.columns["actions"].reshape((1, num_envs, -1))
         rewards = np.tanh(step.rewards) if cfg.env.clip_rewards else step.rewards
         step_data["rewards"] = rewards.reshape((1, num_envs, -1))
         buffer.add(step_data, validate_args=cfg.buffer.validate_args)
@@ -184,8 +132,6 @@ class SequencePlayer(Player):
             for d in dones_idxes:
                 step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
                 step_data["truncated"][0, d] = np.zeros_like(step_data["truncated"][0, d])
-            self.policy.init_states(dones_idxes)
-        return step
 
 
 def world_model_loss(
@@ -699,7 +645,6 @@ class DreamerV2(Algorithm):
             actor_optimizer=actor_optimizer,
             critic_optimizer=critic_optimizer,
         )
-        self.schedule = schedule
         return state, build_store(fabric, cfg, log_dir, dry_run_size=2)
 
     def policy(self, state: DreamerV2State) -> DreamerV2Policy:
@@ -709,18 +654,8 @@ class DreamerV2(Algorithm):
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
 
-    def player(self, state: DreamerV2State) -> SequencePlayer:
-        # Random actions until `algo.learning_starts`, except with MineDojo (its action masks)
-        random_warmup = "minedojo" not in self.cfg.env.wrapper._target_.lower()
-        return SequencePlayer(
-            self.fabric,
-            self.cfg,
-            self.policy(state),
-            self.schedule,
-            self.actions_dim,
-            self.is_continuous,
-            random_warmup,
-        )
+    def writer(self, state: DreamerV2State, policy: DreamerV2Policy) -> SequenceWriter:
+        return SequenceWriter(self.cfg, self.actions_dim)
 
     def batches(
         self, state: DreamerV2State, buffer: ReplayStore, n_steps: int, iteration: int

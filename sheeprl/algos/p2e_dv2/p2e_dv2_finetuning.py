@@ -16,7 +16,7 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy, WorldModel
-from sheeprl.algos.dreamer_v2.dreamer_v2 import SequencePlayer, actions_dim_of, check_keys, train
+from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter, actions_dim_of, check_keys, train
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, build_optimizer, build_store, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, load_replay_buffer, run
@@ -45,6 +45,8 @@ class P2EDV2Finetuning(Algorithm):
     """Dreamer-V2 on the task, starting from the models (and optionally the replay buffer) of the exploration."""
 
     off_policy = True
+    # No random actions: the policy trained by the exploration plays from the first step
+    random_warmup = False
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Optional[Dict[str, Any]] = None) -> None:
         """`exploration_cfg` is the configuration of the exploration to start from. Without it the algorithm only
@@ -124,7 +126,6 @@ class P2EDV2Finetuning(Algorithm):
             state.load_state_dict(exploration)
             if cfg.buffer.load_from_exploration and self.exploration_cfg.buffer.checkpoint:
                 buffer = load_replay_buffer(fabric, exploration["rb"], buffer)
-        self.schedule = schedule
         return state, buffer
 
     def policy(self, state: P2EDV2FinetuningState) -> DreamerV2Policy:
@@ -145,17 +146,8 @@ class P2EDV2Finetuning(Algorithm):
         # The task actor plays
         test(self.task_policy(state), self.fabric, self.cfg, log_dir, test_name, policy_step=policy_step)
 
-    def player(self, state: P2EDV2FinetuningState) -> SequencePlayer:
-        # No random actions
-        return SequencePlayer(
-            self.fabric,
-            self.cfg,
-            self.policy(state),
-            self.schedule,
-            self.actions_dim,
-            self.is_continuous,
-            random_warmup=False,
-        )
+    def writer(self, state: P2EDV2FinetuningState, policy: DreamerV2Policy) -> SequenceWriter:
+        return SequenceWriter(self.cfg, self.actions_dim)
 
     def batches(
         self,

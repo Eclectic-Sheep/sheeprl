@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from functools import partial
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
@@ -15,13 +15,16 @@ from torch import Tensor, nn
 
 from sheeprl.algos.dreamer_v1.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
-from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
+from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder, DreamerPolicy
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.algos.dreamer_v2.utils import init_weights as dv2_init_weights
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
+
+if TYPE_CHECKING:
+    from sheeprl.core.schedule import TrainSchedule
 
 # The initialization of the layers of Keras, which the official implementation uses: the uniform Glorot initializer
 # for the kernels, zero biases
@@ -297,7 +300,7 @@ class WorldModel(nn.Module):
         self.continue_model = continue_model
 
 
-class DreamerV1Policy(nn.Module):
+class DreamerV1Policy(nn.Module, DreamerPolicy):
     """The model of the DreamerV1 policy.
 
     Args:
@@ -330,12 +333,18 @@ class DreamerV1Policy(nn.Module):
         device: str | torch.device,
         actor_type: str | None = None,
         min_std: float = 0.1,
+        fabric: Fabric | None = None,
+        cnn_keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.actor = actor
+        self.fabric = fabric
+        self.cnn_keys = cnn_keys
+        # The schedule of the training, whose policy steps decay the exploration noise of `act` (set by the algorithm)
+        self.schedule: TrainSchedule | None = None
         self.actions_dim = actions_dim
         self.num_envs = num_envs
         self.stochastic_size = stochastic_size
@@ -360,6 +369,11 @@ class DreamerV1Policy(nn.Module):
             self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
             self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
             self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
+
+    def sample_actions(self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]]) -> Sequence[Tensor]:
+        """The actions with the exploration noise of the policy steps played after this step."""
+        step = self.schedule.policy_step + self.schedule.policy_steps_per_step
+        return self.get_exploration_actions(obs, mask=mask, step=step)
 
     def get_exploration_actions(
         self, obs: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
@@ -616,6 +630,8 @@ def build_agent(
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric_player.device,
         min_std=cfg.algo.world_model.min_std,
+        fabric=fabric_player,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
     )
     # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes. Its exploration noise (`get_exploration_actions`) is added uncompiled: it changes with
