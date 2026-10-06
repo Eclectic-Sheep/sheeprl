@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Protocol, Sequence
 
 import numpy as np
 
@@ -40,10 +40,13 @@ class Policy(Protocol):
         the environments, without columns."""
         return Act(env.random_actions())
 
-    def reset_state(self, env_idxes: Optional[Sequence[int]] = None) -> None:
-        """Forget the memory of the policy (e.g. the recurrent state, the previous actions) for the environments
-        `env_idxes` (all of them if `None`), which start new episodes. It doesn't reset the environments: they start
-        their new episodes by themselves. A policy without memory does nothing."""
+    def init_states(self) -> None:
+        """Create the memory of the policy (e.g. the recurrent state, the previous actions) for every environment,
+        before the first step. A policy without memory does nothing."""
+
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
+        """Forget the memory of the policy for the environments `env_idxes`, which start new episodes. It doesn't reset
+        the environments: they start their new episodes by themselves. A policy without memory does nothing."""
 
 
 class Writer(Protocol):
@@ -81,9 +84,9 @@ class Collector:
         self.random_warmup = random_warmup
 
     def reset(self) -> None:
-        """Reset the environments and the memory of the policy."""
+        """Reset the environments and create the memory of the policy."""
         self.env.reset()
-        self.policy.reset_state()
+        self.policy.init_states()
 
     def step(self) -> EnvStep:
         """Play one step in every environment and write it."""

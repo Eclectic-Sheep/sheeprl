@@ -480,11 +480,11 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         self.prev_actions, self.prev_states = columns["actions"], states
         return Act(env_actions, columns, {"actions": torch_actions, "states": states})
 
-    def reset_state(self, env_idxes: Optional[Sequence[int]] = None) -> None:
-        if env_idxes is None:
-            # Created with zeros at the next step
-            self.prev_states = self.prev_actions = None
-            return
+    def init_states(self) -> None:
+        # Created with zeros at the next step, which knows the number of environments
+        self.prev_states = self.prev_actions = None
+
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
         # Multiplied by the mask of the episodes that go on, as the rollout resets them in the training
         dones = np.zeros((1, self.prev_actions.shape[1], 1), dtype=np.float32)
         dones[:, env_idxes] = 1

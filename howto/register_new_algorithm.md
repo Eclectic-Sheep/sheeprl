@@ -26,7 +26,7 @@ state, store = algo.build(observation_space, action_space, schedule, log_dir)
 # When resuming: `state.load_state_dict(checkpoint)` and, for off-policy algorithms, the replay buffer of the checkpoint
 policy = algo.policy(state)
 collector = Collector(env, policy, algo.writer(state, policy), store, schedule, cadence, algo.random_warmup)
-# Reset the environments and the memory of the policy (`policy.reset_state()`)
+# Reset the environments and create the memory of the policy (`policy.init_states()`)
 collector.reset()
 for iteration in schedule.iterations():
     # Play `algo.steps_per_iteration` steps in every environment. At every step the collector:
@@ -157,7 +157,7 @@ def value_loss(values: Tensor, returns: Tensor) -> Tensor:
 The algorithm is implemented in the `sota.py` file. It contains:
 
 1. **The training state**: a dataclass that subclasses `TrainState` and lists everything that changes during the training (modules, optimizers, learning-rate schedulers, annealed coefficients as tensors, counters). The training loop saves it in the checkpoints, one entry per field with the name of the field, and restores it when a run is resumed. It holds no logic.
-2. **The writer**: a `Writer` (`sheeprl/core/collector.py`) whose `write(store, step, act)` writes in the store a step of the environments (`EnvStep`) played with the actions `act`. The actions come from the policy, a `Policy` (usually the policy module of the agent): `act(obs)` returns an `Act` with the actions to play in the environments (`env_actions`), the columns to store (`columns`, e.g. the actions one-hot, their log-probabilities, the values of the observations) and anything else the writer needs (`extras`); `random(env)` returns random actions (by default those of the environments), and `reset_state(env_idxes)` forgets the memory of the policy for the environments that start a new episode (e.g. a recurrent state; nothing by default). The environments reset themselves.
+2. **The writer**: a `Writer` (`sheeprl/core/collector.py`) whose `write(store, step, act)` writes in the store a step of the environments (`EnvStep`) played with the actions `act`. The actions come from the policy, a `Policy` (usually the policy module of the agent): `act(obs)` returns an `Act` with the actions to play in the environments (`env_actions`), the columns to store (`columns`, e.g. the actions one-hot, their log-probabilities, the values of the observations) and anything else the writer needs (`extras`); `random(env)` returns random actions (by default those of the environments), `init_states()` creates the memory of the policy before the first step (e.g. a recurrent state; nothing by default), and `reset_state(env_idxes)` forgets it for the environments that start a new episode (nothing by default). The environments reset themselves.
 3. **The algorithm**: a subclass of `Algorithm` (`sheeprl/core/algorithm.py`), with:
    - `steps_per_iteration`: the steps played by every environment in an iteration (the rollout length of an on-policy algorithm; 1, the default, for an off-policy one);
    - `off_policy`: whether it trains on a replay buffer (see [Off-policy algorithms](#off-policy-algorithms));

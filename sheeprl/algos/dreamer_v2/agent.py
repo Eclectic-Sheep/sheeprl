@@ -769,9 +769,10 @@ class WorldModel(nn.Module):
 
 class DreamerPolicy(Policy):
     """The `Policy` of the Dreamers' policies, on their `get_actions` (which updates the latent states of the
-    environments) and `init_states`: the observations are moved to the device of `fabric` (the images `cnn_keys`
-    normalized), the actions are written one-hot for discrete actions (the environments take their indices), and the
-    action masks of the observations (`mask*`, e.g. MineDojo) mask the actions.
+    environments) and `init_states` (which also resets the latent states of some environments, `reset_state`): the
+    observations are moved to the device of `fabric` (the images `cnn_keys` normalized), the actions are written one-hot
+    for discrete actions (the environments take their indices), and the action masks of the observations (`mask*`,
+    e.g. MineDojo) mask the actions.
 
     A subclass is an `nn.Module` with the attributes `fabric`, `cnn_keys`, `actions_dim` and `actor`.
     """
@@ -809,7 +810,7 @@ class DreamerPolicy(Policy):
             )
         return Act(env_actions, {"actions": actions})
 
-    def reset_state(self, env_idxes: Optional[Sequence[int]] = None) -> None:
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
         self.init_states(env_idxes)
 
 
