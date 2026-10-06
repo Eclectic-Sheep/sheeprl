@@ -404,7 +404,7 @@ def test_update_returns_the_gradient_norm_before_clipping(fabric):
     )
 
 
-def test_env_step_final_obs_reads_the_last_observations_of_the_ended_episodes():
+def test_env_step_stack_final_obs_stacks_the_last_observations_of_the_ended_episodes():
     final_obs = np.array([None, {"state": np.full(2, 7.0)}, {"state": np.full(2, 9.0)}], dtype=object)
     step = EnvStep(
         obs={},
@@ -412,11 +412,12 @@ def test_env_step_final_obs_reads_the_last_observations_of_the_ended_episodes():
         rewards=np.zeros(3),
         terminated=np.array([False, True, False]),
         truncated=np.array([False, False, True]),
-        info={"final_obs": final_obs},
+        final_obs=final_obs,
+        restarted=np.zeros(3, dtype=bool),
     )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        assert np.array_equal(step.final_obs([1, 2], ["state"])["state"], np.array([[7.0, 7.0], [9.0, 9.0]]))
+        assert np.array_equal(step.stack_final_obs([1, 2], ["state"])["state"], np.array([[7.0, 7.0], [9.0, 9.0]]))
 
 
 def test_every_process_returns_from_the_training_once_all_of_them_trained(monkeypatch, tmp_path):

@@ -22,7 +22,8 @@ from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPla
 from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.core import (
     Algorithm,
-    EnvRunner,
+    Environment,
+    Player,
     ReplayStore,
     TrainSchedule,
     TrainState,
@@ -43,7 +44,7 @@ class PPORecurrentState(TrainState):
     optimizer: Optimizer
 
 
-class RecurrentRolloutPlayer:
+class RecurrentRolloutPlayer(Player):
     """Plays the policy in the environments and writes every step in the rollout, with the recurrent state and the
     actions that preceded it (the input of the LSTM). The recurrent state is reset at the end of every episode when
     `algo.reset_recurrent_state_on_done` is set, the previous actions always."""
@@ -58,7 +59,7 @@ class RecurrentRolloutPlayer:
         self.prev_states: Optional[Tuple[Tensor, Tensor]] = None
         self.prev_actions: Optional[np.ndarray] = None
 
-    def step(self, env: EnvRunner, rollout: ReplayStore) -> None:
+    def step(self, env: Environment, rollout: ReplayStore) -> None:
         cfg = self.cfg
         num_envs = env.num_envs
         device = self.fabric.device
@@ -92,7 +93,7 @@ class RecurrentRolloutPlayer:
         step = env.step(env_actions)
 
         def final_values(env_idxes: np.ndarray) -> np.ndarray:
-            final_obs = step.final_obs(env_idxes, self.obs_keys)
+            final_obs = step.stack_final_obs(env_idxes, self.obs_keys)
             final_obs = prepare_obs(self.fabric, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes))
             values, _ = self.policy.get_values(
                 final_obs, torch_actions[:, env_idxes, :], tuple(s[:, env_idxes, ...] for s in states)

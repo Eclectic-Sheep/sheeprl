@@ -34,7 +34,7 @@ from sheeprl.algos.dreamer_v2.utils import (
     prepare_obs,
     test,
 )
-from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run
+from sheeprl.core import Algorithm, Environment, Player, TrainSchedule, TrainState, run
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
@@ -61,7 +61,7 @@ class DreamerV2State(TrainState):
     critic_optimizer: Optimizer
 
 
-class SequencePlayer:
+class SequencePlayer(Player):
     """Plays in the environments and writes in the replay buffer the sequences the world model learns from.
 
     Every row holds an observation, the action that led to it and the reward, `terminated`, `truncated` and `is_first`
@@ -99,7 +99,7 @@ class SequencePlayer:
         # The row written at the last step; created, and written, from the first observations of the environments
         self.step_data: Optional[Dict[str, np.ndarray]] = None
 
-    def step(self, env: EnvRunner, buffer: ReplayStore) -> None:
+    def step(self, env: Environment, buffer: ReplayStore) -> None:
         cfg = self.cfg
         num_envs = env.num_envs
         if self.step_data is None:
@@ -118,7 +118,7 @@ class SequencePlayer:
         step_data = self.step_data
 
         # The actions are stored one-hot for discrete actions, while the environments take their indices
-        if self.random_warmup and self.schedule.warmup(env.policy_step):
+        if self.random_warmup and self.schedule.warmup(self.schedule.policy_step):
             real_actions = actions = np.array(env.random_actions())
             if not self.is_continuous:
                 # One row per environment, one column per discrete action: one-hot each column
@@ -135,7 +135,7 @@ class SequencePlayer:
             mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
             if self.exploration_noise:
                 # The noise depends on the policy steps played at the end of this step
-                policy_step = env.policy_step + num_envs * self.fabric.world_size
+                policy_step = self.schedule.policy_step + self.schedule.policy_steps_per_step
                 real_actions = actions = self.policy.get_exploration_actions(
                     torch_obs, mask=mask if len(mask) > 0 else None, step=policy_step
                 )
@@ -156,11 +156,10 @@ class SequencePlayer:
 
         # The observations that follow the actions: for the episodes that have just ended, their last observation
         real_next_obs = copy.deepcopy(step.next_obs)
-        if "final_obs" in step.info:
-            for idx, final_obs in enumerate(step.info["final_obs"]):
-                if final_obs is not None:
-                    for k, v in final_obs.items():
-                        real_next_obs[k][idx] = v
+        for idx, final_obs in enumerate(step.final_obs):
+            if final_obs is not None:
+                for k, v in final_obs.items():
+                    real_next_obs[k][idx] = v
         for k in self.obs_keys:
             step_data[k] = real_next_obs[k][np.newaxis]
         step_data["terminated"] = step.terminated.reshape((1, num_envs, -1))

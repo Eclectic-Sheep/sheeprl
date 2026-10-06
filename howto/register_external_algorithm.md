@@ -63,7 +63,8 @@ from my_awesome_algo.utils import normalize_obs, prepare_obs, test
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
 from sheeprl.core import (
     Algorithm,
-    EnvRunner,
+    Environment,
+    Player,
     ReplayStore,
     TrainSchedule,
     TrainState,
@@ -84,7 +85,7 @@ class ExtSOTAState(TrainState):
     optimizer: Optimizer
 
 
-class RolloutPlayer:
+class RolloutPlayer(Player):
     """Plays the policy in the environments and writes every step in the rollout."""
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPlayer) -> None:
@@ -93,7 +94,7 @@ class RolloutPlayer:
         self.policy = policy
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    def step(self, env: EnvRunner, rollout: ReplayStore) -> None:
+    def step(self, env: Environment, rollout: ReplayStore) -> None:
         num_envs = env.num_envs
         obs = {k: env.obs[k] for k in self.obs_keys}
         torch_obs = prepare_obs(self.fabric, obs, cnn_keys=self.cfg.algo.cnn_keys.encoder, num_envs=num_envs)

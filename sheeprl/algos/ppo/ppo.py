@@ -20,7 +20,8 @@ from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.core import (
     Algorithm,
-    EnvRunner,
+    Environment,
+    Player,
     ReplayStore,
     TrainSchedule,
     TrainState,
@@ -41,7 +42,7 @@ class PPOState(TrainState):
     optimizer: Optimizer
 
 
-class RolloutPlayer:
+class RolloutPlayer(Player):
     """Plays the policy in the environments and writes every step in the rollout."""
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPlayer) -> None:
@@ -51,7 +52,7 @@ class RolloutPlayer:
         self.cnn_keys = cfg.algo.cnn_keys.encoder
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    def step(self, env: EnvRunner, rollout: ReplayStore) -> None:
+    def step(self, env: Environment, rollout: ReplayStore) -> None:
         cfg = self.cfg
         num_envs = env.num_envs
 
@@ -65,7 +66,7 @@ class RolloutPlayer:
         step = env.step(env_actions)
 
         def final_values(env_idxes: np.ndarray) -> np.ndarray:
-            final_obs = step.final_obs(env_idxes, self.obs_keys)
+            final_obs = step.stack_final_obs(env_idxes, self.obs_keys)
             final_obs = prepare_obs(self.fabric, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes))
             return self.policy.get_values(final_obs).cpu().numpy()
 

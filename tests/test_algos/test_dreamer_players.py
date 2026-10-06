@@ -33,17 +33,18 @@ def play(player_cls, actions_dim, num_envs, random_warmup, policy, random_action
     def step(actions):
         played.append(np.array(actions).reshape(num_envs, -1))
         done = np.zeros(num_envs, dtype=bool) if ends is None else ends(len(played))
-        info = {"final_obs": [{"state": np.ones(2, dtype=np.float32)} if d else None for d in done]}
-        return EnvStep(obs, obs, np.zeros(num_envs), done, np.zeros(num_envs, dtype=bool), info)
+        final_obs = [{"state": np.ones(2, dtype=np.float32)} if d else None for d in done]
+        no_envs = np.zeros(num_envs, dtype=bool)
+        return EnvStep(obs, obs, np.zeros(num_envs), done, no_envs, final_obs=final_obs, restarted=no_envs)
 
-    env = SimpleNamespace(num_envs=num_envs, obs=obs, policy_step=0, random_actions=random_actions, step=step)
+    env = SimpleNamespace(num_envs=num_envs, obs=obs, random_actions=random_actions, step=step)
     # The players can write the next rows in the same arrays: keep a copy
     buffer = SimpleNamespace(
         add=lambda data, indices=None, validate_args=False: rows.append(
             ({k: np.array(v, copy=True) for k, v in data.items()}, indices)
         )
     )
-    schedule = SimpleNamespace(warmup=lambda policy_step: random_warmup)
+    schedule = SimpleNamespace(policy_step=0, policy_steps_per_step=num_envs, warmup=lambda policy_step: random_warmup)
     player = player_cls(Fabric(accelerator="cpu", devices=1), CFG, policy, schedule, actions_dim, False, random_warmup)
     for _ in range(n_steps):
         player.step(env, buffer)

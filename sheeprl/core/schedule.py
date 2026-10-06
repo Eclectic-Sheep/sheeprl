@@ -14,7 +14,8 @@ class TrainSchedule:
     One iteration plays `steps_per_iteration` steps in every environment of every process, then trains.
     The checkpoint of a resumed run is the one saved at the end of an iteration: the run starts from the next one.
 
-    Policy steps are counted over all the environments of all the processes; gradient steps per process.
+    Policy steps are counted over all the environments of all the processes, gradient steps per process: the training
+    loop advances `policy_step` after every step of the environments, `gradient_step` after every gradient step.
 
     Off-policy algorithms (`off_policy=True`) play random actions for the first `algo.learning_starts` policy steps
     (rounded down to whole iterations), to fill their replay buffer, then do `algo.replay_ratio` gradient steps per
@@ -37,6 +38,8 @@ class TrainSchedule:
         off_policy: bool = False,
     ) -> None:
         self.world_size = world_size
+        # Policy steps played in one step of the environments of all processes
+        self.policy_steps_per_step = cfg.env.num_envs * world_size
         # Policy steps played in one iteration by the environments of one process, and of all processes
         self.policy_steps_per_rank = cfg.env.num_envs * steps_per_iteration
         self.policy_steps_per_iter = self.policy_steps_per_rank * world_size

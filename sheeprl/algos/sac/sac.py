@@ -18,7 +18,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.sac.agent import SACAgent, SACPlayer, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run, update
+from sheeprl.core import Algorithm, Environment, Player, TrainSchedule, TrainState, run, update
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import TransitionSampler
 from sheeprl.data.store import ReplayStore
@@ -60,7 +60,7 @@ class SACState(TrainState):
     alpha_optimizer: Optimizer
 
 
-class ReplayPlayer:
+class ReplayPlayer(Player):
     """Plays in the environments and writes every step in the replay buffer: random actions until
     `algo.learning_starts`, then actions sampled from the policy.
 
@@ -86,9 +86,9 @@ class ReplayPlayer:
     def cast(self, value: np.ndarray) -> np.ndarray:
         return value if self.dtype is None else value.astype(self.dtype)
 
-    def step(self, env: EnvRunner, buffer: ReplayStore) -> None:
+    def step(self, env: Environment, buffer: ReplayStore) -> None:
         num_envs = env.num_envs
-        if self.schedule.warmup(env.policy_step):
+        if self.schedule.warmup(self.schedule.policy_step):
             actions = env.random_actions()
         else:
             obs = prepare_obs(self.fabric, env.obs, mlp_keys=self.mlp_keys, num_envs=num_envs)
@@ -101,7 +101,7 @@ class ReplayPlayer:
         next_obs = {k: step.next_obs[k].copy() for k in self.mlp_keys}
         ended_envs = np.nonzero(np.logical_or(step.terminated, step.truncated))[0]
         if len(ended_envs) > 0:
-            for k, final_obs in step.final_obs(ended_envs, self.mlp_keys).items():
+            for k, final_obs in step.stack_final_obs(ended_envs, self.mlp_keys).items():
                 next_obs[k][ended_envs] = final_obs
 
         flags_dtype = np.uint8 if self.dtype is None else self.dtype

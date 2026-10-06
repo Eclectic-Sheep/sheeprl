@@ -32,7 +32,7 @@ from sheeprl.algos.dreamer_v2.utils import (
 from sheeprl.algos.dreamer_v3.agent import Actor, MinedojoActor, PlayerDV3, WorldModel, build_agent, clip_actions
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
-from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run
+from sheeprl.core import Algorithm, Environment, Player, TrainSchedule, TrainState, run
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import (
@@ -67,7 +67,7 @@ class DreamerV3State(TrainState):
     moments: Moments
 
 
-class SequencePlayer:
+class SequencePlayer(Player):
     """Plays in the environments and writes in the replay buffer the sequences the world model learns from.
 
     Every row holds an observation, the action played from it, and the reward, `terminated`, `truncated` and
@@ -106,7 +106,7 @@ class SequencePlayer:
         # The row written at the next step; created from the first observations of the environments
         self.step_data: Optional[Dict[str, np.ndarray]] = None
 
-    def step(self, env: EnvRunner, buffer: ReplayStore) -> None:
+    def step(self, env: Environment, buffer: ReplayStore) -> None:
         cfg = self.cfg
         num_envs = env.num_envs
         if self.step_data is None:
@@ -120,7 +120,7 @@ class SequencePlayer:
         step_data = self.step_data
 
         # The actions are stored one-hot for discrete actions, while the environments take their indices
-        if self.random_warmup and self.schedule.warmup(env.policy_step):
+        if self.random_warmup and self.schedule.warmup(self.schedule.policy_step):
             real_actions = actions = np.array(env.random_actions())
             if not self.is_continuous:
                 # One row per environment, one column per discrete action: one-hot each column
@@ -150,10 +150,10 @@ class SequencePlayer:
         dones = np.logical_or(step.terminated, step.truncated).astype(np.uint8)
 
         step_data["is_first"] = np.zeros_like(step_data["terminated"])
-        if "restart_on_exception" in step.info:
+        if step.restarted.any():
             restarted_envs = []
-            for i, agent_roe in enumerate(step.info["restart_on_exception"]):
-                if agent_roe and not dones[i]:
+            for i, restarted in enumerate(step.restarted):
+                if restarted and not dones[i]:
                     # The last observation stored for the restarted environment ends its episode
                     buffer.wait()
                     storage = buffer.storage
@@ -178,7 +178,7 @@ class SequencePlayer:
         dones_idxes = dones.nonzero()[0].tolist()
         reset_envs = len(dones_idxes)
         if reset_envs > 0:
-            final_obs = step.final_obs(dones_idxes, self.obs_keys)
+            final_obs = step.stack_final_obs(dones_idxes, self.obs_keys)
             reset_data = {k: final_obs[k].astype(step.next_obs[k].dtype, copy=False)[np.newaxis] for k in self.obs_keys}
             reset_data["terminated"] = step_data["terminated"][:, dones_idxes]
             reset_data["truncated"] = step_data["truncated"][:, dones_idxes]

@@ -21,7 +21,7 @@ from sheeprl.algos.sac.sac import build_store
 from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPlayer, build_agent, tie_actor_convolutions, tie_actor_optimizer
 from sheeprl.algos.sac_ae.loss import entropy_loss
 from sheeprl.algos.sac_ae.utils import prepare_obs, preprocess_obs, test
-from sheeprl.core import Algorithm, EnvRunner, TrainSchedule, TrainState, run, update
+from sheeprl.core import Algorithm, Environment, Player, TrainSchedule, TrainState, run, update
 from sheeprl.data.store import ReplayStore
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled, mark_gradient_step
@@ -103,7 +103,7 @@ class SACAEState(TrainState):
         super().load_state_dict(state)
 
 
-class ReplayPlayer:
+class ReplayPlayer(Player):
     """Plays in the environments and writes every step in the replay buffer: random actions until
     `algo.learning_starts`, then actions sampled from the policy. The stacked frames of an image are stored as its
     channels."""
@@ -118,10 +118,10 @@ class ReplayPlayer:
     def images_as_channels(self, obs: Dict[str, np.ndarray], num_envs: int) -> Dict[str, np.ndarray]:
         return {k: v.reshape(num_envs, -1, *v.shape[-2:]) if k in self.cnn_keys else v for k, v in obs.items()}
 
-    def step(self, env: EnvRunner, buffer: ReplayStore) -> None:
+    def step(self, env: Environment, buffer: ReplayStore) -> None:
         num_envs = env.num_envs
         obs = self.images_as_channels(env.obs, num_envs)
-        if self.schedule.warmup(env.policy_step):
+        if self.schedule.warmup(self.schedule.policy_step):
             actions = env.random_actions()
         else:
             torch_obs = prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)
@@ -134,7 +134,7 @@ class ReplayPlayer:
         next_obs = {k: v.copy() for k, v in step.next_obs.items()}
         ended_envs = np.nonzero(np.logical_or(step.terminated, step.truncated))[0]
         if len(ended_envs) > 0:
-            for k, final_obs in step.final_obs(ended_envs, list(next_obs)).items():
+            for k, final_obs in step.stack_final_obs(ended_envs, list(next_obs)).items():
                 next_obs[k][ended_envs] = final_obs
         next_obs = self.images_as_channels(next_obs, num_envs)
 
