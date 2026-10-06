@@ -267,7 +267,7 @@ def small_dreamer_v3_5(overrides=(), accelerator="cpu", precision="32-true", act
     continuous = actions == "continuous"
     actions_dim = [2] if continuous else [3]
     torch.manual_seed(0)
-    world_model, actor, critic, target_critic, player = build_agent(fabric, actions_dim, continuous, cfg, obs_space)
+    world_model, actor, critic, target_critic, policy = build_agent(fabric, actions_dim, continuous, cfg, obs_space)
     if peaked:
         with torch.no_grad():
             for head in (world_model.reward_model, critic, target_critic):
@@ -309,7 +309,7 @@ def small_dreamer_v3_5(overrides=(), accelerator="cpu", precision="32-true", act
             actions_dim,
         )
 
-    return cfg, (world_model, actor, critic, target_critic), player, train_step
+    return cfg, (world_model, actor, critic, target_critic), policy, train_step
 
 
 @pytest.mark.parametrize("actions", ["discrete", "continuous"])
@@ -373,32 +373,32 @@ def test_the_episodes_start_from_zeros(monkeypatch):
         torch.testing.assert_close(recurrent_states(0, T, random_carry)[3:], recurrent_states(3, 3, zeros))
 
 
-def test_the_player_starts_the_environments_from_zeros():
-    _, _, player, _ = small_dreamer_v3_5()
-    player.init_states(3)
+def test_the_policy_starts_the_environments_from_zeros():
+    _, _, policy, _ = small_dreamer_v3_5()
+    policy.init_states(3)
     obs = {"rgb": torch.rand(1, 3, 3, 64, 64) - 0.5, "state": torch.randn(1, 3, 5)}
     with torch.no_grad():
-        actions = player.get_actions(obs)
+        actions = policy.get_actions(obs)
         # The first recurrent state is 0 (at the initialization the biases are 0): the second one depends on the
         # first stochastic state
-        assert torch.all(player.recurrent_state == 0)
-        actions = player.get_actions(obs)
+        assert torch.all(policy.recurrent_state == 0)
+        actions = policy.get_actions(obs)
     assert len(actions) == 1 and actions[0].shape == (1, 3, 3)
     assert torch.all(actions[0].sum(-1) == 1)
-    assert torch.all(player.recurrent_state.abs().sum(-1) > 0)
-    player.reset_state([1])
-    assert torch.all(player.recurrent_state[:, 1] == 0) and torch.all(player.stochastic_state[:, 1] == 0)
-    assert torch.all(player.actions[:, 1] == 0)
-    assert player.recurrent_state[:, [0, 2]].abs().sum() > 0
+    assert torch.all(policy.recurrent_state.abs().sum(-1) > 0)
+    policy.reset_state([1])
+    assert torch.all(policy.recurrent_state[:, 1] == 0) and torch.all(policy.stochastic_state[:, 1] == 0)
+    assert torch.all(policy.actions[:, 1] == 0)
+    assert policy.recurrent_state[:, [0, 2]].abs().sum() > 0
 
 
-def test_the_continuous_actions_of_the_player_are_clipped():
-    _, _, player, _ = small_dreamer_v3_5(actions="continuous")
-    player.init_states(64)
+def test_the_continuous_actions_of_the_policy_are_clipped():
+    _, _, policy, _ = small_dreamer_v3_5(actions="continuous")
+    policy.init_states(64)
     obs = {"rgb": torch.rand(1, 64, 3, 64, 64) - 0.5, "state": torch.randn(1, 64, 5)}
     with torch.no_grad():
-        (actions,) = player.get_actions(obs)
-    assert actions.abs().max() <= 1 and torch.equal(player.actions, actions)
+        (actions,) = policy.get_actions(obs)
+    assert actions.abs().max() <= 1 and torch.equal(policy.actions, actions)
 
 
 def add_steps(rb: ReplayBuffer, counters: np.ndarray, n: int) -> None:
@@ -475,8 +475,8 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, preci
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="The weights are channels-last only on CUDA")
-def test_the_player_shares_the_channels_last_weights_of_the_world_model():
-    _, (world_model, *_), player, train_step = small_dreamer_v3_5(accelerator="cuda")
+def test_the_policy_shares_the_channels_last_weights_of_the_world_model():
+    _, (world_model, *_), policy, train_step = small_dreamer_v3_5(accelerator="cuda")
     convolutions = [
         m.weight
         for model in (world_model.encoder, world_model.observation_model)
@@ -484,8 +484,8 @@ def test_the_player_shares_the_channels_last_weights_of_the_world_model():
         if isinstance(m, nn.Conv2d)
     ]
     assert convolutions and all(w.is_contiguous(memory_format=torch.channels_last) for w in convolutions)
-    before = [p.detach().clone() for p in player.encoder.parameters()]
+    before = [p.detach().clone() for p in policy.encoder.parameters()]
     train_step()
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+    for agent_p, p in zip(world_model.encoder.parameters(), policy.encoder.parameters()):
         assert p.data_ptr() == agent_p.data_ptr()
-    assert any(not torch.equal(b, p) for b, p in zip(before, player.encoder.parameters()))
+    assert any(not torch.equal(b, p) for b, p in zip(before, policy.encoder.parameters()))

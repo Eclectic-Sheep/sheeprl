@@ -616,16 +616,16 @@ def build_agent(
     # The policy plays with the modules of the agent, without the wrappers of the distributed training. A copy with the
     # weights tied lost them on CUDA, where the GRU moves its weights into a new buffer at every forward
     # (`flatten_parameters`): the policy played with the initial recurrent model for the whole training
-    fabric_player = get_single_device_fabric(fabric)
+    policy_fabric = get_single_device_fabric(fabric)
     policy = DreamerV1Policy(
-        fabric_player.setup_module(world_model.encoder.module),
-        fabric_player.setup_module(world_model.rssm.recurrent_model.module),
-        fabric_player.setup_module(world_model.rssm.representation_model.module),
-        fabric_player.setup_module(actor.module),
+        policy_fabric.setup_module(world_model.encoder.module),
+        policy_fabric.setup_module(world_model.rssm.recurrent_model.module),
+        policy_fabric.setup_module(world_model.rssm.representation_model.module),
+        policy_fabric.setup_module(actor.module),
         actions_dim,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
+        policy_fabric.device,
         min_std=cfg.algo.world_model.min_std,
         cnn_keys=cfg.algo.cnn_keys.encoder,
         schedule=schedule,

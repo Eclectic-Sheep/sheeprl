@@ -24,7 +24,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, reinforce_weight
 from sheeprl.algos.dreamer_v3.agent import DreamerV3Policy, WorldModel
 from sheeprl.algos.dreamer_v3.dreamer_v3 import (
-    SequenceWriter,
+    DreamerV3Writer,
     actor_advantage_loss,
     behaviour_learning,
     critic_loss,
@@ -416,7 +416,7 @@ class P2EDV3Exploration(Algorithm):
         super().__init__(fabric, cfg)
         # These arguments cannot be changed
         cfg.env.frame_stack = 1
-        cfg.algo.player.actor_type = "exploration"
+        cfg.algo.policy.actor_type = "exploration"
 
         # The metrics of the exploration critics are logged for every critic, under the key `<metric>_<critic>`
         metrics = cfg.metric.aggregator.metrics
@@ -547,8 +547,8 @@ class P2EDV3Exploration(Algorithm):
             test_name=test_name,
         )
 
-    def writer(self, state: P2EDV3ExplorationState, policy: DreamerV3Policy) -> SequenceWriter:
-        return SequenceWriter(self.cfg, self.actions_dim)
+    def writer(self, state: P2EDV3ExplorationState, policy: DreamerV3Policy) -> DreamerV3Writer:
+        return DreamerV3Writer(self.cfg, self.actions_dim)
 
     def batches(
         self, state: P2EDV3ExplorationState, buffer: ReplayStore, n_steps: int, iteration: int

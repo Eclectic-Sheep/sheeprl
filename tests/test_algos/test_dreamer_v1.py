@@ -1,4 +1,4 @@
-"""DreamerV1 (and P2E-DV1): the continue loss, the exploration noise, the player, the episode starts, the actor and
+"""DreamerV1 (and P2E-DV1): the continue loss, the exploration noise, the policy, the episode starts, the actor and
 the initialization."""
 
 import copy
@@ -119,8 +119,8 @@ def test_each_environment_explores_on_its_own():
     assert 300 < changed < 450, changed
 
 
-def test_the_player_samples_the_posterior_with_the_minimum_std_of_the_world_model(monkeypatch):
-    # The player used the default minimum std (0.1) whatever `algo.world_model.min_std`
+def test_the_policy_samples_the_posterior_with_the_minimum_std_of_the_world_model(monkeypatch):
+    # The policy used the default minimum std (0.1) whatever `algo.world_model.min_std`
     min_stds = []
 
     def compute_stochastic_state(state_information, event_shape=1, min_std=0.1):
@@ -128,7 +128,7 @@ def test_the_player_samples_the_posterior_with_the_minimum_std_of_the_world_mode
         return (None, None), torch.zeros(*state_information.shape[:-1], 4)
 
     monkeypatch.setattr(agent, "compute_stochastic_state", compute_stochastic_state)
-    player = DreamerV1Policy(
+    policy = DreamerV1Policy(
         encoder=lambda obs: torch.zeros(1, 2, 5),
         recurrent_model=RecurrentModel(4 + 3, 8),
         representation_model=nn.Linear(8 + 5, 8),
@@ -139,8 +139,8 @@ def test_the_player_samples_the_posterior_with_the_minimum_std_of_the_world_mode
         device="cpu",
         min_std=0.5,
     )
-    player.init_states(2)
-    player.get_actions({})
+    policy.init_states(2)
+    policy.get_actions({})
     assert min_stds == [0.5]
 
 
@@ -148,9 +148,9 @@ def test_the_player_samples_the_posterior_with_the_minimum_std_of_the_world_mode
     "accelerator",
     ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA only"))],
 )
-def test_the_player_follows_the_updates_of_the_agent(accelerator):
-    # The player was a copy of the agent with the weights tied: on CUDA its GRU moved them into a new buffer at its
-    # first forward (`flatten_parameters`), and the player played with the initial recurrent model for the whole
+def test_the_policy_follows_the_updates_of_the_agent(accelerator):
+    # The policy was a copy of the agent with the weights tied: on CUDA its GRU moved them into a new buffer at its
+    # first forward (`flatten_parameters`), and the policy played with the initial recurrent model for the whole
     # training. It also takes the minimum std of the world model
     from hydra import compose, initialize_config_module
     from lightning import Fabric
@@ -177,28 +177,28 @@ def test_the_player_follows_the_updates_of_the_agent(accelerator):
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
     fabric = Fabric(accelerator=accelerator, devices=1)
-    world_model, actor, _, player = build_agent(fabric, [3], False, cfg, obs_space)
-    assert player.min_std == 0.3
-    player.init_states(2)
+    world_model, actor, _, policy = build_agent(fabric, [3], False, cfg, obs_space)
+    assert policy.min_std == 0.3
+    policy.init_states(2)
     with torch.no_grad():
-        player.get_actions({"state": torch.randn(1, 2, 5, device=fabric.device)})
+        policy.get_actions({"state": torch.randn(1, 2, 5, device=fabric.device)})
         for p in [*world_model.parameters(), *actor.parameters()]:
             p.add_(1.0)
-    for agent_module, player_module in (
-        (world_model.encoder, player.encoder),
-        (world_model.rssm.recurrent_model, player.recurrent_model),
-        (world_model.rssm.representation_model, player.representation_model),
-        (actor, player.actor),
+    for agent_module, policy_module in (
+        (world_model.encoder, policy.encoder),
+        (world_model.rssm.recurrent_model, policy.recurrent_model),
+        (world_model.rssm.representation_model, policy.representation_model),
+        (actor, policy.actor),
     ):
-        agent_params, player_params = list(agent_module.parameters()), list(player_module.parameters())
-        assert len(agent_params) == len(player_params) > 0
-        for agent_p, player_p in zip(agent_params, player_params):
-            assert torch.equal(agent_p, player_p)
+        agent_params, policy_params = list(agent_module.parameters()), list(policy_module.parameters())
+        assert len(agent_params) == len(policy_params) > 0
+        for agent_p, policy_p in zip(agent_params, policy_params):
+            assert torch.equal(agent_p, policy_p)
 
 
 def test_the_rssm_starts_the_episodes_from_the_zero_state():
     # The sequences cross the episodes: a step marked `is_first` starts from the zero state and the zero action, as the
-    # player does at the start of an episode; the other steps go on from the previous ones
+    # policy does at the start of an episode; the other steps go on from the previous ones
     torch.manual_seed(0)
     rssm = RSSM(RecurrentModel(4 + 2, 8), nn.Linear(8 + 5, 8), nn.Linear(8, 8), {}, min_std=0.1)
     posterior, recurrent_state, action, embedded_obs = (torch.randn(1, 3, n) for n in (4, 8, 2, 5))

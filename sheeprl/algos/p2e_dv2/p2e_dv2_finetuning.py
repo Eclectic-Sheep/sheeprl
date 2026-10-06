@@ -2,7 +2,7 @@
 
 Written on the shared training loop of `sheeprl.core`. It starts from the checkpoint of the exploration
 (`checkpoint.exploration_ckpt_path`) and trains the task actor and critic as Dreamer-V2 does. The agent plays with
-the exploration actor (`algo.player.actor_type`) until the training starts, then with the task actor.
+the exploration actor (`algo.policy.actor_type`) until the training starts, then with the task actor.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy, WorldModel
-from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter, check_keys, train
+from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2Writer, check_keys, train
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, build_optimizer
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, load_replay_buffer, run, sequence_store
@@ -100,7 +100,7 @@ class P2EDV2Finetuning(Algorithm):
         # The exploration critic and the ensembles are not used: they are built to initialize the models in the same
         # order as the exploration did
         # The exploration critics and the ensembles are not used: they are built to initialize the models in the same
-        # order as the exploration did. The policy plays with the actor of `algo.player.actor_type` until the training
+        # order as the exploration did. The policy plays with the actor of `algo.policy.actor_type` until the training
         # starts (see `batches`)
         world_model, _, actor_task, critic_task, target_critic_task, actor_exploration, _, _, self._policy = (
             build_agent(fabric, self.actions_dim, self.is_continuous, cfg, obs_space)
@@ -163,8 +163,8 @@ class P2EDV2Finetuning(Algorithm):
             test_name=test_name,
         )
 
-    def writer(self, state: P2EDV2FinetuningState, policy: DreamerV2Policy) -> SequenceWriter:
-        return SequenceWriter(self.cfg, self.actions_dim)
+    def writer(self, state: P2EDV2FinetuningState, policy: DreamerV2Policy) -> DreamerV2Writer:
+        return DreamerV2Writer(self.cfg, self.actions_dim)
 
     def batches(
         self,

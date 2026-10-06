@@ -108,9 +108,9 @@ def test_the_cnn_decoder_projects_the_latent_state_with_the_official_initializat
     assert torch.all(layer.bias == 0)
 
 
-def test_the_player_resets_the_environments_one_by_one(recwarn):
+def test_the_policy_resets_the_environments_one_by_one(recwarn):
     # After a full reset, the recurrent state was the initial one expanded to the environments, whose rows share the
-    # memory: resetting one environment (e.g. at the end of an episode during the random actions, when the player
+    # memory: resetting one environment (e.g. at the end of an episode during the random actions, when the policy
     # computes no new state) wrote in the expanded tensor (a deprecated `index_put_`, with a warning)
     with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
         cfg = compose(
@@ -130,13 +130,13 @@ def test_the_player_resets_the_environments_one_by_one(recwarn):
         )
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
-    *_, player = build_agent(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
-    player.init_states(3)
-    initial = player.recurrent_state.clone()
-    player.recurrent_state[:, 1] += 1.0
-    torch.testing.assert_close(player.recurrent_state[:, [0, 2]], initial[:, [0, 2]])
-    player.reset_state([1])
-    torch.testing.assert_close(player.recurrent_state, initial)
+    *_, policy = build_agent(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
+    policy.init_states(3)
+    initial = policy.recurrent_state.clone()
+    policy.recurrent_state[:, 1] += 1.0
+    torch.testing.assert_close(policy.recurrent_state[:, [0, 2]], initial[:, [0, 2]])
+    policy.reset_state([1])
+    torch.testing.assert_close(policy.recurrent_state, initial)
     assert not [w for w in recwarn if "expanded tensors" in str(w.message)]
 
 
@@ -287,14 +287,14 @@ def test_the_actor_learns_by_the_dynamics_and_by_reinforce_as_objective_mix_mixe
 
     monkeypatch.setattr(dreamer_v3, "imagine", recording_imagine)
     mix = "null" if objective_mix is None else objective_mix
-    _, _, player, train_step = small_dreamer_v3([f"algo.actor.objective_mix={mix}"], continuous=continuous)
-    before = [p.detach().clone() for p in player.actor.parameters()]
+    _, _, policy, train_step = small_dreamer_v3([f"algo.actor.objective_mix={mix}"], continuous=continuous)
+    before = [p.detach().clone() for p in policy.actor.parameters()]
     metrics = train_step()
     assert recorded["graph"] is graph
     if continuous:
         assert (recorded["actions"].abs() > 1).any()
     assert torch.isfinite(torch.as_tensor(metrics["Loss/policy_loss"]))
-    assert any(not torch.equal(b, a) for b, a in zip(before, player.actor.parameters()))
+    assert any(not torch.equal(b, a) for b, a in zip(before, policy.actor.parameters()))
 
 
 def test_the_representation_model_computes_the_part_of_the_observations_once():
@@ -332,7 +332,7 @@ def test_the_kl_of_the_latents_is_the_one_of_pytorch():
 
 def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuous=False):
     """A small DreamerV3 on images and vectors, with 3 discrete actions (2 continuous ones with `continuous`), its
-    player, a batch for it, and its gradient step."""
+    policy, a batch for it, and its gradient step."""
     with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
         cfg = compose(
             config_name="config",
@@ -362,7 +362,7 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuo
     )
     actions_dim = [2] if continuous else [3]
     torch.manual_seed(0)
-    world_model, actor, critic, target_critic, player = build_agent(fabric, actions_dim, continuous, cfg, obs_space)
+    world_model, actor, critic, target_critic, policy = build_agent(fabric, actions_dim, continuous, cfg, obs_space)
     optimizers = fabric.setup_optimizers(
         *[torch.optim.Adam(module.parameters(), lr=1e-4) for module in (world_model, actor, critic)]
     )
@@ -405,7 +405,7 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuo
             moments,
         )
 
-    return cfg, world_model, player, train_step
+    return cfg, world_model, policy, train_step
 
 
 @pytest.mark.parametrize("decoupled_rssm", [False, True])
@@ -477,10 +477,10 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, preci
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="The weights are channels-last only on CUDA")
-def test_the_player_shares_the_channels_last_weights_of_the_world_model():
-    # The weights of the convolutions are stored channels-last, also the ones the player shares with the world model:
-    # the player still plays with the weights of the last update
-    _, world_model, player, train_step = small_dreamer_v3([], accelerator="cuda")
+def test_the_policy_shares_the_channels_last_weights_of_the_world_model():
+    # The weights of the convolutions are stored channels-last, also the ones the policy shares with the world model:
+    # the policy still plays with the weights of the last update
+    _, world_model, policy, train_step = small_dreamer_v3([], accelerator="cuda")
     convolutions = [
         m.weight
         for model in (world_model.encoder, world_model.observation_model)
@@ -488,33 +488,33 @@ def test_the_player_shares_the_channels_last_weights_of_the_world_model():
         if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d))
     ]
     assert convolutions and all(w.is_contiguous(memory_format=torch.channels_last) for w in convolutions)
-    before = [p.detach().clone() for p in player.encoder.parameters()]
+    before = [p.detach().clone() for p in policy.encoder.parameters()]
     train_step()
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+    for agent_p, p in zip(world_model.encoder.parameters(), policy.encoder.parameters()):
         assert p.data_ptr() == agent_p.data_ptr()
-    assert any(not torch.equal(b, p) for b, p in zip(before, player.encoder.parameters()))
+    assert any(not torch.equal(b, p) for b, p in zip(before, policy.encoder.parameters()))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="The player is compiled on the GPU")
-def test_the_compiled_player_plays_as_the_eager_one(monkeypatch):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="The policy is compiled on the GPU")
+def test_the_compiled_policy_plays_as_the_eager_one(monkeypatch):
     # The same weights, observations and random numbers: the same actions and recurrent states, with and without
-    # `torch.compile` (without CUDA graphs: the player keeps its states in its attributes), also after the states of
+    # `torch.compile` (without CUDA graphs: the policy keeps its states in its attributes), also after the states of
     # one of the environments are reset
     same_random_numbers(monkeypatch)
     played = []
     for enabled in (False, True):
-        cfg, _, player, _ = small_dreamer_v3([f"algo.compile.enabled={enabled}"], accelerator="cuda")
+        cfg, _, policy, _ = small_dreamer_v3([f"algo.compile.enabled={enabled}"], accelerator="cuda")
         torch.manual_seed(1)
         n = cfg.env.num_envs
         obs = {"rgb": torch.rand(1, n, 3, 64, 64, device="cuda") - 0.5, "state": torch.randn(1, n, 5, device="cuda")}
-        player.init_states(n)
+        policy.init_states(n)
         steps = []
         with torch.inference_mode():
             for t in range(4):
                 if t == 2:
-                    player.reset_state([0])
-                actions = torch.cat(player.get_actions(obs), -1)
-                steps.append((actions.clone(), player.recurrent_state.clone()))
+                    policy.reset_state([0])
+                actions = torch.cat(policy.get_actions(obs), -1)
+                steps.append((actions.clone(), policy.recurrent_state.clone()))
         played.append(steps)
     for (eager_actions, eager_states), (actions, states) in zip(*played):
         torch.testing.assert_close(actions, eager_actions)

@@ -173,7 +173,3 @@ critic:
     weight_decay: 0
     # One kernel for the whole update of the weights
     fused: True
-
-# Player agent (it interacts with the environment)
-player:
-  discrete_size: ${algo.world_model.discrete_size}

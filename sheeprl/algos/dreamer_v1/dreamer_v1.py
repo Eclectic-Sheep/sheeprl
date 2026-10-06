@@ -2,7 +2,7 @@
 Adapted from the original implementation from https://github.com/danijar/dreamer
 
 Written on the shared training loop of `sheeprl.core`: `DreamerV1` says how to build, play and train;
-`sheeprl.core.loop.run` does the rest. Plan2Explore (`sheeprl.algos.p2e_dv1`) reuses the writer (`SequenceWriter`) and,
+`sheeprl.core.loop.run` does the rest. Plan2Explore (`sheeprl.algos.p2e_dv1`) reuses the writer (`DreamerV1Writer`) and,
 to finetune, the two phases of a gradient step (`world_model_learning`, `behaviour_learning`).
 """
 
@@ -24,8 +24,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v1.agent import Actor, DreamerV1Policy, MinedojoActor, WorldModel, build_agent
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
-from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter as DV2SequenceWriter
-from sheeprl.algos.dreamer_v2.dreamer_v2 import check_keys
+from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2Writer, check_keys
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
 from sheeprl.data.store import ReplayStore
@@ -51,8 +50,8 @@ class DreamerV1State(TrainState):
     critic_optimizer: Optimizer
 
 
-class SequenceWriter(DV2SequenceWriter):
-    """The writer of DreamerV2 (`sheeprl.algos.dreamer_v2.dreamer_v2.SequenceWriter`): the rows hold the observations
+class DreamerV1Writer(DreamerV2Writer):
+    """The writer of DreamerV2 (`sheeprl.algos.dreamer_v2.dreamer_v2.DreamerV2Writer`): the rows hold the observations
     with the actions that led to them. A dry run doesn't end the episodes at the first observations (there is no episode
     buffer)."""
 
@@ -546,8 +545,8 @@ class DreamerV1(Algorithm):
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
-    def writer(self, state: DreamerV1State, policy: DreamerV1Policy) -> SequenceWriter:
-        return SequenceWriter(self.cfg, self.actions_dim)
+    def writer(self, state: DreamerV1State, policy: DreamerV1Policy) -> DreamerV1Writer:
+        return DreamerV1Writer(self.cfg, self.actions_dim)
 
     def batches(
         self, state: DreamerV1State, buffer: ReplayStore, n_steps: int, iteration: int

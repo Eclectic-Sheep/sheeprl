@@ -36,7 +36,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import check_keys
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES
-from sheeprl.algos.dreamer_v3.dreamer_v3 import SequenceWriter
+from sheeprl.algos.dreamer_v3.dreamer_v3 import DreamerV3Writer
 from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3_5.agent import Actor, DreamerV3_5Policy, build_agent
 from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return, mse, symlog_mse
@@ -512,8 +512,8 @@ class DreamerV3_5State(TrainState):
     moments: Moments
 
 
-class LatentSequenceWriter(SequenceWriter):
-    """The writer of DreamerV3 (`sheeprl.algos.dreamer_v3.dreamer_v3.SequenceWriter`), with the latent states of the
+class DreamerV3_5Writer(DreamerV3Writer):
+    """The writer of DreamerV3 (`sheeprl.algos.dreamer_v3.dreamer_v3.DreamerV3Writer`), with the latent states of the
     policy (`LATENT_KEYS`, from the columns of `DreamerV3_5Policy.act`) and the identifier of every step (`STEP_ID_KEY`:
     the environment and the steps added to its buffer before it) in the rows, where the trainings write back the latent
     states they compute (`write_latent_states`). The rewards and the episode flags are float32."""
@@ -611,8 +611,8 @@ class DreamerV3_5(Algorithm):
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
-    def writer(self, state: DreamerV3_5State, policy: DreamerV3_5Policy) -> LatentSequenceWriter:
-        return LatentSequenceWriter(self.cfg, self.actions_dim)
+    def writer(self, state: DreamerV3_5State, policy: DreamerV3_5Policy) -> DreamerV3_5Writer:
+        return DreamerV3_5Writer(self.cfg, self.actions_dim)
 
     def batches(
         self, state: DreamerV3_5State, buffer: ReplayStore, n_steps: int, iteration: int

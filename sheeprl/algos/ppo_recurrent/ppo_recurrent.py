@@ -46,7 +46,7 @@ class PPORecurrentState(TrainState):
     optimizer: Optimizer
 
 
-class RecurrentRolloutWriter(Writer):
+class RecurrentPPOWriter(Writer):
     """Writes every step in the rollout, with the columns of the actions of `RecurrentPPOPolicy.act`: the recurrent
     state and the actions that preceded it (the input of the LSTM). The rewards of the episodes truncated by the time
     limit are bootstrapped with the values of `policy`."""
@@ -269,8 +269,8 @@ class PPORecurrent(Algorithm):
         """The policy to play with: it shares the modules (and so the weights) of the trained agent (`build_agent`)."""
         return self._policy
 
-    def writer(self, state: PPORecurrentState, policy: RecurrentPPOPolicy) -> RecurrentRolloutWriter:
-        return RecurrentRolloutWriter(self.fabric, self.cfg, policy)
+    def writer(self, state: PPORecurrentState, policy: RecurrentPPOPolicy) -> RecurrentPPOWriter:
+        return RecurrentPPOWriter(self.fabric, self.cfg, policy)
 
     def batches(
         self, state: PPORecurrentState, rollout: ReplayStore, n_steps: Optional[int], iteration: int

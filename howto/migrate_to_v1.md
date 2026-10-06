@@ -4,7 +4,14 @@ sheeprl 1.0 trains every algorithm with one shared core (`sheeprl.core`) and one
 
 ## Command line and configurations
 
-The commands (`sheeprl`, `sheeprl-eval`, `sheeprl-registration`) and the configurations are the ones of 0.8.3: every key keeps its default. 1.0 adds:
+The commands (`sheeprl`, `sheeprl-eval`, `sheeprl-registration`) are the ones of 0.8.3, and so are the configurations, except for the keys of the players, which play no more:
+
+| 0.8.3 | 1.0 |
+|---|---|
+| `algo.player.actor_type` (Plan2Explore) | `algo.policy.actor_type` |
+| `algo.player.discrete_size` (DreamerV2, DreamerV3) | removed: it was `algo.world_model.discrete_size` |
+
+Every other key keeps its default. 1.0 adds:
 
 | Key | Default | |
 |---|---|---|

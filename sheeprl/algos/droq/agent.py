@@ -245,14 +245,14 @@ def build_agent(
         agent.load_state_dict(agent_state)
 
     # Setup policy agent
-    fabric_player = get_single_device_fabric(fabric)
+    policy_fabric = get_single_device_fabric(fabric)
     policy = SACPolicy(
         copy.deepcopy(agent.actor.model),
         copy.deepcopy(agent.actor.fc_mean),
         copy.deepcopy(agent.actor.fc_logstd),
         action_low=action_space.low,
         action_high=action_space.high,
-        device=fabric_player.device,
+        device=policy_fabric.device,
         mlp_keys=cfg.algo.mlp_keys.encoder,
     )
 
@@ -266,14 +266,14 @@ def build_agent(
 
     # Wrap the target q-functions with a single-device fabric. This let the target q-functions
     # to be on the same device as the agent and to run with the same precision
-    agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
+    agent.qfs_target = nn.ModuleList([policy_fabric.setup_module(target) for target in agent.qfs_target])
 
     # Setup policy agent
-    policy.model = fabric_player.setup_module(policy.model)
-    policy.fc_mean = fabric_player.setup_module(policy.fc_mean)
-    policy.fc_logstd = fabric_player.setup_module(policy.fc_logstd)
-    policy.action_scale = policy.action_scale.to(fabric_player.device)
-    policy.action_bias = policy.action_bias.to(fabric_player.device)
+    policy.model = policy_fabric.setup_module(policy.model)
+    policy.fc_mean = policy_fabric.setup_module(policy.fc_mean)
+    policy.fc_logstd = policy_fabric.setup_module(policy.fc_logstd)
+    policy.action_scale = policy.action_scale.to(policy_fabric.device)
+    policy.action_bias = policy.action_bias.to(policy_fabric.device)
 
     # Tie weights between the agent and the policy
     for agent_p, policy_p in zip(agent.actor.parameters(), policy.parameters()):

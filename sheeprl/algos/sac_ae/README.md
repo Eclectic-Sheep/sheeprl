@@ -54,7 +54,7 @@ The algorithm is the `SACAE` class in the `sac_ae.py` file, run by the training 
 ```python
 # The modules set up on the device of the process (`setup_module`), and the policy to play with, which shares the
 # weights of the actor
-agent, encoder, decoder, player = build_agent(fabric, cfg, obs_space, action_space)
+agent, encoder, decoder, policy = build_agent(fabric, cfg, obs_space, action_space)
 ```
 
 Every iteration plays one step in every environment (with random actions until `algo.learning_starts`) and stores it in a replay buffer, then does `algo.replay_ratio` gradient steps per policy step, each one on its own batch sampled from the buffer.

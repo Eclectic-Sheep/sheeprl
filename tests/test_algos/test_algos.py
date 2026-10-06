@@ -758,7 +758,7 @@ def test_dreamer_v3_5(standard_args, env_id, replay_context, start_time):
 
 
 def test_dreamer_v3_5_writes_back_the_latent_states_of_the_trained_steps(standard_args, start_time):
-    # The latent states computed by the trainings replace the ones of the player in the replay buffer
+    # The latent states computed by the trainings replace the ones of the policy in the replay buffer
     if os.environ["LT_DEVICES"] != "1":
         pytest.skip("The latent states are checked in the process of rank 0")
     from sheeprl.algos.dreamer_v3_5 import dreamer_v3_5

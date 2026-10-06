@@ -76,7 +76,7 @@ def test_ppo_default_init_is_not_orthogonal(encoder_layers):
         assert not torch.allclose(singular_values, singular_values[0].expand_as(singular_values))
 
 
-def tanh_normal_player(mean: float, std: float) -> Tuple[PPOPolicy, PPOAgent]:
+def tanh_normal_policy(mean: float, std: float) -> Tuple[PPOPolicy, PPOAgent]:
     """A tanh-normal policy whose normal, before the tanh, has mean `mean` and standard deviation `std` everywhere."""
     agent = build_agent(ortho_init=False, is_continuous=True, distribution="tanh_normal")
     head = agent.actor.actor_heads[0]
@@ -88,20 +88,20 @@ def tanh_normal_player(mean: float, std: float) -> Tuple[PPOPolicy, PPOAgent]:
 
 def test_ppo_tanh_normal_greedy_actions_are_squashed():
     # The greedy action is the tanh of the mean (it was its atanh, out of the action bounds)
-    player, _ = tanh_normal_player(mean=2.0, std=0.5)
-    (actions,) = player.get_actions({"state": torch.zeros(3, 8)}, greedy=True)
+    policy, _ = tanh_normal_policy(mean=2.0, std=0.5)
+    (actions,) = policy.get_actions({"state": torch.zeros(3, 8)}, greedy=True)
     torch.testing.assert_close(actions, torch.full((3, 4), np.tanh(2.0), dtype=torch.float32))
 
 
 @pytest.mark.parametrize("mean", [0.5, 8.0])
 def test_ppo_tanh_normal_log_probs_of_the_played_actions(mean):
     torch.manual_seed(1)
-    player, agent = tanh_normal_player(mean=mean, std=0.5)
+    policy, agent = tanh_normal_policy(mean=mean, std=0.5)
     obs = {"state": torch.zeros(1000, 8)}
-    actions, logprobs, _ = player(obs)
+    actions, logprobs, _ = policy(obs)
     # The environments play the tanh of the stored actions
-    torch.testing.assert_close(player.env_actions(actions).squeeze(-1), actions[0].tanh().clamp(-1 + 1e-6, 1 - 1e-6))
-    # The agent computes the log-probabilities the player computed, also where the tanh saturates (mean 8: the stored
+    torch.testing.assert_close(policy.env_actions(actions).squeeze(-1), actions[0].tanh().clamp(-1 + 1e-6, 1 - 1e-6))
+    # The agent computes the log-probabilities the policy computed, also where the tanh saturates (mean 8: the stored
     # tanh lost the action, and the ratio of PPO started far from 1)
     _, new_logprobs, _, _ = agent(obs, actions)
     torch.testing.assert_close(new_logprobs, logprobs)
@@ -115,9 +115,9 @@ def test_ppo_tanh_normal_log_probs_of_the_played_actions(mean):
         torch.testing.assert_close(logprobs.double(), dist.log_prob(u.tanh()).sum(-1, keepdim=True), atol=1e-4, rtol=0)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="The player is replayed by CUDA graphs on the GPU")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="The policy is replayed by CUDA graphs on the GPU")
 @pytest.mark.parametrize("is_continuous", [False, True])
-def test_the_compiled_player_plays_as_the_eager_one(monkeypatch, is_continuous):
+def test_the_compiled_policy_plays_as_the_eager_one(monkeypatch, is_continuous):
     # The same weights, observations and random numbers: the same actions, log-probabilities and values, with and
     # without `torch.compile` and its CUDA graphs, whose outputs are copies (the next replay overwrites them)
     from lightning import Fabric

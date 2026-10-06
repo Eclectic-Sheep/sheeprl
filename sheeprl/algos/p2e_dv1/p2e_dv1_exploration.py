@@ -21,7 +21,7 @@ from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v1.agent import DreamerV1Policy, WorldModel
-from sheeprl.algos.dreamer_v1.dreamer_v1 import SequenceWriter, imagine, sample_batches_of_iteration, value_loss_fn
+from sheeprl.algos.dreamer_v1.dreamer_v1 import DreamerV1Writer, imagine, sample_batches_of_iteration, value_loss_fn
 from sheeprl.algos.dreamer_v1.loss import actor_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.dreamer_v2 import check_keys
@@ -425,7 +425,7 @@ class P2EDV1Exploration(Algorithm):
         # These arguments cannot be changed
         cfg.env.screen_size = 64
         cfg.env.frame_stack = 1
-        cfg.algo.player.actor_type = "exploration"
+        cfg.algo.policy.actor_type = "exploration"
         # The policy steps at the end of the iteration, set for its last gradient step (see `batches`)
         self.exploration_step: Optional[int] = None
 
@@ -488,8 +488,8 @@ class P2EDV1Exploration(Algorithm):
             test_name=test_name,
         )
 
-    def writer(self, state: P2EDV1ExplorationState, policy: DreamerV1Policy) -> SequenceWriter:
-        return SequenceWriter(self.cfg, self.actions_dim)
+    def writer(self, state: P2EDV1ExplorationState, policy: DreamerV1Policy) -> DreamerV1Writer:
+        return DreamerV1Writer(self.cfg, self.actions_dim)
 
     def batches(
         self, state: P2EDV1ExplorationState, buffer: ReplayStore, n_steps: int, iteration: int

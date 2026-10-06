@@ -6,10 +6,10 @@ import numpy as np
 import pytest
 import torch
 
-from sheeprl.algos.dreamer_v1.dreamer_v1 import SequenceWriter as DV1SequenceWriter
+from sheeprl.algos.dreamer_v1.dreamer_v1 import DreamerV1Writer
 from sheeprl.algos.dreamer_v2.agent import DreamerPolicy
-from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter as DV2SequenceWriter
-from sheeprl.algos.dreamer_v3.dreamer_v3 import SequenceWriter as DV3SequenceWriter
+from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2Writer
+from sheeprl.algos.dreamer_v3.dreamer_v3 import DreamerV3Writer
 from sheeprl.core import Collector, EnvStep
 from sheeprl.utils.utils import dotdict
 
@@ -75,13 +75,13 @@ def stored_actions(writer_cls, rows, actions_dim):
     # DreamerV1 and V2 write the first observations before the first step, with a zero action, and every action in
     # the row of the observation it led to; DreamerV3 writes every action in the row of the observation it was
     # played from
-    if writer_cls in (DV1SequenceWriter, DV2SequenceWriter):
+    if writer_cls in (DreamerV1Writer, DreamerV2Writer):
         rows = rows[1:]
     split = np.cumsum(actions_dim)[:-1]
     return [np.stack([a.argmax(-1) for a in np.split(data["actions"][0], split, axis=-1)], -1) for data, _ in rows]
 
 
-@pytest.mark.parametrize("writer_cls", [DV1SequenceWriter, DV2SequenceWriter, DV3SequenceWriter])
+@pytest.mark.parametrize("writer_cls", [DreamerV1Writer, DreamerV2Writer, DreamerV3Writer])
 @pytest.mark.parametrize("actions_dim", [[3], [3, 5]])
 @pytest.mark.parametrize("num_envs", [1, 4])
 def test_random_actions_are_stored_as_played(actions_dim, num_envs, writer_cls):
@@ -97,7 +97,7 @@ def test_random_actions_are_stored_as_played(actions_dim, num_envs, writer_cls):
     np.testing.assert_array_equal(stored_actions(writer_cls, rows, actions_dim), played)
 
 
-@pytest.mark.parametrize("writer_cls", [DV1SequenceWriter, DV2SequenceWriter, DV3SequenceWriter])
+@pytest.mark.parametrize("writer_cls", [DreamerV1Writer, DreamerV2Writer, DreamerV3Writer])
 @pytest.mark.parametrize("actions_dim", [[3], [3, 5]])
 @pytest.mark.parametrize("num_envs", [1, 4])
 def test_policy_actions_are_played_as_stored(actions_dim, num_envs, writer_cls):
@@ -123,7 +123,7 @@ def test_dreamer_v1_marks_the_first_steps_of_the_episodes():
     # The 2nd step ends the episode of env 1, the 3rd the ones of envs 0 and 2
     ends = {2: [False, True, False], 3: [True, False, True]}
     _, rows = play(
-        DV1SequenceWriter,
+        DreamerV1Writer,
         num_envs,
         False,
         policy,
@@ -149,9 +149,7 @@ def test_dreamer_v3_resets_the_policy_of_the_ended_episodes():
     num_envs = 3
     policy = StandInPolicy([2], lambda obs, *args, **kwargs: [torch.zeros(1, num_envs, 2)])
     ends = {2: [False, True, False], 3: [True, False, True]}
-    play(
-        DV3SequenceWriter, num_envs, False, policy, ends=lambda i: np.array(ends.get(i, [False] * num_envs)), n_steps=4
-    )
+    play(DreamerV3Writer, num_envs, False, policy, ends=lambda i: np.array(ends.get(i, [False] * num_envs)), n_steps=4)
     assert policy.resets == [num_envs, [1], [0, 2]]
 
 

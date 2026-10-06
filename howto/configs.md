@@ -376,10 +376,6 @@ critic:
     lr: 3e-5
     eps: 1e-5
     weight_decay: 0
-
-# Player agent (it interacts with the environment)
-player:
-  discrete_size: ${algo.world_model.discrete_size}
 ```
 
 The `defaults` section contains the list of the default configurations to be "imported" by Hydra during the initialization. For more information check the official Hydra documentation about [group defaults](https://hydra.cc/docs/1.1/tutorials/basic/your_first_app/defaults/). The semantic of the following declaration

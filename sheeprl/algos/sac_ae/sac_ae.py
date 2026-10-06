@@ -103,7 +103,7 @@ class SACAEState(TrainState):
         super().load_state_dict(state)
 
 
-class ReplayWriter(Writer):
+class SACAEWriter(Writer):
     """Writes every step in the replay buffer, with the actions played in the environments. The stacked frames of an
     image are stored as its channels."""
 
@@ -299,8 +299,8 @@ class SACAE(Algorithm):
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""
         return self._policy
 
-    def writer(self, state: SACAEState, policy: SACAEPolicy) -> ReplayWriter:
-        return ReplayWriter(self.cfg)
+    def writer(self, state: SACAEState, policy: SACAEPolicy) -> SACAEWriter:
+        return SACAEWriter(self.cfg)
 
     def batches(
         self, state: SACAEState, buffer: ReplayStore, n_steps: int, iteration: int

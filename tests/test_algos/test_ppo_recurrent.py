@@ -1,4 +1,4 @@
-"""The agent of PPO-recurrent: orthogonal initialization, continuous actions, the player."""
+"""The agent of PPO-recurrent: orthogonal initialization, continuous actions, the policy."""
 
 import tempfile
 from math import sqrt
@@ -41,7 +41,7 @@ def build_agent(ortho_init: bool = False, is_continuous: bool = False) -> Recurr
     )
 
 
-def player_of(agent: RecurrentPPOAgent) -> RecurrentPPOPolicy:
+def policy_of(agent: RecurrentPPOAgent) -> RecurrentPPOPolicy:
     return RecurrentPPOPolicy(
         agent.feature_extractor, agent.rnn, agent.actor, agent.critic, HIDDEN_SIZE, agent.actions_dim
     )
@@ -75,15 +75,15 @@ def test_ortho_init():
 
 
 def test_continuous_actions():
-    # The log-probabilities of the continuous actions were computed from `None` (the player) or from the tuple of
+    # The log-probabilities of the continuous actions were computed from `None` (the policy) or from the tuple of
     # actions (the agent): both crashed
     agent = build_agent(is_continuous=True)
-    player = player_of(agent)
+    policy = policy_of(agent)
     obs = {"state": torch.randn(1, 4, 8)}
     prev_actions = torch.zeros(1, 4, 2)
     states = (torch.zeros(1, 4, HIDDEN_SIZE), torch.zeros(1, 4, HIDDEN_SIZE))
     with torch.no_grad():
-        actions, logprobs, _, _ = player(obs, prev_actions=prev_actions, prev_states=states)
+        actions, logprobs, _, _ = policy(obs, prev_actions=prev_actions, prev_states=states)
         _, agent_logprobs, entropies, _, _ = agent(obs, prev_actions=prev_actions, prev_states=states, actions=actions)
     assert actions[0].shape == (1, 4, 2) and logprobs.shape == (1, 4, 1) and entropies.shape == (1, 4, 1)
     torch.testing.assert_close(agent_logprobs, logprobs)
@@ -101,9 +101,9 @@ def config(overrides: List[str]) -> dotdict:
     "accelerator",
     ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA only"))],
 )
-def test_the_player_follows_the_updates_of_the_agent(accelerator):
-    # The player was a copy of the agent with the weights tied: on CUDA its LSTM moved them into a new buffer at its
-    # first forward (`flatten_parameters`), and the player played with the initial weights for the whole training
+def test_the_policy_follows_the_updates_of_the_agent(accelerator):
+    # The policy was a copy of the agent with the weights tied: on CUDA its LSTM moved them into a new buffer at its
+    # first forward (`flatten_parameters`), and the policy played with the initial weights for the whole training
     from lightning import Fabric
 
     from sheeprl.algos.ppo_recurrent.agent import build_agent as build_agents
@@ -113,10 +113,10 @@ def test_the_player_follows_the_updates_of_the_agent(accelerator):
     )
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (8,), np.float32)})
     fabric = Fabric(accelerator=accelerator, devices=1)
-    agent, player = build_agents(fabric, [3], False, cfg, obs_space)
+    agent, policy = build_agents(fabric, [3], False, cfg, obs_space)
     device = fabric.device
     with torch.no_grad():
-        player(
+        policy(
             {"state": torch.randn(1, 2, 8, device=device)},
             prev_actions=torch.zeros(1, 2, 3, device=device),
             prev_states=(torch.zeros(1, 2, 8, device=device), torch.zeros(1, 2, 8, device=device)),
@@ -125,10 +125,10 @@ def test_the_player_follows_the_updates_of_the_agent(accelerator):
             p.add_(1.0)
     for module in ("feature_extractor", "rnn", "actor", "critic"):
         agent_params = list(getattr(agent, module).parameters())
-        player_params = list(getattr(player, module).parameters())
-        assert len(agent_params) == len(player_params) > 0
-        for agent_p, player_p in zip(agent_params, player_params):
-            assert torch.equal(agent_p, player_p), module
+        policy_params = list(getattr(policy, module).parameters())
+        assert len(agent_params) == len(policy_params) > 0
+        for agent_p, policy_p in zip(agent_params, policy_params):
+            assert torch.equal(agent_p, policy_p), module
 
 
 def small_ppo_recurrent(overrides=(), accelerator="cpu"):
@@ -268,7 +268,7 @@ def test_the_compiled_minibatches_of_a_rollout_have_one_size(monkeypatch):
         "checkpoint.save_last=False",
         "algo.run_test=False",
         "algo.compile.enabled=True",
-        # The losses are not compiled (`compiled` above), nor the player: on the CPU Inductor needs a C++ compiler
+        # The losses are not compiled (`compiled` above), nor the policy: on the CPU Inductor needs a C++ compiler
         "algo.compile.policy=False",
         "algo.rollout_steps=64",
         "algo.per_rank_sequence_length=8",
@@ -297,9 +297,9 @@ def test_the_compiled_minibatches_of_a_rollout_have_one_size(monkeypatch):
 
 
 @pytest.mark.parametrize("reset_on_done", [False, True])
-def test_the_refreshed_recurrent_states_are_the_ones_of_the_player_with_its_weights(reset_on_done):
+def test_the_refreshed_recurrent_states_are_the_ones_of_the_policy_with_its_weights(reset_on_done):
     # `algo.refresh_recurrent_states` unrolls the recurrent states of the rollout again with the current weights: with
-    # the weights that played it, the states the player stored, reset after the end of the episodes as it does
+    # the weights that played it, the states the policy stored, reset after the end of the episodes as it does
     from sheeprl.algos.ppo_recurrent.agent import build_agent as build_agents
 
     cfg = config(
@@ -307,7 +307,7 @@ def test_the_refreshed_recurrent_states_are_the_ones_of_the_player_with_its_weig
     )
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (5,), np.float32)})
     torch.manual_seed(0)
-    agent, player = build_agents(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
+    agent, policy = build_agents(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
     T, N = 12, 3
     generator = torch.Generator().manual_seed(1)
     obs = torch.randn(T, N, 5, generator=generator)
@@ -320,9 +320,9 @@ def test_the_refreshed_recurrent_states_are_the_ones_of_the_player_with_its_weig
             stored["prev_hx"].append(states[0])
             stored["prev_cx"].append(states[1])
             stored["prev_actions"].append(prev_actions)
-            actions, _, _, states = player({"state": obs[t : t + 1]}, prev_actions=prev_actions, prev_states=states)
+            actions, _, _, states = policy({"state": obs[t : t + 1]}, prev_actions=prev_actions, prev_states=states)
             actions = torch.cat(actions, dim=-1)
-            # As the rollout player
+            # As the rollout policy
             prev_actions = (1 - dones[t : t + 1]) * actions
             if reset_on_done:
                 states = tuple((1 - dones[t : t + 1]) * s for s in states)

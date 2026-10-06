@@ -17,7 +17,7 @@ from torch.optim.lr_scheduler import PolynomialLR
 from sheeprl.algos.a2c.loss import policy_loss
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, value_loss
-from sheeprl.algos.ppo.ppo import RolloutWriter
+from sheeprl.algos.ppo.ppo import PPOWriter
 from sheeprl.core import (
     Algorithm,
     ReplayStore,
@@ -120,10 +120,10 @@ class A2C(Algorithm):
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
-    def writer(self, state: A2CState, policy: PPOPolicy) -> RolloutWriter:
+    def writer(self, state: A2CState, policy: PPOPolicy) -> PPOWriter:
         # Unlike PPO, the rewards are stored with the dtype of the environments and are not clipped
         # (`env.clip_rewards` is ignored)
-        return RolloutWriter(self.fabric, self.cfg, policy, clip_rewards=False, rewards_dtype=None)
+        return PPOWriter(self.fabric, self.cfg, policy, clip_rewards=False, rewards_dtype=None)
 
     def batches(
         self, state: A2CState, rollout: ReplayStore, n_steps: Optional[int], iteration: int

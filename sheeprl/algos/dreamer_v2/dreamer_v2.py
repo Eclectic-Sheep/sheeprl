@@ -2,7 +2,7 @@
 Adapted from the original implementation from https://github.com/danijar/dreamerv2
 
 Written on the shared training loop of `sheeprl.core`: `DreamerV2` says how to build, play and train;
-`sheeprl.core.loop.run` does the rest. Plan2Explore (`sheeprl.algos.p2e_dv2`) reuses the writer (`SequenceWriter`) and,
+`sheeprl.core.loop.run` does the rest. Plan2Explore (`sheeprl.algos.p2e_dv2`) reuses the writer (`DreamerV2Writer`) and,
 to finetune, the two phases of a gradient step (`world_model_learning`, `behaviour_learning`).
 """
 
@@ -63,7 +63,7 @@ class DreamerV2State(TrainState):
     critic_optimizer: Optimizer
 
 
-class SequenceWriter(Writer):
+class DreamerV2Writer(Writer):
     """Writes in the replay buffer the sequences the world model learns from.
 
     Every row holds an observation, the action that led to it and the reward, `terminated`, `truncated` and `is_first`
@@ -646,8 +646,8 @@ class DreamerV2(Algorithm):
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
-    def writer(self, state: DreamerV2State, policy: DreamerV2Policy) -> SequenceWriter:
-        return SequenceWriter(self.cfg, self.actions_dim)
+    def writer(self, state: DreamerV2State, policy: DreamerV2Policy) -> DreamerV2Writer:
+        return DreamerV2Writer(self.cfg, self.actions_dim)
 
     def batches(
         self, state: DreamerV2State, buffer: ReplayStore, n_steps: int, iteration: int

@@ -3,7 +3,7 @@ Adapted from the original implementation from https://github.com/danijar/dreamer
 
 Written on the shared training loop of `sheeprl.core`: `DreamerV3` says how to build, play and train;
 `sheeprl.core.loop.run` does the rest. Plan2Explore (`sheeprl.algos.p2e_dv3`) reuses the writer
-(`SequenceWriter`) and the two phases of a gradient step (`world_model_learning`, `behaviour_learning`).
+(`DreamerV3Writer`) and the two phases of a gradient step (`world_model_learning`, `behaviour_learning`).
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ class DreamerV3State(TrainState):
     moments: Moments
 
 
-class SequenceWriter(Writer):
+class DreamerV3Writer(Writer):
     """Writes in the replay buffer the sequences the world model learns from.
 
     Every row holds an observation, the action played from it, and the reward, `terminated`, `truncated` and
@@ -79,7 +79,7 @@ class SequenceWriter(Writer):
     action) and the next row is the first one of the new episode.
 
     A subclass can write more columns in the rows (`step_columns`, `reset_columns`), and the rewards and the episode
-    flags with another dtype (`dtype`), e.g. the `LatentSequenceWriter` of DreamerV3.5.
+    flags with another dtype (`dtype`), e.g. the `DreamerV3_5Writer`.
     """
 
     # The dtype of the rewards, of the episode flags and of the zero actions of the last rows of the episodes; `None`
@@ -796,8 +796,8 @@ class DreamerV3(Algorithm):
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
-    def writer(self, state: DreamerV3State, policy: DreamerV3Policy) -> SequenceWriter:
-        return SequenceWriter(self.cfg, self.actions_dim)
+    def writer(self, state: DreamerV3State, policy: DreamerV3Policy) -> DreamerV3Writer:
+        return DreamerV3Writer(self.cfg, self.actions_dim)
 
     def batches(
         self, state: DreamerV3State, buffer: ReplayStore, n_steps: int, iteration: int

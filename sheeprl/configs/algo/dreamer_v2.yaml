@@ -139,7 +139,3 @@ critic:
     lr: 8e-5
     eps: 1e-5
     weight_decay: 1e-6
-
-# Player agent (it interacts with the environment)
-player:
-  discrete_size: ${algo.world_model.discrete_size}

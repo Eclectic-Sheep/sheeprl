@@ -1078,7 +1078,7 @@ def build_agent(
         critic.load_state_dict(critic_state)
 
     # Create the policy agent
-    fabric_player = get_single_device_fabric(fabric)
+    policy_fabric = get_single_device_fabric(fabric)
     policy = DreamerV2Policy(
         copy.deepcopy(world_model.encoder),
         copy.deepcopy(world_model.rssm.recurrent_model),
@@ -1087,7 +1087,7 @@ def build_agent(
         actions_dim,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
+        policy_fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
         cnn_keys=cfg.algo.cnn_keys.encoder,
     )
@@ -1108,13 +1108,13 @@ def build_agent(
     target_critic = copy.deepcopy(critic.module)
     if target_critic_state:
         target_critic.load_state_dict(target_critic_state)
-    target_critic = fabric_player.setup_module(target_critic)
+    target_critic = policy_fabric.setup_module(target_critic)
 
     # Setup the policy agent with a single-device Fabric
-    policy.encoder = fabric_player.setup_module(policy.encoder)
-    policy.recurrent_model = fabric_player.setup_module(policy.recurrent_model)
-    policy.representation_model = fabric_player.setup_module(policy.representation_model)
-    policy.actor = fabric_player.setup_module(policy.actor)
+    policy.encoder = policy_fabric.setup_module(policy.encoder)
+    policy.recurrent_model = policy_fabric.setup_module(policy.recurrent_model)
+    policy.representation_model = policy_fabric.setup_module(policy.representation_model)
+    policy.actor = policy_fabric.setup_module(policy.actor)
 
     # Tie weights between the agent and the policy
     for agent_p, p in zip(world_model.encoder.parameters(), policy.encoder.parameters()):

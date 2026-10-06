@@ -410,12 +410,12 @@ def build_agent(
         agent.load_state_dict(agent_state)
 
     # Setup policy agent
-    fabric_player = get_single_device_fabric(fabric)
+    policy_fabric = get_single_device_fabric(fabric)
     policy = PPOPolicy(
         copy.deepcopy(agent.feature_extractor),
         copy.deepcopy(agent.actor),
         copy.deepcopy(agent.critic),
-        device=fabric_player.device,
+        device=policy_fabric.device,
         obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
         cnn_keys=cfg.algo.cnn_keys.encoder,
     )
@@ -426,9 +426,9 @@ def build_agent(
     agent.actor = setup_module(fabric, agent.actor)
 
     # Setup policy agent
-    policy.feature_extractor = fabric_player.setup_module(policy.feature_extractor)
-    policy.critic = fabric_player.setup_module(policy.critic)
-    policy.actor = fabric_player.setup_module(policy.actor)
+    policy.feature_extractor = policy_fabric.setup_module(policy.feature_extractor)
+    policy.critic = policy_fabric.setup_module(policy.critic)
+    policy.actor = policy_fabric.setup_module(policy.actor)
 
     # Tie weights between the agent and the policy
     for agent_p, policy_p in zip(agent.feature_extractor.parameters(), policy.feature_extractor.parameters()):

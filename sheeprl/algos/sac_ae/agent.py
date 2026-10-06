@@ -667,7 +667,7 @@ def build_agent(
         agent.load_state_dict(tie_actor_convolutions(agent_state))
 
     # Setup policy agent
-    fabric_player = get_single_device_fabric(fabric)
+    policy_fabric = get_single_device_fabric(fabric)
     policy = SACAEPolicy(
         copy.deepcopy(agent.actor.encoder),
         copy.deepcopy(agent.actor.model),
@@ -675,7 +675,7 @@ def build_agent(
         copy.deepcopy(agent.actor.fc_logstd),
         action_low=action_space.low,
         action_high=action_space.high,
-        device=fabric_player.device,
+        device=policy_fabric.device,
         cnn_keys=cfg.algo.cnn_keys.encoder,
     )
 
@@ -692,15 +692,15 @@ def build_agent(
 
     # Wrap the target critic with a single-device fabric. This lets the target critic
     # to be on the same device as the agent and to run with the same precision
-    agent.critic_target = fabric_player.setup_module(agent.critic_target)
+    agent.critic_target = policy_fabric.setup_module(agent.critic_target)
 
     # Setup policy agent
-    policy.encoder = fabric_player.setup_module(policy.encoder)
-    policy.model = fabric_player.setup_module(policy.model)
-    policy.fc_mean = fabric_player.setup_module(policy.fc_mean)
-    policy.fc_logstd = fabric_player.setup_module(policy.fc_logstd)
-    policy.action_scale = policy.action_scale.to(fabric_player.device)
-    policy.action_bias = policy.action_bias.to(fabric_player.device)
+    policy.encoder = policy_fabric.setup_module(policy.encoder)
+    policy.model = policy_fabric.setup_module(policy.model)
+    policy.fc_mean = policy_fabric.setup_module(policy.fc_mean)
+    policy.fc_logstd = policy_fabric.setup_module(policy.fc_logstd)
+    policy.action_scale = policy.action_scale.to(policy_fabric.device)
+    policy.action_bias = policy.action_bias.to(policy_fabric.device)
 
     # Tie weights between the agent and the policy
     for agent_p, policy_p in zip(agent.actor.parameters(), policy.parameters()):

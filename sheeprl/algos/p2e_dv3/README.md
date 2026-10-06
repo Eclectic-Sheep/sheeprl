@@ -17,7 +17,7 @@ The algorithm implementation is organized into two scripts:
    - Utilized for fine-tuning the agent after the exploration phase.
    - Starts with a trained agent and refines its performance or learns new tasks.
 
-Both scripts define an `Algorithm` (`P2EDV3Exploration` and `P2EDV3Finetuning`) run by the training loop shared by all the algorithms (`sheeprl.core.loop.run`), and reuse the player and the update functions of DreamerV3 (`SequencePlayer`, `world_model_learning` and `behaviour_learning` in `sheeprl/algos/dreamer_v3/dreamer_v3.py`).
+Both scripts define an `Algorithm` (`P2EDV3Exploration` and `P2EDV3Finetuning`) run by the training loop shared by all the algorithms (`sheeprl.core.loop.run`), and reuse the policy, the writer and the update functions of DreamerV3 (`DreamerV3Policy`, `DreamerV3Writer`, `world_model_learning` and `behaviour_learning` in `sheeprl/algos/dreamer_v3/dreamer_v3.py`).
    
 ### Configuration Constraints
 
@@ -33,11 +33,11 @@ The implementation supports flexibility in experience collection during fine-tun
 
 - **Buffer Options:** Fine-tuning can start from the buffer collected during exploration or a new one (`buffer.load_from_exploration` parameter). The buffer of the exploration can be loaded only if it was saved in the checkpoint (`buffer.checkpoint=True` during the exploration); when it is loaded, the number of environments (`env.num_envs`) and of processes (`fabric.devices` and `fabric.num_nodes`) are taken from the exploration.
 
-- **Initial Experiences:** Users can decide whether to collect the experiences until `algo.learning_starts` with the `actor_exploration` or the `actor_task`: no random actions are played. After `algo.learning_starts`, only the `actor_task` collects experiences. (`algo.player.actor_type` parameter, can be either `exploration` (the default) or `task`).
+- **Initial Experiences:** Users can decide whether to collect the experiences until `algo.learning_starts` with the `actor_exploration` or the `actor_task`: no random actions are played. After `algo.learning_starts`, only the `actor_task` collects experiences. (`algo.policy.actor_type` parameter, can be either `exploration` (the default) or `task`).
 
 > [!NOTE]
 >
-> When exploring, the `algo.player.actor_type` parameter is always set to `exploration`.
+> When exploring, the `algo.policy.actor_type` parameter is always set to `exploration`.
 
 ## Usage
 

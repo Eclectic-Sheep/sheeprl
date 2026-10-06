@@ -1293,7 +1293,7 @@ def build_agent(
         world_model.observation_model.to(memory_format=torch.channels_last)
 
     # Create the policy agent
-    fabric_player = get_single_device_fabric(fabric)
+    policy_fabric = get_single_device_fabric(fabric)
     policy = DreamerV3Policy(
         copy.deepcopy(world_model.encoder),
         copy.deepcopy(world_model.rssm),
@@ -1301,7 +1301,7 @@ def build_agent(
         actions_dim,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
+        policy_fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
         cnn_keys=cfg.algo.cnn_keys.encoder,
     )
@@ -1325,11 +1325,11 @@ def build_agent(
     target_critic = setup_module(fabric, target_critic)
 
     # Setup the policy agent with a single-device Fabric
-    policy.encoder = fabric_player.setup_module(policy.encoder)
-    policy.rssm.recurrent_model = fabric_player.setup_module(policy.rssm.recurrent_model)
-    policy.rssm.transition_model = fabric_player.setup_module(policy.rssm.transition_model)
-    policy.rssm.representation_model = fabric_player.setup_module(policy.rssm.representation_model)
-    policy.actor = fabric_player.setup_module(policy.actor)
+    policy.encoder = policy_fabric.setup_module(policy.encoder)
+    policy.rssm.recurrent_model = policy_fabric.setup_module(policy.rssm.recurrent_model)
+    policy.rssm.transition_model = policy_fabric.setup_module(policy.rssm.transition_model)
+    policy.rssm.representation_model = policy_fabric.setup_module(policy.rssm.representation_model)
+    policy.actor = policy_fabric.setup_module(policy.actor)
 
     # Tie weights between the agent and the policy
     for agent_p, p in zip(world_model.encoder.parameters(), policy.encoder.parameters()):

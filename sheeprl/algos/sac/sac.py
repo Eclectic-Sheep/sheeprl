@@ -56,7 +56,7 @@ class SACState(TrainState):
     alpha_optimizer: Optimizer
 
 
-class ReplayWriter(Writer):
+class SACWriter(Writer):
     """Writes every step in the replay buffer, with the actions played in the environments.
 
     With `dtype`, the observations, rewards and episode flags are written with that dtype; otherwise the observations
@@ -151,7 +151,7 @@ class SAC(Algorithm):
     off_policy = True
     # The name of the algorithm in the error messages
     name = "SAC"
-    # The dtype of the values written in the replay buffer (`ReplayWriter`)
+    # The dtype of the values written in the replay buffer (`SACWriter`)
     buffer_dtype: Optional[np.dtype] = None
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
@@ -219,8 +219,8 @@ class SAC(Algorithm):
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""
         return self._policy
 
-    def writer(self, state: SACState, policy: SACPolicy) -> ReplayWriter:
-        return ReplayWriter(self.cfg, dtype=self.buffer_dtype)
+    def writer(self, state: SACState, policy: SACPolicy) -> SACWriter:
+        return SACWriter(self.cfg, dtype=self.buffer_dtype)
 
     def batches(
         self, state: SACState, buffer: ReplayStore, n_steps: int, iteration: int

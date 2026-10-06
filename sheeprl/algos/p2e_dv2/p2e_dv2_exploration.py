@@ -20,7 +20,7 @@ from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy, WorldModel
-from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter, check_keys
+from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2Writer, check_keys
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, actor_objective, build_optimizer, compute_lambda_values
 from sheeprl.algos.p2e_dv2.agent import build_agent
@@ -500,7 +500,7 @@ class P2EDV2Exploration(Algorithm):
         # These arguments cannot be changed
         cfg.env.screen_size = 64
         cfg.env.frame_stack = 1
-        cfg.algo.player.actor_type = "exploration"
+        cfg.algo.policy.actor_type = "exploration"
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
@@ -573,8 +573,8 @@ class P2EDV2Exploration(Algorithm):
             test_name=test_name,
         )
 
-    def writer(self, state: P2EDV2ExplorationState, policy: DreamerV2Policy) -> SequenceWriter:
-        return SequenceWriter(self.cfg, self.actions_dim)
+    def writer(self, state: P2EDV2ExplorationState, policy: DreamerV2Policy) -> DreamerV2Writer:
+        return DreamerV2Writer(self.cfg, self.actions_dim)
 
     def batches(
         self,

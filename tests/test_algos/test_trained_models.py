@@ -63,7 +63,7 @@ DREAMER_ARGS = [
 
 
 def dreamer_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torch.Tensor]:
-    """The weights of a Dreamer player: the encoder and the RSSM of the world model, and the actor `actor`."""
+    """The weights of a Dreamer policy: the encoder and the RSSM of the world model, and the actor `actor`."""
     return {
         **{k: v for k, v in saved["world_model"].items() if k.startswith(("encoder.", "rssm."))},
         **{"actor." + k: v for k, v in saved[actor].items()},
@@ -71,7 +71,7 @@ def dreamer_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torc
 
 
 def dreamer_v2_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torch.Tensor]:
-    """The weights of a DreamerV2 (or DreamerV1) player: the encoder, the recurrent and representation models of the
+    """The weights of a DreamerV2 (or DreamerV1) policy: the encoder, the recurrent and representation models of the
     world model, and the actor `actor`."""
     world_model = saved["world_model"]
     return {

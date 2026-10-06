@@ -45,7 +45,7 @@ class PPOState(TrainState):
     optimizer: Optimizer
 
 
-class RolloutWriter(Writer):
+class PPOWriter(Writer):
     """Writes every step in the rollout, with the columns of the actions of `PPOPolicy.act`. The rewards of the
     episodes truncated by the time limit are bootstrapped with the values of `policy`.
 
@@ -186,8 +186,8 @@ class PPO(Algorithm):
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
-    def writer(self, state: PPOState, policy: PPOPolicy) -> RolloutWriter:
-        return RolloutWriter(self.fabric, self.cfg, policy, clip_rewards=self.cfg.env.clip_rewards)
+    def writer(self, state: PPOState, policy: PPOPolicy) -> PPOWriter:
+        return PPOWriter(self.fabric, self.cfg, policy, clip_rewards=self.cfg.env.clip_rewards)
 
     def batches(
         self, state: PPOState, rollout: ReplayStore, n_steps: Optional[int], iteration: int

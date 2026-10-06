@@ -86,7 +86,7 @@ class ExtSOTAState(TrainState):
     optimizer: Optimizer
 
 
-class RolloutWriter(Writer):
+class ExtSOTAWriter(Writer):
     """Writes every step in the rollout, with the columns of the actions of `PPOPolicy.act`."""
 
     def __init__(self, cfg: Dict[str, Any]) -> None:
@@ -142,8 +142,8 @@ class ExtSOTA(Algorithm):
             cnn_keys=cfg.algo.cnn_keys.encoder,
         )
 
-    def writer(self, state: ExtSOTAState, policy: PPOPolicy) -> RolloutWriter:
-        return RolloutWriter(self.cfg)
+    def writer(self, state: ExtSOTAState, policy: PPOPolicy) -> ExtSOTAWriter:
+        return ExtSOTAWriter(self.cfg)
 
     def batches(
         self, state: ExtSOTAState, rollout: ReplayStore, n_steps: Optional[int], iteration: int

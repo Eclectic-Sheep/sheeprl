@@ -214,10 +214,10 @@ def build_agent(
         ensembles[i] = setup_module(fabric, ensembles[i])
 
     # Setup policy agent
-    if cfg.algo.player.actor_type == "exploration":
-        fabric_player = get_single_device_fabric(fabric)
+    if cfg.algo.policy.actor_type == "exploration":
+        policy_fabric = get_single_device_fabric(fabric)
         policy_actor = unwrap_fabric(actor_exploration)
-        policy.actor = fabric_player.setup_module(policy_actor)
+        policy.actor = policy_fabric.setup_module(policy_actor)
         for agent_p, p in zip(actor_exploration.parameters(), policy.actor.parameters()):
             p.data = agent_p.data
 

@@ -518,15 +518,15 @@ def build_agent(
     # Setup policy agent: it plays with the modules of the agent, without the wrappers of the distributed training. A
     # copy with the weights tied lost them on CUDA, where the LSTM moves its weights into a new buffer at every forward
     # (`flatten_parameters`): the policy played with the initial weights for the whole training
-    fabric_player = get_single_device_fabric(fabric)
+    policy_fabric = get_single_device_fabric(fabric)
     policy = RecurrentPPOPolicy(
-        fabric_player.setup_module(agent.feature_extractor.module),
-        fabric_player.setup_module(agent.rnn.module),
-        fabric_player.setup_module(agent.actor.module),
-        fabric_player.setup_module(agent.critic.module),
+        policy_fabric.setup_module(agent.feature_extractor.module),
+        policy_fabric.setup_module(agent.rnn.module),
+        policy_fabric.setup_module(agent.actor.module),
+        policy_fabric.setup_module(agent.critic.module),
         cfg.algo.rnn.lstm.hidden_size,
         actions_dim,
-        device=fabric_player.device,
+        device=policy_fabric.device,
         obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
         cnn_keys=cfg.algo.cnn_keys.encoder,
         reset_recurrent_state_on_done=cfg.algo.reset_recurrent_state_on_done,
