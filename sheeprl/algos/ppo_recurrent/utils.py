@@ -11,12 +11,13 @@ from torch import Tensor
 from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
 from sheeprl.algos.ppo.utils import MODELS_TO_REGISTER as ppo_models_to_register
 from sheeprl.algos.ppo.utils import normalize_obs
-from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOPolicy
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
+
+    from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOPolicy
 
 
 AGGREGATOR_KEYS = ppo_aggregator_keys

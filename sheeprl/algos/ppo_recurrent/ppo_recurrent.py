@@ -21,13 +21,13 @@ from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPolicy, build_agent
 from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.core import (
+    Act,
     Algorithm,
-    Environment,
     EnvStep,
-    Player,
     ReplayStore,
     TrainSchedule,
     TrainState,
+    Writer,
     autocast,
     rollout_store,
     run,
@@ -45,10 +45,10 @@ class PPORecurrentState(TrainState):
     optimizer: Optimizer
 
 
-class RecurrentRolloutPlayer(Player):
-    """Plays the policy in the environments and writes every step in the rollout, with the recurrent state and the
-    actions that preceded it (the input of the LSTM). The recurrent state is reset at the end of every episode when
-    `algo.reset_recurrent_state_on_done` is set, the previous actions always."""
+class RecurrentRolloutWriter(Writer):
+    """Writes every step in the rollout, with the columns of the actions of `RecurrentPPOPolicy.act`: the recurrent
+    state and the actions that preceded it (the input of the LSTM). The rewards of the episodes truncated by the time
+    limit are bootstrapped with the values of `policy`."""
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: RecurrentPPOPolicy) -> None:
         self.fabric = fabric
@@ -56,42 +56,11 @@ class RecurrentRolloutPlayer(Player):
         self.policy = policy
         self.cnn_keys = cfg.algo.cnn_keys.encoder
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
-        # The recurrent states and the actions preceding the next step; created at the first step
-        self.prev_states: Optional[Tuple[Tensor, Tensor]] = None
-        self.prev_actions: Optional[np.ndarray] = None
 
-    def step(self, env: Environment, rollout: ReplayStore) -> EnvStep:
+    def write(self, rollout: ReplayStore, step: EnvStep, act: Act) -> None:
         cfg = self.cfg
-        num_envs = env.num_envs
-        device = self.fabric.device
-        if self.prev_states is None:
-            hidden_size = self.policy.rnn_hidden_size
-            self.prev_states = (
-                torch.zeros(1, num_envs, hidden_size, device=device),
-                torch.zeros(1, num_envs, hidden_size, device=device),
-            )
-            self.prev_actions = np.zeros((1, num_envs, sum(self.policy.actions_dim)))
-
-        # The stacked frames of an image are stored as its channels
-        obs = {}
-        for k in self.obs_keys:
-            obs[k] = env.obs[k]
-            if k in self.cnn_keys:
-                obs[k] = obs[k].reshape(num_envs, -1, *obs[k].shape[-2:])
-            obs[k] = obs[k][np.newaxis]
-        torch_obs = prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)
-        torch_prev_actions = torch.from_numpy(self.prev_actions).to(device).float()
-        actions, logprobs, values, states = self.policy(
-            torch_obs, prev_actions=torch_prev_actions, prev_states=self.prev_states
-        )
-        if self.policy.actor.is_continuous:
-            env_actions = torch.stack(actions, -1).cpu().numpy()
-        else:
-            env_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
-        torch_actions = torch.cat(actions, dim=-1)
-        actions = torch_actions.cpu().numpy()
-
-        step = env.step(env_actions)
+        num_envs = len(step.rewards)
+        torch_actions, states = act.extras["actions"], act.extras["states"]
 
         def final_values(env_idxes: np.ndarray) -> np.ndarray:
             final_obs = step.stack_final_obs(env_idxes, self.obs_keys)
@@ -108,30 +77,28 @@ class RecurrentRolloutPlayer(Player):
         dones = np.logical_or(step.terminated, step.truncated).reshape(1, num_envs, -1).astype(np.float32)
         rewards = rewards.reshape(1, num_envs, -1).astype(np.float32)
 
-        data = dict(obs)
+        # The stacked frames of an image are stored as its channels
+        data = {}
+        for k in self.obs_keys:
+            data[k] = step.obs[k]
+            if k in self.cnn_keys:
+                data[k] = data[k].reshape(num_envs, -1, *data[k].shape[-2:])
+            data[k] = data[k][np.newaxis]
         data["dones"] = dones
-        data["values"] = values.cpu().numpy().reshape(1, num_envs, -1)
-        data["actions"] = actions.reshape(1, num_envs, -1)
+        data["values"] = act.columns["values"].reshape(1, num_envs, -1)
+        data["actions"] = act.columns["actions"].reshape(1, num_envs, -1)
         data["rewards"] = rewards
-        data["logprobs"] = logprobs.cpu().numpy()
-        data["prev_hx"] = self.prev_states[0].cpu().numpy().reshape(1, num_envs, -1)
-        data["prev_cx"] = self.prev_states[1].cpu().numpy().reshape(1, num_envs, -1)
-        data["prev_actions"] = self.prev_actions.reshape(1, num_envs, -1)
+        data["logprobs"] = act.columns["logprobs"]
+        for k in ("prev_hx", "prev_cx", "prev_actions"):
+            data[k] = act.columns[k].reshape(1, num_envs, -1)
         if cfg.buffer.memmap:
             data["returns"] = np.zeros_like(rewards)
             data["advantages"] = np.zeros_like(rewards)
         rollout.add(data, validate_args=cfg.buffer.validate_args)
-        # The observations after the last step of the rollout bootstrap its returns
+        # The observations, the actions and the recurrent states after the last step of the rollout bootstrap its
+        # returns
         rollout.context["next_obs"] = step.next_obs
         rollout.context["actions"], rollout.context["states"] = torch_actions, states
-
-        # The next step starts a new episode where this one ended one
-        self.prev_actions = (1 - dones) * actions
-        if cfg.algo.reset_recurrent_state_on_done:
-            self.prev_states = tuple((1 - torch.as_tensor(dones, device=device)) * s for s in states)
-        else:
-            self.prev_states = states
-        return step
 
 
 # Compiled, the minibatches are padded to a multiple of this number of sequences (`PPORecurrent.batches`)
@@ -313,8 +280,8 @@ class PPORecurrent(Algorithm):
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
 
-    def player(self, state: PPORecurrentState) -> RecurrentRolloutPlayer:
-        return RecurrentRolloutPlayer(self.fabric, self.cfg, self.policy(state))
+    def writer(self, state: PPORecurrentState, policy: RecurrentPPOPolicy) -> RecurrentRolloutWriter:
+        return RecurrentRolloutWriter(self.fabric, self.cfg, policy)
 
     def batches(
         self, state: PPORecurrentState, rollout: ReplayStore, n_steps: Optional[int], iteration: int
