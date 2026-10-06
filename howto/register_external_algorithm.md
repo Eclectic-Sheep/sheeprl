@@ -103,7 +103,7 @@ class RolloutWriter(Writer):
         data["dones"] = dones.reshape(1, num_envs, 1).astype(np.uint8)
         rollout.add(data)
         # The observations after the last step of the rollout bootstrap its returns
-        rollout.context["next_obs"] = step.next_obs
+        rollout.last_step, rollout.last_act = step, act
 
 
 class ExtSOTA(Algorithm):
@@ -154,7 +154,7 @@ class ExtSOTA(Algorithm):
 
         # The returns and the advantages, bootstrapped with the value of the observations after the rollout
         with torch.inference_mode():
-            next_obs = {k: rollout.context["next_obs"][k] for k in obs_keys}
+            next_obs = {k: rollout.last_step.next_obs[k] for k in obs_keys}
             next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
             next_values = state.agent.critic(state.agent.feature_extractor(next_obs))
             returns, advantages = gae(

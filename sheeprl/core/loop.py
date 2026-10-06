@@ -15,9 +15,9 @@ from lightning import Fabric
 from sheeprl.core.algorithm import Algorithm, TrainState
 from sheeprl.core.cadence import Cadence
 from sheeprl.core.collector import Collector
-from sheeprl.core.runner import GymEnvironment
+from sheeprl.core.environment import GymEnvironment
 from sheeprl.core.schedule import TrainSchedule
-from sheeprl.core.store import load_replay_buffer
+from sheeprl.data.store import load_replay_buffer
 from sheeprl.utils import fs
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator

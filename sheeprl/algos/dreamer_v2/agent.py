@@ -33,7 +33,7 @@ from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
 
 if TYPE_CHECKING:
-    from sheeprl.core.runner import Environment
+    from sheeprl.core.environment import Environment
 
 
 class CNNEncoder(nn.Module):

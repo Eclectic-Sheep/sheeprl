@@ -17,7 +17,7 @@ import torch
 from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v3.dreamer_v3 import DreamerV3
 from sheeprl.algos.sac.sac import SAC
-from sheeprl.core.runner import GymEnvironment
+from sheeprl.core.environment import GymEnvironment
 
 # 2 envs, 1 process: 2 policy steps per iteration; `learning_starts=4` gives 2 iterations of random actions, and the
 # replay ratio 1 gives 2 gradient steps per iteration from the second one. The first run lasts 4 iterations, the

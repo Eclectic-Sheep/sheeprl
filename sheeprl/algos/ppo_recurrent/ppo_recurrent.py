@@ -95,10 +95,9 @@ class RecurrentRolloutWriter(Writer):
             data["returns"] = np.zeros_like(rewards)
             data["advantages"] = np.zeros_like(rewards)
         rollout.add(data, validate_args=cfg.buffer.validate_args)
-        # The observations, the actions and the recurrent states after the last step of the rollout bootstrap its
-        # returns
-        rollout.context["next_obs"] = step.next_obs
-        rollout.context["actions"], rollout.context["states"] = torch_actions, states
+        # The observations after the last step of the rollout, its actions and its recurrent states (`act.extras`)
+        # bootstrap its returns
+        rollout.last_step, rollout.last_act = step, act
 
 
 # Compiled, the minibatches are padded to a multiple of this number of sequences (`PPORecurrent.batches`)
@@ -297,12 +296,13 @@ class PPORecurrent(Algorithm):
         with torch.inference_mode():
             next_obs = {}
             for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder:
-                next_obs[k] = rollout.context["next_obs"][k]
+                next_obs[k] = rollout.last_step.next_obs[k]
                 if k in cfg.algo.cnn_keys.encoder:
                     next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
             next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
+            last_act = rollout.last_act
             next_values, _ = self.policy(state).get_values(
-                next_obs, rollout.context["actions"], rollout.context["states"]
+                next_obs, last_act.extras["actions"], last_act.extras["states"]
             )
             returns, advantages = self.gae(
                 data["rewards"].to(torch.float64),

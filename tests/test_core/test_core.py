@@ -490,9 +490,8 @@ def test_a_rollout_is_a_store_whose_epoch_sampler_draws_the_minibatches(tmp_path
     assert isinstance(rollout.storage, ReplayBuffer) and isinstance(rollout.sampler, EpochSampler)
     for t in range(4):
         rollout.add({"state": np.full((1, 2, 1), t, np.float32)})
-        rollout.context["next_obs"] = {"state": np.full((2, 1), t + 1)}
     data = rollout.read()
-    assert data["state"].shape == (4, 2, 1) and rollout.context["next_obs"]["state"][0, 0] == 4
+    assert data["state"].shape == (4, 2, 1)
     flat = {"state": data["state"].flatten(0, 1)}
     torch.manual_seed(0)
     minibatches = list(rollout.minibatches(flat, epochs=2))

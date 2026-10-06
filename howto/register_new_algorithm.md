@@ -46,7 +46,7 @@ for iteration in schedule.iterations():
     # Log the metrics every `metric.log_every` policy steps, save a checkpoint every `checkpoint.every` policy steps
 ```
 
-- `env` is an `Environment` (`sheeprl/core/runner.py`): the `cfg.env.num_envs` vectorized environments of the process. `env.obs` holds the current observations, `env.step(actions)` steps the environments and returns an `EnvStep` (the observations the actions were chosen from, the next observations, the rewards, `terminated`, `truncated`, `final_obs` with the last observation of the episodes that have just ended, `restarted` with the environments created again after a crash, `episodes` with the episodes that have just ended, and the `info` of the environments, which the core and the writers don't read), and `env.random_actions()` samples random actions. The training loop creates a `GymEnvironment`: gymnasium environments created with `make_env` and seeded differently on every process. The collector records the rewards and the lengths of the episodes ended in every `EnvStep` (`episodes`; `Rewards/rew_avg`, `Game/ep_len_avg`).
+- `env` is an `Environment` (`sheeprl/core/environment.py`): the `cfg.env.num_envs` vectorized environments of the process. `env.obs` holds the current observations, `env.step(actions)` steps the environments and returns an `EnvStep` (the observations the actions were chosen from, the next observations, the rewards, `terminated`, `truncated`, `final_obs` with the last observation of the episodes that have just ended, `restarted` with the environments created again after a crash, `episodes` with the episodes that have just ended, and the `info` of the environments, which the core and the writers don't read), and `env.random_actions()` samples random actions. The training loop creates a `GymEnvironment`: gymnasium environments created with `make_env` and seeded differently on every process. The collector records the rewards and the lengths of the episodes ended in every `EnvStep` (`episodes`; `Rewards/rew_avg`, `Game/ep_len_avg`).
 - `schedule` is a `TrainSchedule` (`sheeprl/core/schedule.py`): the policy steps played so far (`schedule.policy_step`), the number of iterations (`algo.total_steps` policy steps), the random actions before `algo.learning_starts` and the gradient steps of the off-policy algorithms (`algo.replay_ratio`), and where a resumed run starts.
 - The checkpoints hold the training state returned by `build`, the counters needed to resume the run and, for off-policy algorithms with `buffer.checkpoint=True`, the replay buffer.
 
@@ -240,7 +240,7 @@ class RolloutWriter(Writer):
         data["dones"] = dones.reshape(1, num_envs, 1).astype(np.uint8)
         rollout.add(data)
         # The observations after the last step of the rollout bootstrap its returns
-        rollout.context["next_obs"] = step.next_obs
+        rollout.last_step, rollout.last_act = step, act
 
 
 class SOTA(Algorithm):
@@ -291,7 +291,7 @@ class SOTA(Algorithm):
 
         # The returns and the advantages, bootstrapped with the value of the observations after the rollout
         with torch.inference_mode():
-            next_obs = {k: rollout.context["next_obs"][k] for k in obs_keys}
+            next_obs = {k: rollout.last_step.next_obs[k] for k in obs_keys}
             next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
             next_values = state.agent.critic(state.agent.feature_extractor(next_obs))
             returns, advantages = gae(

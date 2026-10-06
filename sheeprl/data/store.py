@@ -1,16 +1,36 @@
-"""Where every algorithm writes the steps it plays and reads what it trains on: a `ReplayBuffer`, where the writer
-writes the steps, and a sampler, which draws the batches of the training from it (`sheeprl.data.samplers`)."""
+"""Where every algorithm writes the steps it plays and reads what it trains on: a `ReplayStore`, a `ReplayBuffer` where
+the writer writes the steps and a sampler of `sheeprl.data.samplers`, which draws the batches of the training from it.
+
+The stores are built here for the three ways the algorithms train on their data:
+
+- `rollout_store`: the rollout of an on-policy algorithm (PPO, A2C, PPO recurrent), whose `EpochSampler` draws the
+  minibatches of an update;
+- `transition_store`: the replay buffer of an off-policy algorithm trained on single steps (SAC, DroQ, SAC-AE), read by
+  a `TransitionSampler`;
+- `sequence_store`: the replay buffer of an algorithm trained on sequences of one environment (the Dreamers), read by a
+  `SequenceSampler` or an `EpisodeSampler`, with `env_buffer_size` steps per environment.
+
+The training loop saves the replay buffers of the off-policy algorithms in the checkpoints when `buffer.checkpoint` is
+set (`load_replay_buffer` restores them).
+"""
 
 from __future__ import annotations
 
 import threading
-from typing import Any, Dict, Iterator, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+from lightning import Fabric
 from torch import Tensor
 
-from sheeprl.data.buffers import get_tensor
+from sheeprl.data.buffers import ReplayBuffer, get_tensor
+from sheeprl.data.samplers import EpisodeSampler, EpochSampler, ReplaySampler, SequenceSampler, TransitionSampler
+from sheeprl.utils import fs
+
+if TYPE_CHECKING:
+    from sheeprl.core.collector import Act
+    from sheeprl.core.environment import EnvStep
 
 
 class _Prefetch:
@@ -29,8 +49,9 @@ class ReplayStore:
 
     The off-policy algorithms sample their batches (`batches`, `sample`) from the steps of the whole training. The
     on-policy algorithms read their rollout whole (`read`), compute from it what they train on (e.g. the advantages),
-    and draw the minibatches of its epochs from that with an `EpochSampler` (`minibatches`); the writer keeps in
-    `context` what follows the last step of the rollout (e.g. the observations whose value bootstraps the returns).
+    and draw the minibatches of its epochs from that with an `EpochSampler` (`minibatches`); the writer keeps the last
+    step written (`last_step`) and the actions it was played with (`last_act`): what follows the last step of the
+    rollout (e.g. the observations whose value bootstraps the returns).
 
     The store of an off-policy algorithm is saved in the checkpoints with its storage and its sampler, whose generator
     continues where it was: a resumed run draws the batches that the run would have drawn without stopping (the online
@@ -44,7 +65,8 @@ class ReplayStore:
 
     Args:
         storage: the `ReplayBuffer` where the steps are written (`add`) and read from.
-        sampler: what is read: it draws the steps of the samples, which the storage gathers.
+        sampler: what is read: a `ReplaySampler` draws the steps of the samples, which the storage gathers; an
+            `EpochSampler` draws the minibatches of a rollout.
         device: the device of the sampled batches.
         from_numpy: whether the samples are converted with `torch.from_numpy` (`buffer.from_numpy`).
         prefetch: whether the batches of the next iteration are sampled in the background (`buffer.prefetch`).
@@ -52,8 +74,8 @@ class ReplayStore:
 
     def __init__(
         self,
-        storage: Any,
-        sampler: Any,
+        storage: ReplayBuffer,
+        sampler: ReplaySampler | EpochSampler,
         device: str | torch.device = "cpu",
         from_numpy: bool = False,
         prefetch: bool = False,
@@ -63,8 +85,10 @@ class ReplayStore:
         self.device = torch.device(device)
         self.from_numpy = from_numpy
         self.prefetch = prefetch
-        # What follows the last step written, set by the writer (e.g. the observations after a rollout)
-        self.context: Dict[str, Any] = {}
+        # The last step written and the actions it was played with, set by the writer: what follows the last step of a
+        # rollout (e.g. the observations whose value bootstraps the returns)
+        self.last_step: Optional[EnvStep] = None
+        self.last_act: Optional[Act] = None
         self._init_transient()
 
     def _init_transient(self) -> None:
@@ -80,7 +104,7 @@ class ReplayStore:
         state = self.__dict__.copy()
         for k in ("_lock", "_prefetched", "_stream"):
             state.pop(k)
-        state["context"] = {}
+        state["last_step"] = state["last_act"] = None
         return state
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
@@ -218,3 +242,114 @@ class ReplayStore:
         # Where this run keeps it (the checkpoints are loaded in the memory of the CPU)
         self.storage = saved.storage.to(self.storage.device)
         return self
+
+
+def rollout_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, size: int) -> ReplayStore:
+    """The store of an on-policy algorithm: a rollout of `size` steps of every environment of the process, whose
+    minibatches have `algo.per_rank_batch_size` steps (from the rollouts of all the processes with
+    `buffer.share_data`)."""
+    storage = ReplayBuffer(
+        size,
+        cfg.env.num_envs,
+        memmap=cfg.buffer.memmap,
+        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
+        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+    )
+    sampler = EpochSampler(
+        cfg.algo.per_rank_batch_size,
+        fabric.world_size,
+        fabric.global_rank,
+        seed=cfg.seed,
+        distributed=cfg.buffer.get("share_data", False),
+    )
+    return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy)
+
+
+def transition_store(
+    fabric: Fabric, cfg: Dict[str, Any], log_dir: str, obs_keys: Tuple[str, ...] = ("observations",)
+) -> ReplayStore:
+    """The store of an off-policy algorithm trained on single steps (SAC, DroQ, SAC-AE): a replay buffer of
+    `buffer.size` steps split among the environments of all the processes (1 in a dry run), sampled one step at a time
+    (`TransitionSampler`, with the next observations with `buffer.sample_next_obs` and the online queue with
+    `buffer.online`). Every process trains on its own data, as the Dreamers do, and `update` averages the gradients over
+    the processes."""
+    storage = ReplayBuffer(
+        cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1,
+        cfg.env.num_envs,
+        obs_keys=obs_keys,
+        memmap=cfg.buffer.memmap and not cfg.buffer.on_device,
+        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
+        device=fabric.device if cfg.buffer.on_device else None,
+    )
+    sampler = TransitionSampler(cfg.buffer.sample_next_obs, cfg.buffer.online, seed=cfg.seed + fabric.global_rank)
+    return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy, cfg.buffer.prefetch)
+
+
+def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> int:
+    """The capacity of the replay buffer of every environment: `buffer.size` split among the environments of all the
+    processes, or `dry_run_size` in a dry run. It must hold a sequence of `algo.per_rank_sequence_length` steps (a dry
+    run makes it large enough)."""
+    sequence_length = cfg.algo.per_rank_sequence_length
+    if cfg.dry_run:
+        return max(dry_run_size, sequence_length)
+    size = cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size)
+    if size < sequence_length:
+        raise ValueError(
+            f"The replay buffer of every environment holds `buffer.size // (env.num_envs * world_size)` = {size} "
+            f"steps, fewer than a sequence (`algo.per_rank_sequence_length={sequence_length}`): increase `buffer.size`"
+        )
+    return size
+
+
+def sequence_store(
+    fabric: Fabric,
+    cfg: Dict[str, Any],
+    log_dir: str,
+    buffer_size: int,
+    sequence_length: int,
+    buffer_type: str = "sequential",
+) -> ReplayStore:
+    """The store of an algorithm trained on sequences (the Dreamers): a buffer of `buffer_size` steps per environment
+    (`env_buffer_size`), every environment written at its own row (its first steps after the end of an episode),
+    sampled in sequences of `sequence_length` steps of a single environment: anywhere (`buffer_type="sequential"`,
+    `SequenceSampler`) or inside the episodes that ended (`"episode"`, `EpisodeSampler`, with their ends prioritized
+    with `buffer.prioritize_ends`), with the online queue with `buffer.online`. Every process samples its buffer with a
+    generator of its own."""
+    buffer_type = buffer_type.lower()
+    if buffer_type not in ("sequential", "episode"):
+        raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
+    storage = ReplayBuffer(
+        buffer_size,
+        n_envs=cfg.env.num_envs,
+        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+        memmap=cfg.buffer.memmap and not cfg.buffer.on_device,
+        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
+        device=fabric.device if cfg.buffer.on_device else None,
+    )
+    if buffer_type == "episode":
+        sampler = EpisodeSampler(
+            sequence_length,
+            prioritize_ends=cfg.buffer.prioritize_ends,
+            online=cfg.buffer.online,
+            seed=cfg.seed + fabric.global_rank,
+        )
+    else:
+        sampler = SequenceSampler(sequence_length, online=cfg.buffer.online, seed=cfg.seed + fabric.global_rank)
+    return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy, cfg.buffer.prefetch)
+
+
+def load_replay_buffer(fabric: Fabric, saved: Any, store: ReplayStore) -> ReplayStore:
+    """The replay buffer of this process, from the one saved in a checkpoint (`saved`) in place of `store`
+    (`ReplayStore.load`).
+
+    A checkpoint holds the list of the stores of all the processes, or a single store, which every process then starts
+    from.
+    """
+    if isinstance(saved, list):
+        if len(saved) != fabric.world_size:
+            raise RuntimeError(
+                f"The checkpoint holds {len(saved)} replay buffer(s), "
+                f"but {fabric.world_size} processes are instantiated"
+            )
+        saved = saved[fabric.global_rank]
+    return store.load(saved)

@@ -8,7 +8,7 @@ from lightning import Fabric
 from torch import Tensor
 
 from sheeprl.core.algorithm import TrainState
-from sheeprl.core.runner import Episode
+from sheeprl.core.environment import Episode
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.utils import fs
 from sheeprl.utils.metric import MetricAggregator

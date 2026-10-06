@@ -101,7 +101,7 @@ class RolloutWriter(Writer):
             data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
         rollout.add(data, validate_args=cfg.buffer.validate_args)
         # The observations after the last step of the rollout bootstrap its returns
-        rollout.context["next_obs"] = step.next_obs
+        rollout.last_step, rollout.last_act = step, act
 
 
 def ppo_loss(
@@ -212,9 +212,7 @@ class PPO(Algorithm):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
-            next_obs = {
-                k: rollout.context["next_obs"][k] for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
-            }
+            next_obs = {k: rollout.last_step.next_obs[k] for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder}
             next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
             next_values = self.policy(state).get_values(next_obs)
             returns, advantages = self.gae(

@@ -27,6 +27,7 @@ from torch import Tensor, nn
 if TYPE_CHECKING:
     from sheeprl.core.collector import Policy, Writer
     from sheeprl.core.schedule import TrainSchedule
+    from sheeprl.data.store import ReplayStore
 
 
 @dataclasses.dataclass
@@ -115,7 +116,7 @@ class Algorithm:
         action_space: gym.Space,
         schedule: TrainSchedule,
         log_dir: str,
-    ) -> Tuple[TrainState, Any]:
+    ) -> Tuple[TrainState, ReplayStore]:
         """Create the training state (modules on the device, optimizers, ...) and the store of the collected data.
 
         When a run is resumed, the training loop restores the returned state from the checkpoint.
@@ -136,7 +137,7 @@ class Algorithm:
         raise NotImplementedError
 
     def batches(
-        self, state: TrainState, store: Any, n_steps: int | None, iteration: int
+        self, state: TrainState, store: ReplayStore, n_steps: int | None, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         """Prepare the training data of the iteration `iteration` and yield one batch per gradient step.
 

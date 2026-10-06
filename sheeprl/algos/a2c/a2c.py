@@ -143,7 +143,7 @@ class A2C(Algorithm):
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
             next_obs = prepare_obs(
-                self.fabric, rollout.context["next_obs"], cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
+                self.fabric, rollout.last_step.next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
             )
             next_values = self.policy(state).get_values(next_obs)
             returns, advantages = self.gae(

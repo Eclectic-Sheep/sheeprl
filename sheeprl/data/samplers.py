@@ -4,11 +4,14 @@ gathers them (`ReplayBuffer.gather`).
 A sampler owns its random number generator and its online queue (`buffer.online`): the same storage can be read by
 samplers of different kinds, and the state of a sampler is saved with it in the checkpoints (`ReplayStore`).
 
+The samplers of a replay buffer are `ReplaySampler`s:
+
 - `TransitionSampler`: single steps of a `ReplayBuffer`, of shape `[n_samples, batch_size, ...]`;
 - `SequenceSampler`: sequences of consecutive steps of a `ReplayBuffer`, every one from a single environment, of shape
   `[n_samples, sequence_length, batch_size, ...]`;
 - `EpisodeSampler`: sequences inside the episodes of a `ReplayBuffer`;
-- `EpochSampler`: the minibatches of the epochs of an on-policy update (of the store of a rollout).
+The rollout of an on-policy algorithm is read whole instead, and its `EpochSampler` draws the minibatches of the
+epochs of its update: it shuffles the indices of the rollout, so it is not a `ReplaySampler`.
 
 When the environments of a `ReplayBuffer` aren't at the same row (steps were added to some of them only, e.g. the first
 steps of the ones that ended an episode), the steps and the sequences are drawn from one environment at a time: an
@@ -17,7 +20,7 @@ environment, then a step or a sequence among its rows.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Protocol, Tuple
 
 import numpy as np
 import torch
@@ -77,25 +80,35 @@ class OnlineQueue:
         np.maximum.at(self.next, envs, starts + sequence_length)
 
 
-class Sampler:
-    """Draws the steps of the samples of a storage, with its own random number generator (from `seed`, or `rng`)."""
+def _generator(seed: int | np.random.SeedSequence | None, rng: np.random.Generator | None) -> np.random.Generator:
+    """The random number generator of a sampler: `rng`, or a new one from `seed`."""
+    return rng if rng is not None else np.random.default_rng(seed)
 
-    def __init__(self, seed: int | np.random.SeedSequence | None = None, rng: np.random.Generator | None = None):
-        self.rng: np.random.Generator = rng if rng is not None else np.random.default_rng(seed)
+
+class ReplaySampler(Protocol):
+    """Draws the steps of the samples of a replay buffer, with its own random number generator (`rng`). The samplers of
+    `sheeprl.data` implement it, e.g. `class TransitionSampler(ReplaySampler)`."""
+
+    rng: np.random.Generator
 
     def sample(
-        self, storage, batch_size: int, n_samples: int = 1, online: Optional[bool] = None, clone: bool = False
+        self,
+        storage: ReplayBuffer,
+        batch_size: int,
+        n_samples: int = 1,
+        online: Optional[bool] = None,
+        clone: bool = False,
     ) -> Dict[str, np.ndarray]:
         """`n_samples` batches of `batch_size` elements of `storage`. With `online` (by default the one of the
         sampler), the batches start with the sequences of the online queue, the oldest first, and only the rest of
         them is drawn uniformly: every step added is sampled once soon after."""
         raise NotImplementedError
 
-    def reset_online(self, storage) -> None:
+    def reset_online(self, storage: ReplayBuffer) -> None:
         """Restart the online queue from the steps that `storage` holds now: the ones added after are queued."""
         raise NotImplementedError
 
-    def continue_from(self, source: Sampler) -> None:
+    def continue_from(self, source: ReplaySampler) -> None:
         """Draw with the generator of `source`, the sampler of a checkpoint: a run resumed from the checkpoint draws
         what it would have drawn without stopping."""
         self.rng = source.rng
@@ -106,7 +119,7 @@ def _check_samples(batch_size: int, n_samples: int) -> None:
         raise ValueError(f"'batch_size' ({batch_size}) and 'n_samples' ({n_samples}) must be both greater than 0")
 
 
-class TransitionSampler(Sampler):
+class TransitionSampler(ReplaySampler):
     """Single steps of a `ReplayBuffer`, drawn uniformly, of shape `[n_samples, batch_size, ...]`.
 
     With `sample_next_obs`, the next observations (of the observation keys of the buffer) are sampled too, as
@@ -121,7 +134,7 @@ class TransitionSampler(Sampler):
         rng: np.random.Generator | None = None,
         queue: OnlineQueue | None = None,
     ):
-        super().__init__(seed, rng)
+        self.rng = _generator(seed, rng)
         self.sample_next_obs = sample_next_obs
         self.online = online
         self.queue = queue if queue is not None else OnlineQueue()
@@ -178,7 +191,7 @@ class TransitionSampler(Sampler):
         return {k: v.reshape(n_samples, batch_size, *v.shape[1:]) for k, v in samples.items()}
 
 
-class SequenceSampler(Sampler):
+class SequenceSampler(ReplaySampler):
     """Sequences of `sequence_length` consecutive steps of a `ReplayBuffer`, every one from a single environment,
     drawn uniformly without considering the ends of the episodes, of shape `[n_samples, sequence_length, batch_size,
     ...]`. A sequence never crosses the position of the next insertion, where the newest steps are followed by the
@@ -193,7 +206,7 @@ class SequenceSampler(Sampler):
         rng: np.random.Generator | None = None,
         queue: OnlineQueue | None = None,
     ):
-        super().__init__(seed, rng)
+        self.rng = _generator(seed, rng)
         self.sequence_length = sequence_length
         self.sample_next_obs = sample_next_obs
         self.online = online
@@ -338,7 +351,7 @@ class EpochSampler:
                 yield idxes, size
 
 
-class EpisodeSampler(Sampler):
+class EpisodeSampler(ReplaySampler):
     """Sequences of `sequence_length` steps inside the episodes of a `ReplayBuffer`, of shape
     `[n_samples, sequence_length, batch_size, ...]`, as DreamerV2 samples its episodes: the episode of every sequence
     is drawn uniformly among the ones long enough, then its first step. With `prioritize_ends`, the first steps are
@@ -364,7 +377,7 @@ class EpisodeSampler(Sampler):
         seed: int | np.random.SeedSequence | None = None,
         rng: np.random.Generator | None = None,
     ):
-        super().__init__(seed, rng)
+        self.rng = _generator(seed, rng)
         self.sequence_length = sequence_length
         self.sample_next_obs = sample_next_obs
         self.prioritize_ends = prioritize_ends

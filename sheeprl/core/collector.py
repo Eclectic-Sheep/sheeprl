@@ -10,8 +10,9 @@ import numpy as np
 
 if TYPE_CHECKING:
     from sheeprl.core.cadence import Cadence
-    from sheeprl.core.runner import Environment, EnvStep
+    from sheeprl.core.environment import Environment, EnvStep
     from sheeprl.core.schedule import TrainSchedule
+    from sheeprl.data.store import ReplayStore
 
 
 @dataclass
@@ -52,7 +53,7 @@ class Policy(Protocol):
 class Writer(Protocol):
     """Writes the steps of the environments in the store of an algorithm (e.g. a rollout or a replay buffer)."""
 
-    def write(self, store: Any, step: EnvStep, act: Act) -> None:
+    def write(self, store: ReplayStore, step: EnvStep, act: Act) -> None:
         """Write in `store` the step `step`, played with the actions `act`."""
 
 
@@ -70,7 +71,7 @@ class Collector:
         env: Environment,
         policy: Policy,
         writer: Writer,
-        store: Any,
+        store: ReplayStore,
         schedule: TrainSchedule,
         cadence: Cadence,
         random_warmup: bool = True,
