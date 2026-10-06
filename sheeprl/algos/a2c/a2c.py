@@ -16,7 +16,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import PolynomialLR
 
 from sheeprl.algos.a2c.loss import policy_loss
-from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer, build_agent
+from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, value_loss
 from sheeprl.algos.ppo.utils import bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.core import (
@@ -50,7 +50,7 @@ class RolloutPlayer(Player):
     """Plays the policy in the environments and writes every step in the rollout. Unlike PPO's player, the rewards
     are stored in float64 and are not clipped (`env.clip_rewards` is ignored)."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPlayer) -> None:
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPolicy) -> None:
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
@@ -180,7 +180,7 @@ class A2C(Algorithm):
         state = A2CState(agent=agent, optimizer=optimizer, scheduler=scheduler)
         return state, rollout_store(self.fabric, cfg, log_dir, cfg.buffer.size)
 
-    def policy(self, state: A2CState) -> PPOPlayer:
+    def policy(self, state: A2CState) -> PPOPolicy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 

@@ -20,7 +20,7 @@ from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.algos.dreamer_v2.utils import init_weights as dv2_init_weights
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
-from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 # The initialization of the layers of Keras, which the official implementation uses: the uniform Glorot initializer
@@ -193,7 +193,7 @@ class RSSM(nn.Module):
             action (Tensor): the action taken by the agent.
             embedded_obs (Tensor): the embedded observations provided by the environment.
             is_first (Tensor): if this is the first step in the episode: the step starts from the zero state, as the
-                player does at the start of an episode.
+                policy does at the start of an episode.
 
         Returns:
             The recurrent state (Tensor): the recurrent state of the recurrent model.
@@ -297,8 +297,8 @@ class WorldModel(nn.Module):
         self.continue_model = continue_model
 
 
-class PlayerDV1(nn.Module):
-    """The model of the DreamerV1 player.
+class DreamerV1Policy(nn.Module):
+    """The model of the DreamerV1 policy.
 
     Args:
         encoder (nn.Module| _FabricModule): the encoder.
@@ -310,7 +310,7 @@ class PlayerDV1(nn.Module):
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
         device (str | torch.device): the device where the model is stored.
-        actor_type (str, optional): which actor the player is using ('task' or 'exploration').
+        actor_type (str, optional): which actor the policy is using ('task' or 'exploration').
             Default to None.
         min_std (float): the minimum standard deviation of the posterior, as in the world model
             (`algo.world_model.min_std`).
@@ -421,7 +421,7 @@ def build_agent(
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, PlayerDV1]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, DreamerV1Policy]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -442,7 +442,7 @@ def build_agent(
         reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
-        The player (PlayerDV1).
+        The policy (DreamerV1Policy).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -601,11 +601,11 @@ def build_agent(
     actor = setup_module(fabric, actor)
     critic = setup_module(fabric, critic)
 
-    # The player plays with the modules of the agent, without the wrappers of the distributed training. A copy with the
+    # The policy plays with the modules of the agent, without the wrappers of the distributed training. A copy with the
     # weights tied lost them on CUDA, where the GRU moves its weights into a new buffer at every forward
-    # (`flatten_parameters`): the player played with the initial recurrent model for the whole training
+    # (`flatten_parameters`): the policy played with the initial recurrent model for the whole training
     fabric_player = get_single_device_fabric(fabric)
-    player = PlayerDV1(
+    policy = DreamerV1Policy(
         fabric_player.setup_module(world_model.encoder.module),
         fabric_player.setup_module(world_model.rssm.recurrent_model.module),
         fabric_player.setup_module(world_model.rssm.representation_model.module),
@@ -617,8 +617,8 @@ def build_agent(
         fabric_player.device,
         min_std=cfg.algo.world_model.min_std,
     )
-    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes. Its exploration noise (`get_exploration_actions`) is added uncompiled: it changes with
     # the policy step
-    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
-    return world_model, actor, critic, player
+    policy.get_actions = compiled_policy(policy.get_actions, fabric, cfg, cuda_graphs=False)
+    return world_model, actor, critic, policy

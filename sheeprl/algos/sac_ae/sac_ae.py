@@ -18,7 +18,7 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.sac.loss import critic_loss, policy_loss
 from sheeprl.algos.sac.sac import build_store
-from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPlayer, build_agent, tie_actor_convolutions, tie_actor_optimizer
+from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPolicy, build_agent, tie_actor_convolutions, tie_actor_optimizer
 from sheeprl.algos.sac_ae.loss import entropy_loss
 from sheeprl.algos.sac_ae.utils import prepare_obs, preprocess_obs, test
 from sheeprl.core import Algorithm, Environment, EnvStep, Player, TrainSchedule, TrainState, run, update
@@ -108,7 +108,7 @@ class ReplayPlayer(Player):
     `algo.learning_starts`, then actions sampled from the policy. The stacked frames of an image are stored as its
     channels."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: SACAEPlayer, schedule: TrainSchedule) -> None:
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: SACAEPolicy, schedule: TrainSchedule) -> None:
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
@@ -310,7 +310,7 @@ class SACAE(Algorithm):
         obs_keys = tuple(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder)
         return state, build_store(fabric, cfg, log_dir, obs_keys=obs_keys)
 
-    def policy(self, state: SACAEState) -> SACAEPlayer:
+    def policy(self, state: SACAEState) -> SACAEPolicy:
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""
         return self._policy
 

@@ -21,7 +21,7 @@ from torch.distributions import Bernoulli, Independent, Normal
 from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
 
-from sheeprl.algos.dreamer_v1.agent import Actor, MinedojoActor, PlayerDV1, WorldModel, build_agent
+from sheeprl.algos.dreamer_v1.agent import Actor, DreamerV1Policy, MinedojoActor, WorldModel, build_agent
 from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstruction_loss
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequencePlayer as DV2SequencePlayer
@@ -52,8 +52,8 @@ class DreamerV1State(TrainState):
 
 class SequencePlayer(DV2SequencePlayer):
     """The player of DreamerV2 (`sheeprl.algos.dreamer_v2.dreamer_v2.SequencePlayer`): the rows hold the observations
-    with the actions that led to them. The policy (`PlayerDV1`) plays with its exploration noise, and a dry run doesn't
-    end the episodes at the first observations (there is no episode buffer)."""
+    with the actions that led to them. The policy (`DreamerV1Policy`) plays with its exploration noise, and a dry run
+    doesn't end the episodes at the first observations (there is no episode buffer)."""
 
     exploration_noise = True
     dry_run_episodes = False
@@ -547,7 +547,7 @@ class DreamerV1(Algorithm):
         self.schedule = schedule
         return state, build_store(fabric, cfg, log_dir, dry_run_size=2)
 
-    def policy(self, state: DreamerV1State) -> PlayerDV1:
+    def policy(self, state: DreamerV1State) -> DreamerV1Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 

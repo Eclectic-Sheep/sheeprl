@@ -18,7 +18,7 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated
-from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPlayer, build_agent
+from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPolicy, build_agent
 from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.core import (
     Algorithm,
@@ -50,7 +50,7 @@ class RecurrentRolloutPlayer(Player):
     actions that preceded it (the input of the LSTM). The recurrent state is reset at the end of every episode when
     `algo.reset_recurrent_state_on_done` is set, the previous actions always."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: RecurrentPPOPlayer) -> None:
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: RecurrentPPOPolicy) -> None:
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
@@ -306,7 +306,7 @@ class PPORecurrent(Algorithm):
         # One rollout, whatever `buffer.size`
         return state, rollout_store(self.fabric, cfg, log_dir, cfg.algo.rollout_steps)
 
-    def policy(self, state: PPORecurrentState) -> RecurrentPPOPlayer:
+    def policy(self, state: PPORecurrentState) -> RecurrentPPOPolicy:
         """The policy to play with: it shares the modules (and so the weights) of the trained agent (`build_agent`)."""
         return self._policy
 

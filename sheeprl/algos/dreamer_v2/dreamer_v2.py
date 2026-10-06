@@ -23,7 +23,7 @@ from torch.distributions import Bernoulli, Distribution, Independent, Normal, On
 from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
 
-from sheeprl.algos.dreamer_v2.agent import Actor, MinedojoActor, PlayerDV2, WorldModel, build_agent
+from sheeprl.algos.dreamer_v2.agent import Actor, DreamerV2Policy, MinedojoActor, WorldModel, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import (
     MAX_SAMPLED_BATCHES,
@@ -70,7 +70,7 @@ class SequencePlayer(Player):
     episode (zero action and reward, `is_first`).
 
     With `random_warmup`, the actions are uniformly random until `algo.learning_starts`; otherwise they come from
-    `policy` (`PlayerDV2`), whose recurrent state is reset at the start of every episode.
+    `policy` (`DreamerV2Policy`), whose recurrent state is reset at the start of every episode.
     """
 
     # The actions of the policy with its exploration noise (`get_exploration_actions` of DreamerV1)
@@ -82,7 +82,7 @@ class SequencePlayer(Player):
         self,
         fabric: Fabric,
         cfg: Dict[str, Any],
-        policy: PlayerDV2,
+        policy: DreamerV2Policy,
         schedule: TrainSchedule,
         actions_dim: Sequence[int],
         is_continuous: bool,
@@ -702,7 +702,7 @@ class DreamerV2(Algorithm):
         self.schedule = schedule
         return state, build_store(fabric, cfg, log_dir, dry_run_size=2)
 
-    def policy(self, state: DreamerV2State) -> PlayerDV2:
+    def policy(self, state: DreamerV2State) -> DreamerV2Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 

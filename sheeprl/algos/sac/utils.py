@@ -10,7 +10,7 @@ from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 
-from sheeprl.algos.sac.agent import SACPlayer
+from sheeprl.algos.sac.agent import SACPolicy
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
@@ -37,7 +37,7 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(actor: SACPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
+def test(actor: SACPolicy, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     actor.eval()
     done = False

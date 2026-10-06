@@ -34,7 +34,7 @@ from sheeprl.models.models import (
     MultiDecoder,
     MultiEncoder,
 )
-from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.distribution import SafeTanhTransform
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
@@ -667,9 +667,9 @@ class DecoupledRSSM(RSSM):
         return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
 
-class PlayerDV3(nn.Module):
+class DreamerV3Policy(nn.Module):
     """
-    The model of the Dreamer_v3 player.
+    The model of the Dreamer_v3 policy.
 
     Args:
         encoder (MultiEncoder): the encoder.
@@ -683,7 +683,7 @@ class PlayerDV3(nn.Module):
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
-        actor_type (str, optional): which actor the player is using ('task' or 'exploration').
+        actor_type (str, optional): which actor the policy is using ('task' or 'exploration').
             Default to None.
         decoupled_rssm (bool, optional): whether to use the DecoupledRSSM model.
     """
@@ -1037,7 +1037,7 @@ def build_agent(
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
     target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV3]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, DreamerV3Policy]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -1291,14 +1291,14 @@ def build_agent(
 
     if fabric.device.type == "cuda":
         # The convolutions of cuDNN run in the channels-last layout: weights in it spare the conversions of the
-        # activations from and to it (the values of the weights don't change). Before the copy of the player and the
-        # setup, which keep the layout: changing it later would replace the weights the player shares
+        # activations from and to it (the values of the weights don't change). Before the copy of the policy and the
+        # setup, which keep the layout: changing it later would replace the weights the policy shares
         world_model.encoder.to(memory_format=torch.channels_last)
         world_model.observation_model.to(memory_format=torch.channels_last)
 
-    # Create the player agent
+    # Create the policy agent
     fabric_player = get_single_device_fabric(fabric)
-    player = PlayerDV3(
+    policy = DreamerV3Policy(
         copy.deepcopy(world_model.encoder),
         copy.deepcopy(world_model.rssm),
         copy.deepcopy(actor),
@@ -1328,21 +1328,21 @@ def build_agent(
         target_critic.load_state_dict(target_critic_state)
     target_critic = setup_module(fabric, target_critic)
 
-    # Setup the player agent with a single-device Fabric
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.rssm.recurrent_model = fabric_player.setup_module(player.rssm.recurrent_model)
-    player.rssm.transition_model = fabric_player.setup_module(player.rssm.transition_model)
-    player.rssm.representation_model = fabric_player.setup_module(player.rssm.representation_model)
-    player.actor = fabric_player.setup_module(player.actor)
+    # Setup the policy agent with a single-device Fabric
+    policy.encoder = fabric_player.setup_module(policy.encoder)
+    policy.rssm.recurrent_model = fabric_player.setup_module(policy.rssm.recurrent_model)
+    policy.rssm.transition_model = fabric_player.setup_module(policy.rssm.transition_model)
+    policy.rssm.representation_model = fabric_player.setup_module(policy.rssm.representation_model)
+    policy.actor = fabric_player.setup_module(policy.actor)
 
-    # Tie weights between the agent and the player
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+    # Tie weights between the agent and the policy
+    for agent_p, p in zip(world_model.encoder.parameters(), policy.encoder.parameters()):
         p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.parameters(), player.rssm.parameters()):
+    for agent_p, p in zip(world_model.rssm.parameters(), policy.rssm.parameters()):
         p.data = agent_p.data
-    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+    for agent_p, p in zip(actor.parameters(), policy.actor.parameters()):
         p.data = agent_p.data
-    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes
-    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
-    return world_model, actor, critic, target_critic, player
+    policy.get_actions = compiled_policy(policy.get_actions, fabric, cfg, cuda_graphs=False)
+    return world_model, actor, critic, target_critic, policy

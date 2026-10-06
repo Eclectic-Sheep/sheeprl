@@ -29,7 +29,7 @@ from sheeprl.algos.dreamer_v2.utils import (
     reinforce_weight,
     sequential_store,
 )
-from sheeprl.algos.dreamer_v3.agent import Actor, MinedojoActor, PlayerDV3, WorldModel, build_agent, clip_actions
+from sheeprl.algos.dreamer_v3.agent import Actor, DreamerV3Policy, MinedojoActor, WorldModel, build_agent, clip_actions
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, prepare_obs, test
 from sheeprl.core import Algorithm, Environment, EnvStep, Player, TrainSchedule, TrainState, run
@@ -75,7 +75,7 @@ class SequencePlayer(Player):
     action) and the next row is the first one of the new episode.
 
     With `random_warmup`, the actions are uniformly random until `algo.learning_starts`; otherwise they come from
-    `policy` (`PlayerDV3`), whose recurrent state is reset at the start of every episode.
+    `policy` (`DreamerV3Policy`), whose recurrent state is reset at the start of every episode.
 
     A subclass can write more columns in the rows (`step_columns`, `reset_columns`), and the rewards and the episode
     flags with another dtype (`dtype`), e.g. the `LatentSequencePlayer` of DreamerV3.5.
@@ -89,7 +89,7 @@ class SequencePlayer(Player):
         self,
         fabric: Fabric,
         cfg: Dict[str, Any],
-        policy: PlayerDV3,
+        policy: DreamerV3Policy,
         schedule: TrainSchedule,
         actions_dim: Sequence[int],
         is_continuous: bool,
@@ -842,7 +842,7 @@ class DreamerV3(Algorithm):
         self.schedule = schedule
         return state, buffer
 
-    def policy(self, state: DreamerV3State) -> PlayerDV3:
+    def policy(self, state: DreamerV3State) -> DreamerV3Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 

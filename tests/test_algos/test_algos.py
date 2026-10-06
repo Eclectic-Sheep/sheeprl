@@ -655,11 +655,15 @@ def test_dreamer_v3_restart_on_exception(standard_args, start_time):
     # wrapper: the restart must be handled for that environment only (the environments run in the rank-0 process)
     if os.environ["LT_DEVICES"] != "1":
         pytest.skip("The crash is injected in the environments of the rank-0 process only")
-    from sheeprl.algos.dreamer_v3.agent import PlayerDV3
+    from sheeprl.algos.dreamer_v3.agent import DreamerV3Policy
     from sheeprl.envs.dummy import DiscreteDummyEnv
 
     envs, crashes, reset_envs = [], [], []
-    dummy_init, dummy_step, player_init_states = DiscreteDummyEnv.__init__, DiscreteDummyEnv.step, PlayerDV3.init_states
+    dummy_init, dummy_step, player_init_states = (
+        DiscreteDummyEnv.__init__,
+        DiscreteDummyEnv.step,
+        DreamerV3Policy.init_states,
+    )
 
     def init(self, *args, **kwargs):
         dummy_init(self, *args, **kwargs)
@@ -703,7 +707,7 @@ def test_dreamer_v3_restart_on_exception(standard_args, start_time):
     with (
         mock.patch.object(DiscreteDummyEnv, "__init__", init),
         mock.patch.object(DiscreteDummyEnv, "step", step),
-        mock.patch.object(PlayerDV3, "init_states", init_states),
+        mock.patch.object(DreamerV3Policy, "init_states", init_states),
         mock.patch("time.sleep"),
         mock.patch.object(sys, "argv", args),
     ):

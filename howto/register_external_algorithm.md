@@ -60,7 +60,7 @@ from torch.optim import Optimizer
 from my_awesome_algo.agent import build_agent
 from my_awesome_algo.loss import policy_loss, value_loss
 from my_awesome_algo.utils import normalize_obs, prepare_obs, test
-from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
+from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
 from sheeprl.core import (
     Algorithm,
     Environment,
@@ -89,7 +89,7 @@ class ExtSOTAState(TrainState):
 class RolloutPlayer(Player):
     """Plays the policy in the environments and writes every step in the rollout."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPlayer) -> None:
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPolicy) -> None:
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
@@ -140,9 +140,9 @@ class ExtSOTA(Algorithm):
         rollout = rollout_store(self.fabric, cfg, log_dir, cfg.algo.rollout_steps)
         return ExtSOTAState(agent=agent, optimizer=optimizer), rollout
 
-    def policy(self, state: ExtSOTAState) -> PPOPlayer:
+    def policy(self, state: ExtSOTAState) -> PPOPolicy:
         """The policy to play with: it shares its modules, and so its weights, with the trained agent."""
-        return PPOPlayer(state.agent.feature_extractor, state.agent.actor, state.agent.critic)
+        return PPOPolicy(state.agent.feature_extractor, state.agent.actor, state.agent.critic)
 
     def player(self, state: ExtSOTAState) -> RolloutPlayer:
         return RolloutPlayer(self.fabric, self.cfg, self.policy(state))

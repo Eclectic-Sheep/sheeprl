@@ -15,7 +15,7 @@ from lightning.fabric import Fabric
 from torch import Tensor
 from torch.optim import Optimizer
 
-from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer, build_agent
+from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.core import (
@@ -46,7 +46,7 @@ class PPOState(TrainState):
 class RolloutPlayer(Player):
     """Plays the policy in the environments and writes every step in the rollout."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPlayer) -> None:
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPolicy) -> None:
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
@@ -185,7 +185,7 @@ class PPO(Algorithm):
         state = PPOState(agent=agent, optimizer=optimizer)
         return state, rollout_store(self.fabric, cfg, log_dir, cfg.buffer.size)
 
-    def policy(self, state: PPOState) -> PPOPlayer:
+    def policy(self, state: PPOState) -> PPOPolicy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 

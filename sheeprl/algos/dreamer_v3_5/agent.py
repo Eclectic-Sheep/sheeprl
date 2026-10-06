@@ -33,7 +33,7 @@ from torch.distributions import Distribution, Independent, Normal, OneHotCategor
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.models.models import MultiDecoder, MultiEncoder
-from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
 from sheeprl.utils.utils import symlog
@@ -715,8 +715,8 @@ class Actor(nn.Module):
         return actions, dists
 
 
-class PlayerDV3_5(nn.Module):
-    """The player of DreamerV3 (Nature version): it keeps the latent states of the environments and chooses their
+class DreamerV3_5Policy(nn.Module):
+    """The policy of DreamerV3 (Nature version): it keeps the latent states of the environments and chooses their
     actions. It shares the modules of the agent.
 
     The continuous actions it returns (the ones played and stored) are clipped to [-1, 1]: the recurrent model divides
@@ -809,7 +809,7 @@ def build_agent(
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
     target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, nn.Module, nn.Module, nn.Module, PlayerDV3_5]:
+) -> Tuple[WorldModel, nn.Module, nn.Module, nn.Module, DreamerV3_5Policy]:
     """Build the models and set them up with Fabric.
 
     Args:
@@ -825,7 +825,7 @@ def build_agent(
 
     Returns:
         The world model (encoder, RSSM, observation, reward and continue models), the actor, the critic, the slow critic
-        (an exponential moving average of the critic) and the player, which shares the modules of the agent.
+        (an exponential moving average of the critic) and the policy, which shares the modules of the agent.
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -1000,8 +1000,8 @@ def build_agent(
     for p in target_critic.parameters():
         p.requires_grad_(False)
 
-    # The player shares the modules of the agent, which are on the device of the process
-    player = PlayerDV3_5(
+    # The policy shares the modules of the agent, which are on the device of the process
+    policy = DreamerV3_5Policy(
         world_model.encoder,
         world_model.rssm,
         actor,
@@ -1012,7 +1012,7 @@ def build_agent(
         fabric.device,
         discrete_size=world_model_cfg.discrete_size,
     )
-    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes
-    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
-    return world_model, actor, critic, target_critic, player
+    policy.get_actions = compiled_policy(policy.get_actions, fabric, cfg, cuda_graphs=False)
+    return world_model, actor, critic, target_critic, policy

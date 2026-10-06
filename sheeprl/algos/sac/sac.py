@@ -15,7 +15,7 @@ from lightning.fabric import Fabric
 from torch import Tensor
 from torch.optim import Optimizer
 
-from sheeprl.algos.sac.agent import SACAgent, SACPlayer, build_agent
+from sheeprl.algos.sac.agent import SACAgent, SACPolicy, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import prepare_obs, test
 from sheeprl.core import Algorithm, Environment, EnvStep, Player, TrainSchedule, TrainState, run, update
@@ -72,7 +72,7 @@ class ReplayPlayer(Player):
         self,
         fabric: Fabric,
         cfg: Dict[str, Any],
-        policy: SACPlayer,
+        policy: SACPolicy,
         schedule: TrainSchedule,
         dtype: Optional[np.dtype] = None,
     ) -> None:
@@ -211,7 +211,7 @@ class SAC(Algorithm):
             )
             cfg.algo.cnn_keys.encoder = []
 
-    def make_agent(self, obs_space: gym.spaces.Dict, action_space: gym.spaces.Box) -> Tuple[SACAgent, SACPlayer]:
+    def make_agent(self, obs_space: gym.spaces.Dict, action_space: gym.spaces.Box) -> Tuple[SACAgent, SACPolicy]:
         """The actor, the critics and the entropy coefficient set up on the device, and the policy to play with, which
         shares its weights with the actor."""
         return build_agent(self.fabric, self.cfg, obs_space, action_space)
@@ -257,7 +257,7 @@ class SAC(Algorithm):
         self.schedule = schedule
         return state, build_store(fabric, cfg, log_dir)
 
-    def policy(self, state: SACState) -> SACPlayer:
+    def policy(self, state: SACState) -> SACPolicy:
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""
         return self._policy
 

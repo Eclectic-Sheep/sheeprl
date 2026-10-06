@@ -11,7 +11,7 @@ from torch.distributions import Independent, Normal, OneHotCategorical
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor, ortho_init_linear_layers
 from sheeprl.models.models import MLP, MultiEncoder
-from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 
@@ -305,7 +305,7 @@ class RecurrentPPOAgent(nn.Module):
         return actions, logprobs, entropies, values, states
 
 
-class RecurrentPPOPlayer(nn.Module):
+class RecurrentPPOPolicy(nn.Module):
     def __init__(
         self,
         feature_extractor: MultiEncoder,
@@ -459,7 +459,7 @@ def build_agent(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[RecurrentPPOAgent, RecurrentPPOPlayer]:
+) -> Tuple[RecurrentPPOAgent, RecurrentPPOPolicy]:
     agent = RecurrentPPOAgent(
         actions_dim=actions_dim,
         obs_space=obs_space,
@@ -484,11 +484,11 @@ def build_agent(
     agent.critic = setup_module(fabric, agent.critic)
     agent.actor = setup_module(fabric, agent.actor)
 
-    # Setup player agent: it plays with the modules of the agent, without the wrappers of the distributed training. A
+    # Setup policy agent: it plays with the modules of the agent, without the wrappers of the distributed training. A
     # copy with the weights tied lost them on CUDA, where the LSTM moves its weights into a new buffer at every forward
-    # (`flatten_parameters`): the player played with the initial weights for the whole training
+    # (`flatten_parameters`): the policy played with the initial weights for the whole training
     fabric_player = get_single_device_fabric(fabric)
-    player = RecurrentPPOPlayer(
+    policy = RecurrentPPOPolicy(
         fabric_player.setup_module(agent.feature_extractor.module),
         fabric_player.setup_module(agent.rnn.module),
         fabric_player.setup_module(agent.actor.module),
@@ -496,6 +496,6 @@ def build_agent(
         cfg.algo.rnn.lstm.hidden_size,
         actions_dim,
     )
-    # The step of the player, compiled with `algo.compile` (`compiled_player`)
-    player.forward = compiled_player(player.forward, fabric, cfg)
-    return agent, player
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`)
+    policy.forward = compiled_policy(policy.forward, fabric, cfg)
+    return agent, policy

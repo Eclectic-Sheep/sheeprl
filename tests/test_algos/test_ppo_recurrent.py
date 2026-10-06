@@ -15,7 +15,7 @@ from omegaconf import OmegaConf
 from torch import nn
 
 from sheeprl.algos.ppo_recurrent import ppo_recurrent
-from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPlayer
+from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPolicy
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
 from tests.test_algos.compiled import assert_same_step, no_host_reads, same_random_numbers
@@ -41,8 +41,8 @@ def build_agent(ortho_init: bool = False, is_continuous: bool = False) -> Recurr
     )
 
 
-def player_of(agent: RecurrentPPOAgent) -> RecurrentPPOPlayer:
-    return RecurrentPPOPlayer(
+def player_of(agent: RecurrentPPOAgent) -> RecurrentPPOPolicy:
+    return RecurrentPPOPolicy(
         agent.feature_extractor, agent.rnn, agent.actor, agent.critic, HIDDEN_SIZE, agent.actions_dim
     )
 
@@ -269,7 +269,7 @@ def test_the_compiled_minibatches_of_a_rollout_have_one_size(monkeypatch):
         "algo.run_test=False",
         "algo.compile.enabled=True",
         # The losses are not compiled (`compiled` above), nor the player: on the CPU Inductor needs a C++ compiler
-        "algo.compile.player=False",
+        "algo.compile.policy=False",
         "algo.rollout_steps=64",
         "algo.per_rank_sequence_length=8",
         "algo.per_rank_num_batches=3",

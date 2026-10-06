@@ -19,7 +19,7 @@ from torch.distributions import Bernoulli, Distribution, Independent, Normal, On
 from torch.distributions.utils import logits_to_probs
 from torch.optim import Optimizer
 
-from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
+from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy, WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequencePlayer, actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import (
@@ -549,11 +549,11 @@ class P2EDV2Exploration(Algorithm):
         self.schedule = schedule
         return state, build_store(fabric, cfg, log_dir, dry_run_size=4)
 
-    def policy(self, state: P2EDV2ExplorationState) -> PlayerDV2:
+    def policy(self, state: P2EDV2ExplorationState) -> DreamerV2Policy:
         """The policy to play with: the exploration actor, which it shares its weights with (`build_agent`)."""
         return self._policy
 
-    def task_policy(self, state: P2EDV2ExplorationState) -> PlayerDV2:
+    def task_policy(self, state: P2EDV2ExplorationState) -> DreamerV2Policy:
         """The policy of the task actor (zero-shot), to test it after the exploration."""
         policy = self.policy(state)
         policy.actor_type = "task"

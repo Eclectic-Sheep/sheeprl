@@ -178,7 +178,7 @@ from lightning.fabric import Fabric
 from torch import Tensor
 from torch.optim import Optimizer
 
-from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
+from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
 from sheeprl.algos.sota.agent import build_agent
 from sheeprl.algos.sota.loss import policy_loss, value_loss
 from sheeprl.algos.sota.utils import normalize_obs, prepare_obs, test
@@ -210,7 +210,7 @@ class SOTAState(TrainState):
 class RolloutPlayer(Player):
     """Plays the policy in the environments and writes every step in the rollout."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPlayer) -> None:
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPolicy) -> None:
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
@@ -261,9 +261,9 @@ class SOTA(Algorithm):
         rollout = rollout_store(self.fabric, cfg, log_dir, cfg.algo.rollout_steps)
         return SOTAState(agent=agent, optimizer=optimizer), rollout
 
-    def policy(self, state: SOTAState) -> PPOPlayer:
+    def policy(self, state: SOTAState) -> PPOPolicy:
         """The policy to play with: it shares its modules, and so its weights, with the trained agent."""
-        return PPOPlayer(state.agent.feature_extractor, state.agent.actor, state.agent.critic)
+        return PPOPolicy(state.agent.feature_extractor, state.agent.actor, state.agent.critic)
 
     def player(self, state: SOTAState) -> RolloutPlayer:
         return RolloutPlayer(self.fabric, self.cfg, self.policy(state))

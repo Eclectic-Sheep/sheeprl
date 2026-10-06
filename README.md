@@ -467,7 +467,7 @@ The modules are not wrapped by `DistributedDataParallel`: every process computes
 
 ### Compiling the losses
 
-With `algo.compile.enabled=True`, the losses of the algorithm (forward and backward passes) are compiled with `torch.compile`, also with several processes. With `algo.compile.mode=reduce-overhead` (the default), the compiled losses run as CUDA graphs in the `32-true` and `bf16-mixed` precisions (the other precisions use the default mode), which removes most of the cost of launching their many small kernels. The players and the optimizer steps are not compiled.
+With `algo.compile.enabled=True`, the losses of the algorithm (forward and backward passes) are compiled with `torch.compile`, also with several processes. With `algo.compile.mode=reduce-overhead` (the default), the compiled losses run as CUDA graphs in the `32-true` and `bf16-mixed` precisions (the other precisions use the default mode), which removes most of the cost of launching their many small kernels. With `algo.compile.policy=True` (the default), the step of the policy that plays in the environments is compiled too; the optimizer steps are not compiled.
 
 The losses are written so that they compile into graphs that don't wait for the GPU: they don't read tensors on the host (`.item()`, an `if` on a tensor), their shapes don't depend on the data (e.g. masked sums instead of boolean indexing, and the minibatches of PPO Recurrent padded to a few sizes), and the recurrent layers are unrolled from their weights while compiling, since `torch.compile` doesn't trace `nn.LSTM` and `nn.GRU`.
 

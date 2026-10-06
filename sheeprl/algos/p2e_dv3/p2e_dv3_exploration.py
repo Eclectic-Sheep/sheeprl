@@ -22,7 +22,7 @@ from torch.distributions import Independent
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, reinforce_weight, sequential_store
-from sheeprl.algos.dreamer_v3.agent import PlayerDV3, WorldModel
+from sheeprl.algos.dreamer_v3.agent import DreamerV3Policy, WorldModel
 from sheeprl.algos.dreamer_v3.dreamer_v3 import (
     SequencePlayer,
     actor_advantage_loss,
@@ -527,11 +527,11 @@ class P2EDV3Exploration(Algorithm):
         self.schedule = schedule
         return state, buffer
 
-    def policy(self, state: P2EDV3ExplorationState) -> PlayerDV3:
+    def policy(self, state: P2EDV3ExplorationState) -> DreamerV3Policy:
         """The policy to play with: the exploration actor, which it shares its weights with (`build_agent`)."""
         return self._policy
 
-    def task_policy(self, state: P2EDV3ExplorationState) -> PlayerDV3:
+    def task_policy(self, state: P2EDV3ExplorationState) -> DreamerV3Policy:
         """The policy of the task actor (zero-shot), to test it after the exploration."""
         policy = self.policy(state)
         policy.actor_type = "task"

@@ -23,7 +23,7 @@ from torch.distributions import Bernoulli, Independent, Normal, TransformedDistr
 
 from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v1 import agent, dreamer_v1
-from sheeprl.algos.dreamer_v1.agent import RSSM, PlayerDV1, RecurrentModel, build_agent, gru_step
+from sheeprl.algos.dreamer_v1.agent import RSSM, DreamerV1Policy, RecurrentModel, build_agent, gru_step
 from sheeprl.algos.dreamer_v1.loss import reconstruction_loss, state_kl
 from sheeprl.algos.dreamer_v2.agent import Actor
 from sheeprl.utils import compile as compile_utils
@@ -128,7 +128,7 @@ def test_the_player_samples_the_posterior_with_the_minimum_std_of_the_world_mode
         return (None, None), torch.zeros(*state_information.shape[:-1], 4)
 
     monkeypatch.setattr(agent, "compute_stochastic_state", compute_stochastic_state)
-    player = PlayerDV1(
+    player = DreamerV1Policy(
         encoder=lambda obs: torch.zeros(1, 2, 5),
         recurrent_model=RecurrentModel(4 + 3, 8),
         representation_model=nn.Linear(8 + 5, 8),

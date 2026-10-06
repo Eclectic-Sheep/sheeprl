@@ -7,7 +7,7 @@ import pytest
 import torch
 from torch import nn
 
-from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
+from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
 from sheeprl.utils.utils import dotdict
 
 
@@ -76,14 +76,14 @@ def test_ppo_default_init_is_not_orthogonal(encoder_layers):
         assert not torch.allclose(singular_values, singular_values[0].expand_as(singular_values))
 
 
-def tanh_normal_player(mean: float, std: float) -> Tuple[PPOPlayer, PPOAgent]:
+def tanh_normal_player(mean: float, std: float) -> Tuple[PPOPolicy, PPOAgent]:
     """A tanh-normal policy whose normal, before the tanh, has mean `mean` and standard deviation `std` everywhere."""
     agent = build_agent(ortho_init=False, is_continuous=True, distribution="tanh_normal")
     head = agent.actor.actor_heads[0]
     with torch.no_grad():
         head.weight.zero_()
         head.bias.copy_(torch.tensor([mean] * 4 + [np.log(std)] * 4))
-    return PPOPlayer(agent.feature_extractor, agent.actor, agent.critic), agent
+    return PPOPolicy(agent.feature_extractor, agent.actor, agent.critic), agent
 
 
 def test_ppo_tanh_normal_greedy_actions_are_squashed():
@@ -122,7 +122,7 @@ def test_the_compiled_player_plays_as_the_eager_one(monkeypatch, is_continuous):
     # without `torch.compile` and its CUDA graphs, whose outputs are copies (the next replay overwrites them)
     from lightning import Fabric
 
-    from sheeprl.utils.compile import compiled_player
+    from sheeprl.utils.compile import compiled_policy
 
     from .compiled import same_random_numbers
 
@@ -131,9 +131,9 @@ def test_the_compiled_player_plays_as_the_eager_one(monkeypatch, is_continuous):
     cfg = dotdict(
         {"algo": {"compile": {"enabled": True, "mode": "reduce-overhead"}}, "fabric": {"precision": "32-true"}}
     )
-    eager = PPOPlayer(agent.feature_extractor, agent.actor, agent.critic)
-    compiled = PPOPlayer(agent.feature_extractor, agent.actor, agent.critic)
-    compiled.forward = compiled_player(compiled.forward, Fabric(accelerator="cuda", devices=1), cfg)
+    eager = PPOPolicy(agent.feature_extractor, agent.actor, agent.critic)
+    compiled = PPOPolicy(agent.feature_extractor, agent.actor, agent.critic)
+    compiled.forward = compiled_policy(compiled.forward, Fabric(accelerator="cuda", devices=1), cfg)
     obs = {"state": torch.randn(4, 8, device="cuda")}
     played = []
     for module in (eager, compiled):

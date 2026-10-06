@@ -16,7 +16,7 @@ from lightning.fabric import Fabric
 from torch import Tensor, nn
 from torch.optim import Optimizer
 
-from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel
+from sheeprl.algos.dreamer_v1.agent import DreamerV1Policy, WorldModel
 from sheeprl.algos.dreamer_v1.dreamer_v1 import SequencePlayer, build_store, sample_batches_of_iteration, train
 from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import test
@@ -127,11 +127,11 @@ class P2EDV1Finetuning(Algorithm):
         self.schedule = schedule
         return state, buffer
 
-    def policy(self, state: P2EDV1FinetuningState) -> PlayerDV1:
+    def policy(self, state: P2EDV1FinetuningState) -> DreamerV1Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
-    def task_policy(self, state: P2EDV1FinetuningState) -> PlayerDV1:
+    def task_policy(self, state: P2EDV1FinetuningState) -> DreamerV1Policy:
         """The policy of the task actor, which plays from the first training on."""
         policy = self.policy(state)
         if policy.actor_type != "task":

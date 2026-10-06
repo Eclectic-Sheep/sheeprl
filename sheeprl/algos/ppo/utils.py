@@ -12,7 +12,7 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.optim import Optimizer
 
-from sheeprl.algos.ppo.agent import PPOPlayer
+from sheeprl.algos.ppo.agent import PPOPolicy
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import polynomial_decay, unwrap_fabric
@@ -95,7 +95,7 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
+def test(agent: PPOPolicy, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False

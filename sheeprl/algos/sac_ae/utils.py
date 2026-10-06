@@ -19,7 +19,7 @@ from sheeprl.utils.utils import unwrap_fabric
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
 
-    from sheeprl.algos.sac_ae.agent import SACAEPlayer
+    from sheeprl.algos.sac_ae.agent import SACAEPolicy
 
 AGGREGATOR_KEYS = AGGREGATOR_KEYS.union({"Loss/reconstruction_loss"})
 MODELS_TO_REGISTER = {"agent", "encoder", "decoder"}
@@ -40,7 +40,7 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(actor: "SACAEPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
+def test(actor: "SACAEPolicy", fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
     env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
     actor.eval()
     done = False

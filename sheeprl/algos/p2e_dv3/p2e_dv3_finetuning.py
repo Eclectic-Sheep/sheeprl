@@ -18,7 +18,7 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, sequential_store
-from sheeprl.algos.dreamer_v3.agent import PlayerDV3
+from sheeprl.algos.dreamer_v3.agent import DreamerV3Policy
 from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer, train
 from sheeprl.algos.dreamer_v3.utils import Moments, test
 from sheeprl.algos.p2e_dv3.agent import build_agent
@@ -167,11 +167,11 @@ class P2EDV3Finetuning(Algorithm):
         self.schedule = schedule
         return state, buffer
 
-    def policy(self, state: P2EDV3FinetuningState) -> PlayerDV3:
+    def policy(self, state: P2EDV3FinetuningState) -> DreamerV3Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
-    def task_policy(self, state: P2EDV3FinetuningState) -> PlayerDV3:
+    def task_policy(self, state: P2EDV3FinetuningState) -> DreamerV3Policy:
         """The policy of the task actor, which plays from the first training on."""
         policy = self.policy(state)
         if policy.actor_type != "task":

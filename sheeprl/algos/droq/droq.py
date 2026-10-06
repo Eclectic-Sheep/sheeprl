@@ -13,7 +13,7 @@ from lightning.fabric import Fabric
 from torch import Tensor
 
 from sheeprl.algos.droq.agent import DROQAgent, build_agent
-from sheeprl.algos.sac.agent import SACPlayer
+from sheeprl.algos.sac.agent import SACPolicy
 from sheeprl.algos.sac.loss import entropy_loss, policy_loss
 from sheeprl.algos.sac.sac import SAC, SACState
 from sheeprl.algos.sac.utils import test
@@ -54,7 +54,7 @@ class DroQ(SAC):
     name = "DroQ"
     buffer_dtype = np.float32
 
-    def make_agent(self, obs_space: gym.spaces.Dict, action_space: gym.spaces.Box) -> Tuple[DROQAgent, SACPlayer]:
+    def make_agent(self, obs_space: gym.spaces.Dict, action_space: gym.spaces.Box) -> Tuple[DROQAgent, SACPolicy]:
         return build_agent(self.fabric, self.cfg, obs_space, action_space)
 
     def batches(

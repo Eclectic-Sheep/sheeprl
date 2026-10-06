@@ -16,7 +16,7 @@ from torch import Size, Tensor
 
 from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
-from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import cnn_forward, ema_
 
@@ -454,7 +454,7 @@ class SACAEAgent(nn.Module):
         ema_(self.critic_target.encoder, self.critic_unwrapped.encoder, self._encoder_tau)
 
 
-class SACAEPlayer(nn.Module):
+class SACAEPolicy(nn.Module):
     def __init__(
         self,
         feature_extractor: MultiEncoder,
@@ -552,7 +552,7 @@ def build_agent(
     agent_state: Optional[Dict[str, Tensor]] = None,
     encoder_state: Optional[Dict[str, Tensor]] = None,
     decoder_sate: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[SACAEAgent, _FabricModule, _FabricModule, SACAEPlayer]:
+) -> Tuple[SACAEAgent, _FabricModule, _FabricModule, SACAEPolicy]:
     act_dim = prod(action_space.shape)
     target_entropy = -act_dim
 
@@ -650,8 +650,8 @@ def build_agent(
     if agent_state:
         agent.load_state_dict(tie_actor_convolutions(agent_state))
 
-    # Setup player agent
-    player = SACAEPlayer(
+    # Setup policy agent
+    policy = SACAEPolicy(
         copy.deepcopy(agent.actor.encoder),
         copy.deepcopy(agent.actor.model),
         copy.deepcopy(agent.actor.fc_mean),
@@ -676,17 +676,17 @@ def build_agent(
     fabric_player = get_single_device_fabric(fabric)
     agent.critic_target = fabric_player.setup_module(agent.critic_target)
 
-    # Setup player agent
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.model = fabric_player.setup_module(player.model)
-    player.fc_mean = fabric_player.setup_module(player.fc_mean)
-    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
-    player.action_scale = player.action_scale.to(fabric_player.device)
-    player.action_bias = player.action_bias.to(fabric_player.device)
+    # Setup policy agent
+    policy.encoder = fabric_player.setup_module(policy.encoder)
+    policy.model = fabric_player.setup_module(policy.model)
+    policy.fc_mean = fabric_player.setup_module(policy.fc_mean)
+    policy.fc_logstd = fabric_player.setup_module(policy.fc_logstd)
+    policy.action_scale = policy.action_scale.to(fabric_player.device)
+    policy.action_bias = policy.action_bias.to(fabric_player.device)
 
-    # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
-        player_p.data = agent_p.data
-    # The step of the player, compiled with `algo.compile` (`compiled_player`)
-    player.forward = compiled_player(player.forward, fabric, cfg)
-    return agent, encoder, decoder, player
+    # Tie weights between the agent and the policy
+    for agent_p, policy_p in zip(agent.actor.parameters(), policy.parameters()):
+        policy_p.data = agent_p.data
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`)
+    policy.forward = compiled_policy(policy.forward, fabric, cfg)
+    return agent, encoder, decoder, policy

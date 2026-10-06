@@ -38,7 +38,7 @@ from sheeprl.algos.dreamer_v2.dreamer_v2 import actions_dim_of, check_keys
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, env_buffer_size, sequential_store
 from sheeprl.algos.dreamer_v3.dreamer_v3 import SequencePlayer
 from sheeprl.algos.dreamer_v3.loss import categorical_kl
-from sheeprl.algos.dreamer_v3_5.agent import Actor, PlayerDV3_5, build_agent
+from sheeprl.algos.dreamer_v3_5.agent import Actor, DreamerV3_5Policy, build_agent
 from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return, mse, symlog_mse
 from sheeprl.algos.dreamer_v3_5.utils import Moments, test
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, run
@@ -520,7 +520,12 @@ class LatentSequencePlayer(SequencePlayer):
     dtype = np.float32
 
     def __init__(
-        self, fabric: Fabric, cfg: Dict[str, Any], policy: PlayerDV3_5, actions_dim: Sequence[int], is_continuous: bool
+        self,
+        fabric: Fabric,
+        cfg: Dict[str, Any],
+        policy: DreamerV3_5Policy,
+        actions_dim: Sequence[int],
+        is_continuous: bool,
     ) -> None:
         super().__init__(fabric, cfg, policy, None, actions_dim, is_continuous, random_warmup=False)
         self.stochastic_size = cfg.algo.world_model.stochastic_size
@@ -605,7 +610,7 @@ class DreamerV3_5(Algorithm):
         self.buffer_size = env_buffer_size(fabric, sampling_cfg, dry_run_size=2)
         return state, sequential_store(fabric, cfg, log_dir, self.buffer_size, self.sampled_length)
 
-    def policy(self, state: DreamerV3_5State) -> PlayerDV3_5:
+    def policy(self, state: DreamerV3_5State) -> DreamerV3_5Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 

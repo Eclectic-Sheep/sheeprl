@@ -11,7 +11,7 @@ from torch import Tensor
 from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
 from sheeprl.algos.ppo.utils import MODELS_TO_REGISTER as ppo_models_to_register
 from sheeprl.algos.ppo.utils import normalize_obs
-from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOPlayer
+from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOPolicy
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 
@@ -38,7 +38,7 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
+def test(agent: "RecurrentPPOPolicy", fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False

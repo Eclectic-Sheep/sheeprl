@@ -8,7 +8,7 @@ The commands (`sheeprl`, `sheeprl-eval`, `sheeprl-registration`) and the configu
 
 | Key | Default | |
 |---|---|---|
-| `algo.compile` | `enabled: False`, `mode: reduce-overhead`, `player: True` | in `algo/default.yaml`, for every algorithm: compiles the losses (and the step of the player) with `torch.compile` |
+| `algo.compile` | `enabled: False`, `mode: reduce-overhead`, `policy: True` | in `algo/default.yaml`, for every algorithm: compiles the losses (and the step of the policy) with `torch.compile` |
 | `buffer.prefetch` | `False` | samples the next batches in a thread while the training uses the current ones |
 | `buffer.on_device` | `False` | keeps the replay buffer in the memory of the device of the training |
 | `algo.refresh_recurrent_states` | `False` | PPO-recurrent: recomputes the recurrent states of the rollout at every epoch after the first one |

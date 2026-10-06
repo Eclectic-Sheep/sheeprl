@@ -21,8 +21,8 @@ from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
 
-    from sheeprl.algos.dreamer_v1.agent import PlayerDV1
-    from sheeprl.algos.dreamer_v2.agent import PlayerDV2
+    from sheeprl.algos.dreamer_v1.agent import DreamerV1Policy
+    from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy
 
 
 AGGREGATOR_KEYS = {
@@ -222,7 +222,7 @@ def prepare_obs(
 
 @torch.no_grad()
 def test(
-    player: "PlayerDV2" | "PlayerDV1",
+    policy: "DreamerV2Policy" | "DreamerV1Policy",
     fabric: Fabric,
     cfg: Dict[str, Any],
     log_dir: str,
@@ -233,7 +233,7 @@ def test(
     """Test the model on the environment with the frozen model.
 
     Args:
-        player (PlayerDV2 | PlayerDV1): the agent which contains all the models needed to play.
+        policy (DreamerV2Policy | DreamerV1Policy): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
         cfg (Dict[str, Any]): the hyper-parameters.
         log_dir (str): the logging directory.
@@ -246,15 +246,15 @@ def test(
     done = False
     cumulative_rew = 0
     obs = env.reset(seed=cfg.seed)[0]
-    player.num_envs = 1
-    player.init_states()
+    policy.num_envs = 1
+    policy.init_states()
     while not done:
         # Act greedly through the environment
         torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder)
-        real_actions = player.get_actions(
+        real_actions = policy.get_actions(
             torch_obs, greedy, {k: v for k, v in torch_obs.items() if k.startswith("mask")}
         )
-        if player.actor.is_continuous:
+        if policy.actor.is_continuous:
             real_actions = torch.stack(real_actions, -1).cpu().numpy()
         else:
             real_actions = torch.stack([real_act.argmax(dim=-1) for real_act in real_actions], dim=-1).cpu().numpy()

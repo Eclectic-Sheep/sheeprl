@@ -11,7 +11,7 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from sheeprl.models.models import MLP
-from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ema_
 
@@ -266,7 +266,7 @@ class SACAgent(nn.Module):
         ema_(self.qfs_target, self.qfs_unwrapped, self._tau)
 
 
-class SACPlayer(nn.Module):
+class SACPolicy(nn.Module):
     def __init__(
         self,
         feature_extractor: nn.Module,
@@ -319,7 +319,7 @@ def build_agent(
     obs_space: gymnasium.spaces.Dict,
     action_space: gymnasium.spaces.Box,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[SACAgent, SACPlayer]:
+) -> Tuple[SACAgent, SACPolicy]:
     act_dim = prod(action_space.shape)
     obs_dim = sum([prod(obs_space[k].shape) for k in cfg.algo.mlp_keys.encoder])
     actor = SACActor(
@@ -339,8 +339,8 @@ def build_agent(
     if agent_state:
         agent.load_state_dict(agent_state)
 
-    # Setup player agent
-    player = SACPlayer(
+    # Setup policy agent
+    policy = SACPolicy(
         copy.deepcopy(agent.actor.model),
         copy.deepcopy(agent.actor.fc_mean),
         copy.deepcopy(agent.actor.fc_logstd),
@@ -361,16 +361,16 @@ def build_agent(
     fabric_player = get_single_device_fabric(fabric)
     agent.qfs_target = nn.ModuleList([fabric_player.setup_module(target) for target in agent.qfs_target])
 
-    # Setup player agent
-    player.model = fabric_player.setup_module(player.model)
-    player.fc_mean = fabric_player.setup_module(player.fc_mean)
-    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
-    player.action_scale = player.action_scale.to(fabric_player.device)
-    player.action_bias = player.action_bias.to(fabric_player.device)
+    # Setup policy agent
+    policy.model = fabric_player.setup_module(policy.model)
+    policy.fc_mean = fabric_player.setup_module(policy.fc_mean)
+    policy.fc_logstd = fabric_player.setup_module(policy.fc_logstd)
+    policy.action_scale = policy.action_scale.to(fabric_player.device)
+    policy.action_bias = policy.action_bias.to(fabric_player.device)
 
-    # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
-        player_p.data = agent_p.data
-    # The step of the player, compiled with `algo.compile` (`compiled_player`)
-    player.forward = compiled_player(player.forward, fabric, cfg)
-    return agent, player
+    # Tie weights between the agent and the policy
+    for agent_p, policy_p in zip(agent.actor.parameters(), policy.parameters()):
+        policy_p.data = agent_p.data
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`)
+    policy.forward = compiled_policy(policy.forward, fabric, cfg)
+    return agent, policy
