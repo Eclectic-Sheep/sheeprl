@@ -102,6 +102,8 @@ class Algorithm:
     # Whether the off-policy algorithm plays random actions (`Policy.random`) until `algo.learning_starts`; otherwise
     # it plays its policy from the first step (e.g. the finetuning of a policy trained by exploration)
     random_warmup: bool = True
+    # Whether the test episode (`test`) plays the most likely actions of the policy instead of sampling them
+    greedy_test: bool = True
     # Whether a crashed environment is created again instead of stopping the run (`GymEnvironment`): the writer must
     # then handle `EnvStep.restarted`, which marks the first observation of the new environment
     restart_crashed_envs: bool = False
@@ -126,7 +128,10 @@ class Algorithm:
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         """Play a test episode with the trained policy and log its return at `policy_step`: at the end of the training
         (with `algo.run_test`) and to evaluate a checkpoint (`sheeprl.core.evaluation.evaluate`)."""
-        raise NotImplementedError
+        # Imported here: the evaluation imports the algorithms
+        from sheeprl.core.evaluation import run_test
+
+        run_test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step, greedy=self.greedy_test)
 
     def policy(self, state: TrainState) -> Policy:
         """The policy that plays in the environments: it shares its weights with the trained modules of `state`."""

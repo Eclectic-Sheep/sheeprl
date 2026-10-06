@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable, Dict
 
 import gymnasium as gym
+import numpy as np
+import torch
 from lightning import Fabric
+from torch import nn
 
 from sheeprl.core.algorithm import Algorithm, TrainState
 from sheeprl.core.loop import load_trained_state
@@ -15,6 +18,44 @@ from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
+
+    from sheeprl.core.collector import Policy
+
+
+@torch.no_grad()
+def run_test(
+    policy: Policy,
+    fabric: Fabric,
+    cfg: Dict[str, Any],
+    log_dir: str,
+    policy_step: int = 0,
+    greedy: bool = True,
+    test_name: str = "",
+) -> float:
+    """Play one episode of a test environment with `policy` and log its return (`Test/cumulative_reward`) at
+    `policy_step`: the test of every algorithm (`Algorithm.test`). With `greedy`, the policy plays its most likely
+    actions. A dry run plays one step. Returns the return of the episode."""
+    env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name else ""), vector_env_idx=0)()
+    training = isinstance(policy, nn.Module) and policy.training
+    if isinstance(policy, nn.Module):
+        policy.eval()
+    policy.init_states(1)
+    obs, _ = env.reset(seed=cfg.seed)
+    done = False
+    cumulative_rew = 0
+    while not done:
+        # The policy plays one environment: its observations are a row
+        act = policy.act({k: v[np.newaxis] for k, v in obs.items()}, greedy=greedy)
+        obs, reward, terminated, truncated, _ = env.step(act.env_actions.reshape(env.action_space.shape))
+        done = terminated or truncated or cfg.dry_run
+        cumulative_rew += reward
+    env.close()
+    if training:
+        policy.train()
+    fabric.print("Test - Reward:", cumulative_rew)
+    if cfg.metric.log_level > 0 and len(fabric.loggers) > 0:
+        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, policy_step)
+    return cumulative_rew
 
 
 def evaluate(fabric: Fabric, cfg: Dict[str, Any], checkpoint: Dict[str, Any], algo: Algorithm) -> None:

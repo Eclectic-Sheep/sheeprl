@@ -24,8 +24,8 @@ my_awesome_algo
 # my_awesome_algo/utils.py
 from __future__ import annotations
 
-# The observations, the test episode and the model logging of PPO fit this algorithm too
-from sheeprl.algos.ppo.utils import log_models, normalize_obs, prepare_obs, test  # noqa: F401
+# The model logging of PPO fits this algorithm too
+from sheeprl.algos.ppo.utils import log_models  # noqa: F401
 
 # The metrics the algorithm can log and the models it can register
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/policy_loss", "Loss/value_loss"}
@@ -59,7 +59,7 @@ from torch.optim import Optimizer
 
 from my_awesome_algo.agent import build_agent
 from my_awesome_algo.loss import policy_loss, value_loss
-from my_awesome_algo.utils import normalize_obs, prepare_obs, test
+from sheeprl.utils.obs import normalize_obs, prepare_obs
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
 from sheeprl.core import (
     Act,
@@ -137,7 +137,7 @@ class ExtSOTA(Algorithm):
             state.agent.feature_extractor,
             state.agent.actor,
             state.agent.critic,
-            fabric=self.fabric,
+            device=self.fabric.device,
             obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
             cnn_keys=cfg.algo.cnn_keys.encoder,
         )
@@ -155,7 +155,9 @@ class ExtSOTA(Algorithm):
         # The returns and the advantages, bootstrapped with the value of the observations after the rollout
         with torch.inference_mode():
             next_obs = {k: rollout.last_step.next_obs[k] for k in obs_keys}
-            next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
+            next_obs = prepare_obs(
+                self.fabric.device, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
+            )
             next_values = state.agent.critic(state.agent.feature_extractor(next_obs))
             returns, advantages = gae(
                 data["rewards"],
@@ -194,7 +196,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if fabric.is_global_zero and cfg.algo.run_test:
         # The return of the trained agent, logged at the last policy step of the training
-        test(algo.policy(state), fabric, cfg, log_dir, policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step)
 
     # Optional: register the trained models with MLflow
     if not cfg.model_manager.disabled and fabric.is_global_zero:
@@ -217,27 +219,14 @@ from typing import Any, Dict
 from lightning import Fabric
 
 from my_awesome_algo.ext_sota import ExtSOTA
-from my_awesome_algo.utils import test
-from sheeprl.core import load_trained_state
-from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import get_log_dir, get_logger
+from sheeprl.core import evaluate as evaluate_trained
 from sheeprl.utils.registry import register_evaluation
 
 
 @register_evaluation(algorithms="ext_sota")
 def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
-    logger = get_logger(fabric, cfg)
-    if logger and fabric.is_global_zero:
-        fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(cfg)
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
-
-    # The models are built as by the training (`build`) and restored from the checkpoint
-    env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
-    algo = ExtSOTA(fabric, cfg)
-    trained = load_trained_state(fabric, cfg, algo, state, env.observation_space, env.action_space)
-    env.close()
-    test(algo.policy(trained), fabric, cfg, log_dir)
+    # The models are built as by the training (`build`), restored from the checkpoint and tested (`Algorithm.test`)
+    evaluate_trained(fabric, cfg, state, ExtSOTA(fabric, cfg))
 ```
 
 ## Config files

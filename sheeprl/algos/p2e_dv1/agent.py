@@ -14,6 +14,7 @@ from sheeprl.algos.dreamer_v1.agent import MinedojoActor as DV1MinedojoActor
 from sheeprl.algos.dreamer_v1.agent import WorldModel
 from sheeprl.algos.dreamer_v1.agent import build_agent as dv1_build_agent
 from sheeprl.algos.dreamer_v1.agent import init_weights
+from sheeprl.core.schedule import TrainSchedule
 from sheeprl.models.models import MLP
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.utils import unwrap_fabric
@@ -37,6 +38,7 @@ def build_agent(
     critic_task_state: Optional[Dict[str, torch.Tensor]] = None,
     actor_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
     critic_exploration_state: Optional[Dict[str, torch.Tensor]] = None,
+    schedule: Optional[TrainSchedule] = None,
 ) -> Tuple[WorldModel, nn.ModuleList, _FabricModule, _FabricModule, _FabricModule, _FabricModule, DreamerV1Policy]:
     """Build the models and wrap them with Fabric.
 
@@ -86,6 +88,7 @@ def build_agent(
         world_model_state=world_model_state,
         actor_state=actor_exploration_state,
         critic_state=critic_exploration_state,
+        schedule=schedule,
     )
     policy.actor_type = cfg.algo.player.actor_type
     actor_cls = hydra.utils.get_class(cfg.algo.actor.cls)

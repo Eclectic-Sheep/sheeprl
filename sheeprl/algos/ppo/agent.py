@@ -14,12 +14,12 @@ from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
-from sheeprl.algos.ppo.utils import prepare_obs
 from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import per_layer_ortho_init_weights
+from sheeprl.utils.obs import prepare_obs
 from sheeprl.utils.utils import safetanh
 
 
@@ -266,15 +266,15 @@ class PPOAgent(nn.Module):
 
 class PPOPolicy(nn.Module, Policy):
     """The policy of PPO and A2C: `forward` samples the actions from the observations as tensors, `act` plays them in
-    the environments (`Policy`), from the observations `obs_keys` (the images among them are `cnn_keys`) moved to the
-    device of `fabric`."""
+    the environments (`Policy`), from the observations `obs_keys` (the images among them are `cnn_keys`) moved to
+    `device`."""
 
     def __init__(
         self,
         feature_extractor: MultiEncoder,
         actor: PPOActor,
         critic: nn.Module,
-        fabric: Optional[Fabric] = None,
+        device: str | torch.device = "cpu",
         obs_keys: Sequence[str] = (),
         cnn_keys: Sequence[str] = (),
     ) -> None:
@@ -282,7 +282,7 @@ class PPOPolicy(nn.Module, Policy):
         self.feature_extractor = feature_extractor
         self.critic = critic
         self.actor = actor
-        self.fabric = fabric
+        self.device = torch.device(device)
         self.obs_keys = obs_keys
         self.cnn_keys = cnn_keys
 
@@ -341,11 +341,17 @@ class PPOPolicy(nn.Module, Policy):
             return env_actions
         return torch.stack([act.argmax(dim=-1) for act in actions], dim=-1)
 
-    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+    def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
         """The actions for `obs`, with their columns: the actions one-hot for discrete actions (the environments take
         their indices), their log-probabilities and the values of `obs`."""
         num_envs = len(obs[self.obs_keys[0]])
-        obs = prepare_obs(self.fabric, {k: obs[k] for k in self.obs_keys}, cnn_keys=self.cnn_keys, num_envs=num_envs)
+        obs = prepare_obs(self.device, {k: obs[k] for k in self.obs_keys}, cnn_keys=self.cnn_keys, num_envs=num_envs)
+        if greedy:
+            # The modes of the distributions, the continuous ones already squashed with `tanh_normal`
+            actions = self.get_actions(obs, greedy=True)
+            if self.actor.is_continuous:
+                return Act(torch.cat(actions, dim=-1).cpu().numpy())
+            return Act(torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy())
         actions, logprobs, values = self(obs)
         columns = {
             "actions": torch.cat(actions, dim=-1).cpu().numpy(),
@@ -409,7 +415,7 @@ def build_agent(
         copy.deepcopy(agent.feature_extractor),
         copy.deepcopy(agent.actor),
         copy.deepcopy(agent.critic),
-        fabric=fabric_player,
+        device=fabric_player.device,
         obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
         cnn_keys=cfg.algo.cnn_keys.encoder,
     )

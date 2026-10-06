@@ -375,8 +375,7 @@ def test_the_episodes_start_from_zeros(monkeypatch):
 
 def test_the_player_starts_the_environments_from_zeros():
     _, _, player, _ = small_dreamer_v3_5()
-    player.num_envs = 3
-    player.init_states()
+    player.init_states(3)
     obs = {"rgb": torch.rand(1, 3, 3, 64, 64) - 0.5, "state": torch.randn(1, 3, 5)}
     with torch.no_grad():
         actions = player.get_actions(obs)
@@ -387,7 +386,7 @@ def test_the_player_starts_the_environments_from_zeros():
     assert len(actions) == 1 and actions[0].shape == (1, 3, 3)
     assert torch.all(actions[0].sum(-1) == 1)
     assert torch.all(player.recurrent_state.abs().sum(-1) > 0)
-    player.init_states([1])
+    player.reset_state([1])
     assert torch.all(player.recurrent_state[:, 1] == 0) and torch.all(player.stochastic_state[:, 1] == 0)
     assert torch.all(player.actions[:, 1] == 0)
     assert player.recurrent_state[:, [0, 2]].abs().sum() > 0
@@ -395,8 +394,7 @@ def test_the_player_starts_the_environments_from_zeros():
 
 def test_the_continuous_actions_of_the_player_are_clipped():
     _, _, player, _ = small_dreamer_v3_5(actions="continuous")
-    player.num_envs = 64
-    player.init_states()
+    player.init_states(64)
     obs = {"rgb": torch.rand(1, 64, 3, 64, 64) - 0.5, "state": torch.randn(1, 64, 5)}
     with torch.no_grad():
         (actions,) = player.get_actions(obs)

@@ -21,7 +21,8 @@ from torch.distributions import (
 )
 from torch.distributions.utils import probs_to_logits
 
-from sheeprl.algos.dreamer_v2.agent import DreamerPolicy, WorldModel
+from sheeprl.algos.dreamer_policy import DreamerPolicy
+from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.models.models import (
@@ -676,7 +677,6 @@ class DreamerV3Policy(nn.Module, DreamerPolicy):
         rssm (RSSM | DecoupledRSSM): the RSSM model.
         actor (_FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of the actions.
-        num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
         transition_model (_FabricModule): the transition model.
@@ -694,23 +694,19 @@ class DreamerV3Policy(nn.Module, DreamerPolicy):
         rssm: RSSM | DecoupledRSSM,
         actor: Actor | MinedojoActor | _FabricModule,
         actions_dim: Sequence[int],
-        num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
         device: str | torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
-        fabric: Fabric | None = None,
         cnn_keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.rssm = rssm
         self.actor = actor
-        self.fabric = fabric
         self.cnn_keys = cnn_keys
         self.actions_dim = actions_dim
-        self.num_envs = num_envs
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.device = device
@@ -719,25 +715,21 @@ class DreamerV3Policy(nn.Module, DreamerPolicy):
         self.decoupled_rssm = isinstance(rssm, DecoupledRSSM)
 
     @torch.no_grad()
-    def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
-        """Initialize the states and the actions for the ended environments.
+    def init_states(self, num_envs: int) -> None:
+        """The initial latent states (`RSSM.get_initial_states`) and zero actions of `num_envs` environments."""
+        self.num_envs = num_envs
+        self.actions = torch.zeros(1, num_envs, np.sum(self.actions_dim), device=self.device)
+        recurrent_state, stochastic_state = self.rssm.get_initial_states((1, num_envs))
+        # The initial recurrent state is one, expanded to the environments (their rows share the memory): a copy,
+        # since the states of the environments are then reset one by one
+        self.recurrent_state = recurrent_state.clone()
+        self.stochastic_state = stochastic_state.reshape(1, num_envs, -1)
 
-        Args:
-            reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
-                If None, then all environments' states are reset.
-                Defaults to None.
-        """
-        if reset_envs is None or len(reset_envs) == 0:
-            self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            recurrent_state, stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
-            # The initial recurrent state is one, expanded to the environments (their rows share the memory): a copy,
-            # since the states of the environments are then reset one by one
-            self.recurrent_state = recurrent_state.clone()
-            self.stochastic_state = stochastic_state.reshape(1, self.num_envs, -1)
-        else:
-            self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs], stochastic_state = self.rssm.get_initial_states((1, len(reset_envs)))
-            self.stochastic_state[:, reset_envs] = stochastic_state.reshape(1, len(reset_envs), -1)
+    @torch.no_grad()
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
+        self.actions[:, env_idxes] = torch.zeros_like(self.actions[:, env_idxes])
+        self.recurrent_state[:, env_idxes], stochastic_state = self.rssm.get_initial_states((1, len(env_idxes)))
+        self.stochastic_state[:, env_idxes] = stochastic_state.reshape(1, len(env_idxes), -1)
 
     def get_actions(
         self,
@@ -1307,12 +1299,10 @@ def build_agent(
         copy.deepcopy(world_model.rssm),
         copy.deepcopy(actor),
         actions_dim,
-        cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric_player.device,
         discrete_size=cfg.algo.world_model.discrete_size,
-        fabric=fabric_player,
         cnn_keys=cfg.algo.cnn_keys.encoder,
     )
 

@@ -19,10 +19,10 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v1.agent import DreamerV1Policy, WorldModel
 from sheeprl.algos.dreamer_v1.dreamer_v1 import SequenceWriter, sample_batches_of_iteration, train
 from sheeprl.algos.dreamer_v2.dreamer_v2 import check_keys
-from sheeprl.algos.dreamer_v2.utils import test
 from sheeprl.algos.p2e_dv1.agent import build_agent
 from sheeprl.algos.p2e_dv1.p2e_dv1_exploration import exploration_amounts
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, load_replay_buffer, run, sequence_store
+from sheeprl.core.evaluation import run_test
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import fs
 from sheeprl.utils.env import actions_dim_of
@@ -101,7 +101,7 @@ class P2EDV1Finetuning(Algorithm):
         # order as the exploration did. The policy plays with the actor of `algo.player.actor_type` until the training
         # starts (see `batches`)
         world_model, _, actor_task, critic_task, actor_exploration, _, self._policy = build_agent(
-            fabric, self.actions_dim, self.is_continuous, cfg, obs_space
+            fabric, self.actions_dim, self.is_continuous, cfg, obs_space, schedule=schedule
         )
 
         def optimizer(optimizer_cfg: Dict[str, Any], module: nn.Module) -> Optimizer:
@@ -129,8 +129,6 @@ class P2EDV1Finetuning(Algorithm):
             state.load_state_dict(exploration)
             if cfg.buffer.load_from_exploration and self.exploration_cfg.buffer.checkpoint:
                 buffer = load_replay_buffer(fabric, exploration["rb"], buffer)
-        # The exploration noise of the policy decays with the policy steps
-        self._policy.schedule = schedule
         self.schedule = schedule
         return state, buffer
 
@@ -150,7 +148,15 @@ class P2EDV1Finetuning(Algorithm):
 
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0, test_name: str = "") -> None:
         # The task actor plays
-        test(self.task_policy(state), self.fabric, self.cfg, log_dir, test_name, policy_step=policy_step)
+        run_test(
+            self.task_policy(state),
+            self.fabric,
+            self.cfg,
+            log_dir,
+            policy_step=policy_step,
+            greedy=self.greedy_test,
+            test_name=test_name,
+        )
 
     def writer(self, state: P2EDV1FinetuningState, policy: DreamerV1Policy) -> SequenceWriter:
         return SequenceWriter(self.cfg, self.actions_dim)

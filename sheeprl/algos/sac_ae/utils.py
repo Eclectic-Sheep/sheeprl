@@ -4,7 +4,6 @@ import warnings
 from typing import TYPE_CHECKING, Any, Dict, Sequence
 
 import gymnasium as gym
-import numpy as np
 import torch
 import torch.nn as nn
 from lightning import Fabric
@@ -12,62 +11,15 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 
 from sheeprl.algos.sac.utils import AGGREGATOR_KEYS
-from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
 
-    from sheeprl.algos.sac_ae.agent import SACAEPolicy
 
 AGGREGATOR_KEYS = AGGREGATOR_KEYS.union({"Loss/reconstruction_loss"})
 MODELS_TO_REGISTER = {"agent", "encoder", "decoder"}
-
-
-def images_as_channels(obs: Dict[str, np.ndarray], cnn_keys: Sequence[str], num_envs: int) -> Dict[str, np.ndarray]:
-    """`obs` with the stacked frames of the images `cnn_keys` as their channels."""
-    return {k: v.reshape(num_envs, -1, *v.shape[-2:]) if k in cnn_keys else v for k, v in obs.items()}
-
-
-def prepare_obs(
-    fabric: Fabric, obs: Dict[str, np.ndarray], *, cnn_keys: Sequence[str] = [], num_envs: int = 1, **kwargs
-) -> Dict[str, Tensor]:
-    torch_obs = {}
-    for k in obs.keys():
-        torch_obs[k] = torch.from_numpy(obs[k].copy()).to(fabric.device).float()
-        if k in cnn_keys:
-            torch_obs[k] = torch_obs[k].reshape(num_envs, -1, *torch_obs[k].shape[-2:]) / 255
-        else:
-            torch_obs[k] = torch_obs[k].reshape(num_envs, -1)
-
-    return torch_obs
-
-
-@torch.no_grad()
-def test(actor: "SACAEPolicy", fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
-    env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
-    actor.eval()
-    done = False
-    cumulative_rew = 0
-    obs = env.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
-
-    while not done:
-        torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder)
-        # Act greedly through the environment
-        action = actor.get_actions(torch_obs, greedy=True)
-
-        # Single environment step
-        obs, reward, done, truncated, _ = env.step(action.cpu().numpy().reshape(env.action_space.shape))
-        done = done or truncated
-        cumulative_rew += reward
-
-        if cfg.dry_run:
-            done = True
-    fabric.print("Test - Reward:", cumulative_rew)
-    if cfg.metric.log_level > 0:
-        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, policy_step)
-    env.close()
 
 
 def preprocess_obs(obs: Tensor, bits: int = 8):

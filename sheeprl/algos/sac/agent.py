@@ -11,12 +11,12 @@ from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Tensor
 
-from sheeprl.algos.sac.utils import prepare_obs
 from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import MLP
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ema_
+from sheeprl.utils.obs import prepare_obs
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -271,7 +271,7 @@ class SACAgent(nn.Module):
 
 class SACPolicy(nn.Module, Policy):
     """The policy of SAC and DroQ: `forward` samples the actions from the observations as a tensor, `act` plays them in
-    the environments (`Policy`), from the observations `mlp_keys` concatenated on the device of `fabric`."""
+    the environments (`Policy`), from the observations `mlp_keys` concatenated on `device`."""
 
     def __init__(
         self,
@@ -280,14 +280,14 @@ class SACPolicy(nn.Module, Policy):
         fc_logstd: nn.Module,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
-        fabric: Optional[Fabric] = None,
+        device: str | torch.device = "cpu",
         mlp_keys: Sequence[str] = (),
     ):
         super().__init__()
         self.model = feature_extractor
         self.fc_mean = fc_mean
         self.fc_logstd = fc_logstd
-        self.fabric = fabric
+        self.device = torch.device(device)
         self.mlp_keys = mlp_keys
 
         # Action rescaling buffers
@@ -319,9 +319,12 @@ class SACPolicy(nn.Module, Policy):
             actions = y_t * self.action_scale + self.action_bias
             return actions
 
-    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+    def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
         num_envs = len(obs[self.mlp_keys[0]])
-        return Act(self(prepare_obs(self.fabric, obs, mlp_keys=self.mlp_keys, num_envs=num_envs)).cpu().numpy())
+        torch_obs = prepare_obs(self.device, {k: obs[k] for k in self.mlp_keys}, num_envs=num_envs)
+        torch_obs = torch.cat([torch_obs[k] for k in self.mlp_keys], dim=-1)
+        actions = self.get_actions(torch_obs, greedy=True) if greedy else self(torch_obs)
+        return Act(actions.cpu().numpy())
 
     def get_actions(self, obs: Tensor, greedy: bool = False) -> Tensor:
         return self(obs, greedy=greedy)
@@ -361,7 +364,7 @@ def build_agent(
         copy.deepcopy(agent.actor.fc_logstd),
         action_low=action_space.low,
         action_high=action_space.high,
-        fabric=fabric_player,
+        device=fabric_player.device,
         mlp_keys=cfg.algo.mlp_keys.encoder,
     )
 

@@ -289,19 +289,19 @@ def test_evaluation_plays_the_trained_models(name):
     importlib.import_module(f"sheeprl.algos.{ALGORITHMS[name].get('module', name)}.evaluate")
     played: List[torch.nn.Module] = []
 
-    def test(policy, *args, **kwargs):
+    def run_test(policy, *args, **kwargs):
         played.append(policy)
 
-    # The test of the algorithms (`Algorithm.test`), in their modules
-    algorithm_modules = [
+    # The test of the algorithms (`Algorithm.test`): `sheeprl.core.run_test`, where it is imported
+    modules = [
         module
         for module_name, module in list(sys.modules.items())
-        if module_name.startswith("sheeprl.algos.") and not module_name.endswith(".utils") and hasattr(module, "test")
+        if module_name.startswith("sheeprl.") and hasattr(module, "run_test")
     ]
     try:
         with contextlib.ExitStack() as stack:
-            for module in algorithm_modules:
-                stack.enter_context(mock.patch.object(module, "test", test))
+            for module in modules:
+                stack.enter_context(mock.patch.object(module, "run_test", run_test))
             stack.enter_context(
                 mock.patch.object(
                     sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False"]

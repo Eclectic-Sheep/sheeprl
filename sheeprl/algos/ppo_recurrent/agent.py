@@ -11,11 +11,11 @@ from torch import Tensor
 from torch.distributions import Independent, Normal, OneHotCategorical
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor, ortho_init_linear_layers
-from sheeprl.algos.ppo_recurrent.utils import prepare_obs
 from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import MLP, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
+from sheeprl.utils.obs import prepare_obs
 
 
 def lstm_unroll(
@@ -289,9 +289,9 @@ class RecurrentPPOAgent(nn.Module):
 class RecurrentPPOPolicy(nn.Module, Policy):
     """The policy of recurrent PPO: `forward` samples the actions from the observations, the previous actions and the
     previous recurrent states as tensors; `act` plays them in the environments (`Policy`), from the observations
-    `obs_keys` (the images among them are `cnn_keys`) moved to the device of `fabric`, and keeps the recurrent state and
-    the previous actions of every environment. When an episode ends, its previous actions are reset, and its recurrent
-    state too with `reset_recurrent_state_on_done`."""
+    `obs_keys` (the images among them are `cnn_keys`) moved to `device`, and keeps the recurrent state and the previous
+    actions of every environment (`init_states`). When an episode ends, its previous actions are reset, and its
+    recurrent state too with `reset_recurrent_state_on_done`."""
 
     def __init__(
         self,
@@ -301,7 +301,7 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         critic: nn.Module,
         rnn_hidden_size: int,
         actions_dim: Sequence[int],
-        fabric: Optional[Fabric] = None,
+        device: str | torch.device = "cpu",
         obs_keys: Sequence[str] = (),
         cnn_keys: Sequence[str] = (),
         reset_recurrent_state_on_done: bool = True,
@@ -313,11 +313,11 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         self.actor = actor
         self.rnn_hidden_size = rnn_hidden_size
         self.actions_dim = actions_dim
-        self.fabric = fabric
+        self.device = torch.device(device)
         self.obs_keys = obs_keys
         self.cnn_keys = cnn_keys
         self.reset_recurrent_state_on_done = reset_recurrent_state_on_done
-        # The recurrent states and the actions preceding the next step of every environment, created at the first step
+        # The recurrent states and the actions preceding the next step of every environment (`init_states`)
         self.prev_states: Optional[Tuple[Tensor, Tensor]] = None
         self.prev_actions: Optional[np.ndarray] = None
 
@@ -407,31 +407,30 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
         return self._get_values(out), states
 
-    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+    def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
         """The actions for `obs`, with their columns: the actions one-hot for discrete actions (the environments take
         their indices), their log-probabilities, the values of `obs`, and the recurrent states (`prev_hx`, `prev_cx`)
         and the actions (`prev_actions`) that preceded them. Its extras are the actions and the recurrent states as
         tensors, which bootstrap the returns."""
         num_envs = len(obs[self.obs_keys[0]])
-        device = self.fabric.device
-        if self.prev_states is None:
-            self.prev_states = (
-                torch.zeros(1, num_envs, self.rnn_hidden_size, device=device),
-                torch.zeros(1, num_envs, self.rnn_hidden_size, device=device),
-            )
-            self.prev_actions = np.zeros((1, num_envs, sum(self.actions_dim)))
         torch_obs = prepare_obs(
-            self.fabric, {k: obs[k] for k in self.obs_keys}, cnn_keys=self.cnn_keys, num_envs=num_envs
+            self.device, {k: obs[k] for k in self.obs_keys}, cnn_keys=self.cnn_keys, num_envs=num_envs, time_dim=True
         )
-        torch_prev_actions = torch.from_numpy(self.prev_actions).to(device).float()
-        actions, logprobs, values, states = self(
-            torch_obs, prev_actions=torch_prev_actions, prev_states=self.prev_states
-        )
+        torch_prev_actions = torch.from_numpy(self.prev_actions).to(self.device).float()
+        if greedy:
+            actions, states = self.get_actions(torch_obs, torch_prev_actions, self.prev_states, greedy=True)
+        else:
+            actions, logprobs, values, states = self(
+                torch_obs, prev_actions=torch_prev_actions, prev_states=self.prev_states
+            )
         if self.actor.is_continuous:
             env_actions = torch.stack(actions, -1).cpu().numpy()
         else:
             env_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
         torch_actions = torch.cat(actions, dim=-1)
+        if greedy:
+            self.prev_actions, self.prev_states = torch_actions.cpu().numpy(), states
+            return Act(env_actions)
         columns = {
             "actions": torch_actions.cpu().numpy(),
             "logprobs": logprobs.cpu().numpy(),
@@ -443,9 +442,12 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         self.prev_actions, self.prev_states = columns["actions"], states
         return Act(env_actions, columns, {"actions": torch_actions, "states": states})
 
-    def init_states(self) -> None:
-        # Created with zeros at the next step, which knows the number of environments
-        self.prev_states = self.prev_actions = None
+    def init_states(self, num_envs: int) -> None:
+        self.prev_states = (
+            torch.zeros(1, num_envs, self.rnn_hidden_size, device=self.device),
+            torch.zeros(1, num_envs, self.rnn_hidden_size, device=self.device),
+        )
+        self.prev_actions = np.zeros((1, num_envs, sum(self.actions_dim)))
 
     def reset_state(self, env_idxes: Sequence[int]) -> None:
         # Multiplied by the mask of the episodes that go on, as the rollout resets them in the training
@@ -453,9 +455,7 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         dones[:, env_idxes] = 1
         self.prev_actions = (1 - dones) * self.prev_actions
         if self.reset_recurrent_state_on_done:
-            self.prev_states = tuple(
-                (1 - torch.as_tensor(dones, device=self.fabric.device)) * s for s in self.prev_states
-            )
+            self.prev_states = tuple((1 - torch.as_tensor(dones, device=self.device)) * s for s in self.prev_states)
 
     def get_actions(
         self,
@@ -526,7 +526,7 @@ def build_agent(
         fabric_player.setup_module(agent.critic.module),
         cfg.algo.rnn.lstm.hidden_size,
         actions_dim,
-        fabric=fabric_player,
+        device=fabric_player.device,
         obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
         cnn_keys=cfg.algo.cnn_keys.encoder,
         reset_recurrent_state_on_done=cfg.algo.reset_recurrent_state_on_done,

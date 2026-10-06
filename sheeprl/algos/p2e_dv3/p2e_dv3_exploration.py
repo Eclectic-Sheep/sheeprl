@@ -31,10 +31,11 @@ from sheeprl.algos.dreamer_v3.dreamer_v3 import (
     imagine_trajectories,
     world_model_learning,
 )
-from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
+from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values
 from sheeprl.algos.p2e_dv3.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
 from sheeprl.core.algorithm import load_module_state_dict
+from sheeprl.core.evaluation import run_test
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled
 from sheeprl.utils.distribution import BernoulliSafeMode, MSEDistribution, TwoHotEncodingDistribution
@@ -408,6 +409,8 @@ class P2EDV3Exploration(Algorithm):
     exploration actor and critics, the task actor and critic."""
 
     off_policy = True
+    # The test episode samples the actions of the policy
+    greedy_test = False
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
         super().__init__(fabric, cfg)
@@ -534,7 +537,15 @@ class P2EDV3Exploration(Algorithm):
 
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0, test_name: str = "") -> None:
         # The task actor plays
-        test(self.task_policy(state), self.fabric, self.cfg, log_dir, test_name, greedy=False, policy_step=policy_step)
+        run_test(
+            self.task_policy(state),
+            self.fabric,
+            self.cfg,
+            log_dir,
+            policy_step=policy_step,
+            greedy=self.greedy_test,
+            test_name=test_name,
+        )
 
     def writer(self, state: P2EDV3ExplorationState, policy: DreamerV3Policy) -> SequenceWriter:
         return SequenceWriter(self.cfg, self.actions_dim)

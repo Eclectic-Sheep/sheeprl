@@ -17,7 +17,7 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
+from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated
 from sheeprl.core import (
     Act,
     Algorithm,
@@ -33,6 +33,7 @@ from sheeprl.core import (
 )
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.obs import images_as_channels, normalize_obs, prepare_obs
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae_function, normalize_tensor
 
@@ -74,7 +75,7 @@ class RolloutWriter(Writer):
 
         def final_values(env_idxes: np.ndarray) -> np.ndarray:
             final_obs = step.stack_final_obs(env_idxes, self.obs_keys)
-            final_obs = prepare_obs(self.fabric, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes))
+            final_obs = prepare_obs(self.fabric.device, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes))
             return self.policy.get_values(final_obs).cpu().numpy()
 
         # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP: the
@@ -87,12 +88,8 @@ class RolloutWriter(Writer):
             rewards = rewards.astype(self.rewards_dtype)
 
         # The stacked frames of an image are stored as its channels
-        data = {}
-        for k in self.obs_keys:
-            data[k] = step.obs[k]
-            if k in self.cnn_keys:
-                data[k] = data[k].reshape(num_envs, -1, *data[k].shape[-2:])
-            data[k] = data[k][np.newaxis]
+        obs = images_as_channels({k: step.obs[k] for k in self.obs_keys}, self.cnn_keys, num_envs)
+        data = {k: v[np.newaxis] for k, v in obs.items()}
         data["dones"] = dones[np.newaxis]
         for k in ("values", "actions", "logprobs"):
             data[k] = act.columns[k][np.newaxis]
@@ -189,9 +186,6 @@ class PPO(Algorithm):
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
-    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
-        test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
-
     def writer(self, state: PPOState, policy: PPOPolicy) -> RolloutWriter:
         return RolloutWriter(self.fabric, self.cfg, policy, clip_rewards=self.cfg.env.clip_rewards)
 
@@ -208,7 +202,9 @@ class PPO(Algorithm):
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
             next_obs = {k: rollout.last_step.next_obs[k] for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder}
-            next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
+            next_obs = prepare_obs(
+                self.fabric.device, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
+            )
             next_values = self.policy(state).get_values(next_obs)
             returns, advantages = self.gae(
                 data["rewards"],

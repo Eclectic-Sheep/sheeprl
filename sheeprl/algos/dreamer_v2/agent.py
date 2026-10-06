@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
@@ -20,8 +20,8 @@ from torch.distributions import (
     TransformedDistribution,
 )
 
-from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights, prepare_obs
-from sheeprl.core.collector import Act, Policy
+from sheeprl.algos.dreamer_policy import DreamerPolicy
+from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.distribution import SafeTanhTransform, TruncatedNormal
@@ -31,9 +31,6 @@ from sheeprl.utils.distribution import SafeTanhTransform, TruncatedNormal
 LAYER_NORM_EPS = 1e-3
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
-
-if TYPE_CHECKING:
-    from sheeprl.core.environment import Environment
 
 
 class CNNEncoder(nn.Module):
@@ -767,53 +764,6 @@ class WorldModel(nn.Module):
         self.continue_model = continue_model
 
 
-class DreamerPolicy(Policy):
-    """The `Policy` of the Dreamers' policies, on their `get_actions` (which updates the latent states of the
-    environments) and `init_states` (which also resets the latent states of some environments, `reset_state`): the
-    observations are moved to the device of `fabric` (the images `cnn_keys` normalized), the actions are written one-hot
-    for discrete actions (the environments take their indices), and the action masks of the observations (`mask*`,
-    e.g. MineDojo) mask the actions.
-
-    A subclass is an `nn.Module` with the attributes `fabric`, `cnn_keys`, `actions_dim` and `actor`.
-    """
-
-    def act(self, obs: Dict[str, np.ndarray]) -> Act:
-        num_envs = len(next(iter(obs.values())))
-        torch_obs = prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)
-        mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
-        actions = self.sample_actions(torch_obs, mask if len(mask) > 0 else None)
-        if self.actor.is_continuous:
-            env_actions = torch.stack(actions, dim=-1)
-        else:
-            env_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1)
-        return Act(env_actions.cpu().numpy(), {"actions": torch.cat(actions, -1).cpu().numpy()})
-
-    def sample_actions(self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]]) -> Sequence[Tensor]:
-        """The actions of `act`, one tensor per action."""
-        return self.get_actions(obs, mask=mask)
-
-    def random(self, env: Environment) -> Act:
-        """Uniformly random actions; with action masks in the observations (MineDojo), the actions of the policy, since
-        random actions would ignore them."""
-        if any(k.startswith("mask") for k in env.obs):
-            return self.act(env.obs)
-        env_actions = actions = np.array(env.random_actions())
-        if not self.actor.is_continuous:
-            # One row per environment, one column per discrete action: one-hot each column
-            per_action = actions.reshape(env.num_envs, len(self.actions_dim)).T
-            actions = np.concatenate(
-                [
-                    F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                    for act, act_dim in zip(per_action, self.actions_dim)
-                ],
-                axis=-1,
-            )
-        return Act(env_actions, {"actions": actions})
-
-    def reset_state(self, env_idxes: Sequence[int]) -> None:
-        self.init_states(env_idxes)
-
-
 class DreamerV2Policy(nn.Module, DreamerPolicy):
     """
     The model of the Dreamer_v2 policy.
@@ -824,7 +774,6 @@ class DreamerV2Policy(nn.Module, DreamerPolicy):
         representation_model (nn.Module | _FabricModule): the representation model.
         actor (nn.Module | _FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of the actions.
-        num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
         device (str | torch.device): the device where the model is stored.
@@ -842,13 +791,11 @@ class DreamerV2Policy(nn.Module, DreamerPolicy):
         representation_model: nn.Module | _FabricModule,
         actor: nn.Module | _FabricModule,
         actions_dim: Sequence[int],
-        num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
         device: str | torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
-        fabric: Fabric | None = None,
         cnn_keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
@@ -856,34 +803,25 @@ class DreamerV2Policy(nn.Module, DreamerPolicy):
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.actor = actor
-        self.fabric = fabric
         self.cnn_keys = cnn_keys
         self.actions_dim = actions_dim
-        self.num_envs = num_envs
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.device = device
         self.discrete_size = discrete_size
         self.actor_type = actor_type
 
-    def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
-        """Initialize the states and the actions for the ended environments.
+    def init_states(self, num_envs: int) -> None:
+        """Zero latent states and actions of `num_envs` environments."""
+        self.num_envs = num_envs
+        self.actions = torch.zeros(1, num_envs, np.sum(self.actions_dim), device=self.device)
+        self.recurrent_state = torch.zeros(1, num_envs, self.recurrent_state_size, device=self.device)
+        self.stochastic_state = torch.zeros(1, num_envs, self.stochastic_size * self.discrete_size, device=self.device)
 
-        Args:
-            reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
-                If None, then all environments' states are reset.
-                Defaults to None.
-        """
-        if reset_envs is None or len(reset_envs) == 0:
-            self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            self.stochastic_state = torch.zeros(
-                1, self.num_envs, self.stochastic_size * self.discrete_size, device=self.device
-            )
-        else:
-            self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
-            self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
+        self.actions[:, env_idxes] = torch.zeros_like(self.actions[:, env_idxes])
+        self.recurrent_state[:, env_idxes] = torch.zeros_like(self.recurrent_state[:, env_idxes])
+        self.stochastic_state[:, env_idxes] = torch.zeros_like(self.stochastic_state[:, env_idxes])
 
     def get_actions(
         self,
@@ -1147,12 +1085,10 @@ def build_agent(
         copy.deepcopy(world_model.rssm.representation_model),
         copy.deepcopy(actor),
         actions_dim,
-        cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric_player.device,
         discrete_size=cfg.algo.world_model.discrete_size,
-        fabric=fabric_player,
         cnn_keys=cfg.algo.cnn_keys.encoder,
     )
 

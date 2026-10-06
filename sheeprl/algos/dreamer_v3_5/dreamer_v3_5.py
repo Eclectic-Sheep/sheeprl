@@ -40,7 +40,7 @@ from sheeprl.algos.dreamer_v3.dreamer_v3 import SequenceWriter
 from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3_5.agent import Actor, DreamerV3_5Policy, build_agent
 from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return, mse, symlog_mse
-from sheeprl.algos.dreamer_v3_5.utils import Moments, test
+from sheeprl.algos.dreamer_v3_5.utils import Moments
 from sheeprl.core import Act, Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.store import ReplayStore
@@ -557,6 +557,8 @@ class DreamerV3_5(Algorithm):
     with one optimizer. The latent states computed by the trainings are written back in the buffer."""
 
     off_policy = True
+    # The test episode samples the actions of the policy
+    greedy_test = False
     # The policy plays from the first step
     random_warmup = False
     restart_crashed_envs = True
@@ -608,9 +610,6 @@ class DreamerV3_5(Algorithm):
     def policy(self, state: DreamerV3_5State) -> DreamerV3_5Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
-
-    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
-        test(self.policy(state), self.fabric, self.cfg, log_dir, greedy=False, policy_step=policy_step)
 
     def writer(self, state: DreamerV3_5State, policy: DreamerV3_5Policy) -> LatentSequenceWriter:
         return LatentSequenceWriter(self.cfg, self.actions_dim)

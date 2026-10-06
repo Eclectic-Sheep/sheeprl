@@ -134,13 +134,12 @@ def test_the_player_samples_the_posterior_with_the_minimum_std_of_the_world_mode
         representation_model=nn.Linear(8 + 5, 8),
         actor=lambda latent_state, greedy, mask: ([torch.zeros(1, 2, 3)], None),
         actions_dim=[3],
-        num_envs=2,
         stochastic_size=4,
         recurrent_state_size=8,
         device="cpu",
         min_std=0.5,
     )
-    player.init_states()
+    player.init_states(2)
     player.get_actions({})
     assert min_stds == [0.5]
 
@@ -180,7 +179,7 @@ def test_the_player_follows_the_updates_of_the_agent(accelerator):
     fabric = Fabric(accelerator=accelerator, devices=1)
     world_model, actor, _, player = build_agent(fabric, [3], False, cfg, obs_space)
     assert player.min_std == 0.3
-    player.init_states()
+    player.init_states(2)
     with torch.no_grad():
         player.get_actions({"state": torch.randn(1, 2, 5, device=fabric.device)})
         for p in [*world_model.parameters(), *actor.parameters()]:

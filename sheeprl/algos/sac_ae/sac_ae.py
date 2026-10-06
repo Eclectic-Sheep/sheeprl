@@ -19,12 +19,13 @@ from torch.optim import Optimizer
 from sheeprl.algos.sac.loss import critic_loss, policy_loss
 from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPolicy, build_agent, tie_actor_convolutions, tie_actor_optimizer
 from sheeprl.algos.sac_ae.loss import entropy_loss
-from sheeprl.algos.sac_ae.utils import images_as_channels, preprocess_obs, test
+from sheeprl.algos.sac_ae.utils import preprocess_obs
 from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run, transition_store, update
 from sheeprl.data.store import ReplayStore
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope
+from sheeprl.utils.obs import images_as_channels
 from sheeprl.utils.registry import register_algorithm
 
 # The most gradient steps whose batches are sampled (and moved to the device) at once
@@ -297,9 +298,6 @@ class SACAE(Algorithm):
     def policy(self, state: SACAEState) -> SACAEPolicy:
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""
         return self._policy
-
-    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
-        test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
 
     def writer(self, state: SACAEState, policy: SACAEPolicy) -> ReplayWriter:
         return ReplayWriter(self.cfg)

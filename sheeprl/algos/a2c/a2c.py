@@ -18,7 +18,6 @@ from sheeprl.algos.a2c.loss import policy_loss
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, value_loss
 from sheeprl.algos.ppo.ppo import RolloutWriter
-from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
 from sheeprl.core import (
     Algorithm,
     ReplayStore,
@@ -31,6 +30,7 @@ from sheeprl.core import (
 )
 from sheeprl.utils.compile import compiled
 from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.obs import normalize_obs, prepare_obs
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae_function, normalize_tensor
 
@@ -120,9 +120,6 @@ class A2C(Algorithm):
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
 
-    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
-        test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
-
     def writer(self, state: A2CState, policy: PPOPolicy) -> RolloutWriter:
         # Unlike PPO, the rewards are stored with the dtype of the environments and are not clipped
         # (`env.clip_rewards` is ignored)
@@ -138,7 +135,10 @@ class A2C(Algorithm):
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
             next_obs = prepare_obs(
-                self.fabric, rollout.last_step.next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
+                self.fabric.device,
+                rollout.last_step.next_obs,
+                cnn_keys=cfg.algo.cnn_keys.encoder,
+                num_envs=cfg.env.num_envs,
             )
             next_values = self.policy(state).get_values(next_obs)
             returns, advantages = self.gae(

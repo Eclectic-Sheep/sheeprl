@@ -17,7 +17,6 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.sac.agent import SACAgent, SACPolicy, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
-from sheeprl.algos.sac.utils import test
 from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run, transition_store, update
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
@@ -219,9 +218,6 @@ class SAC(Algorithm):
     def policy(self, state: SACState) -> SACPolicy:
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""
         return self._policy
-
-    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
-        test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
 
     def writer(self, state: SACState, policy: SACPolicy) -> ReplayWriter:
         return ReplayWriter(self.cfg, dtype=self.buffer_dtype)

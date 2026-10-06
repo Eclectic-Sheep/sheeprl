@@ -26,7 +26,7 @@ state, store = algo.build(observation_space, action_space, schedule, log_dir)
 # When resuming: `state.load_state_dict(checkpoint)` and, for off-policy algorithms, the replay buffer of the checkpoint
 policy = algo.policy(state)
 collector = Collector(env, policy, algo.writer(state, policy), store, schedule, cadence, algo.random_warmup)
-# Reset the environments and create the memory of the policy (`policy.init_states()`)
+# Reset the environments and create the memory of the policy (`policy.init_states(env.num_envs)`)
 collector.reset()
 for iteration in schedule.iterations():
     # Play `algo.steps_per_iteration` steps in every environment. At every step the collector:
@@ -84,9 +84,9 @@ class SOTAPolicy(torch.nn.Module, Policy):
         """The actions sampled from the observations as tensors: pure torch, so it can be compiled or exported."""
         ...
 
-    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+    def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
         """The actions to play for the observations of the environments (`Policy`), with the columns the writer stores
-        (e.g. their log-probabilities)."""
+        (e.g. their log-probabilities); the most likely ones with `greedy` (the test episode)."""
         ...
 
     def get_actions(self, obs: Dict[str, Tensor], greedy: bool = False) -> Sequence[Tensor]:
@@ -168,6 +168,7 @@ The algorithm is implemented in the `sota.py` file. It contains:
    - `writer(state, policy)`: returns the writer;
    - `batches(state, store, n_steps, iteration)`: prepares the training data of an iteration and yields one batch per gradient step;
    - `train_step(state, batch, step)`: one gradient step on a batch; it returns the metrics to log, as tensors (don't read them with `.item()`: they are read once per log interval). `step` counts the gradient steps of the process since the start of the training, e.g. to update a target network every few steps;
+   - `test(state, log_dir, policy_step)` (optional): plays a test episode with the policy and logs its return (`sheeprl.core.run_test`): its most likely actions, or sampled ones with `greedy_test = False`;
    - `end_iteration(state, iteration)` (optional): what changes once per iteration, after the training (e.g. annealed coefficients); it returns values logged at every iteration.
 4. **The entrypoint**: a function decorated with `register_algorithm` that runs the algorithm with `run`, then tests and registers the trained models.
 
@@ -197,7 +198,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
 from sheeprl.algos.sota.agent import build_agent
 from sheeprl.algos.sota.loss import policy_loss, value_loss
-from sheeprl.algos.sota.utils import normalize_obs, prepare_obs, test
+from sheeprl.utils.obs import normalize_obs, prepare_obs
 from sheeprl.core import (
     Act,
     Algorithm,
@@ -274,7 +275,7 @@ class SOTA(Algorithm):
             state.agent.feature_extractor,
             state.agent.actor,
             state.agent.critic,
-            fabric=self.fabric,
+            device=self.fabric.device,
             obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
             cnn_keys=cfg.algo.cnn_keys.encoder,
         )
@@ -292,7 +293,9 @@ class SOTA(Algorithm):
         # The returns and the advantages, bootstrapped with the value of the observations after the rollout
         with torch.inference_mode():
             next_obs = {k: rollout.last_step.next_obs[k] for k in obs_keys}
-            next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
+            next_obs = prepare_obs(
+                self.fabric.device, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
+            )
             next_values = state.agent.critic(state.agent.feature_extractor(next_obs))
             returns, advantages = gae(
                 data["rewards"],
@@ -331,7 +334,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     if fabric.is_global_zero and cfg.algo.run_test:
         # The return of the trained agent, logged at the last policy step of the training
-        test(algo.policy(state), fabric, cfg, log_dir, policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step)
 
     # Optional: register the trained models with MLflow
     if not cfg.model_manager.disabled and fabric.is_global_zero:
@@ -347,12 +350,12 @@ With several processes, every process plays its own environments and trains on i
 An off-policy algorithm sets `off_policy = True` and returns a replay buffer as its store: `sheeprl.core.transition_store` to train on single steps (as SAC does), `sheeprl.core.sequence_store` to train on sequences of one environment (as the Dreamers do). Then:
 
 - its configuration must have `algo.learning_starts` (the policy steps played with random actions before the training starts), `algo.replay_ratio` (the gradient steps per policy step) and `algo.per_rank_pretrain_steps` (the gradient steps the first training does besides the ones of the replay ratio);
-- the collector plays the random actions of `policy.random(env)` while `schedule.warmup(schedule.policy_step)` is true (unless `random_warmup = False`): by default the random actions of the environments, as SAC does (`sheeprl/algos/sac/sac.py`). A policy that stores its actions in another form overrides it, e.g. the Dreamers store the random discrete actions one-hot (`DreamerPolicy` in `sheeprl/algos/dreamer_v2/agent.py`);
+- the collector plays the random actions of `policy.random(env)` while `schedule.warmup(schedule.policy_step)` is true (unless `random_warmup = False`): by default the random actions of the environments, as SAC does (`sheeprl/algos/sac/sac.py`). A policy that stores its actions in another form overrides it, e.g. the Dreamers store the random discrete actions one-hot (`DreamerPolicy` in `sheeprl/algos/dreamer_policy.py`);
 - `batches` receives the number of gradient steps of the iteration, `n_steps`, and yields exactly `n_steps` batches sampled from the buffer;
 - the replay buffer is saved in the checkpoints when `buffer.checkpoint=True`. A run resumed with its buffer doesn't play random actions again; one resumed without it fills a new buffer with its policy for `algo.learning_starts` policy steps first.
 
 ### Utils
-The `test`, `prepare_obs`, `normalize_obs` and `log_models` functions imported above are defined in the `sheeprl.algos.sota.utils` module. Here they are the ones of PPO (`sheeprl/algos/ppo/utils.py`): `test` plays one greedy episode with the policy and logs its reward, `log_models` registers the models with MLflow at the end of the training.
+The observations are moved to the device by `prepare_obs` and the images of the batches are normalized by `normalize_obs` (`sheeprl/utils/obs.py`); the test episode at the end of the training is the one of every algorithm (`Algorithm.test`). The `log_models` function imported above is defined in the `sheeprl.algos.sota.utils` module, here the one of PPO (`sheeprl/algos/ppo/utils.py`): it registers the models with MLflow at the end of the training.
 
 ```python
 from __future__ import annotations
@@ -362,8 +365,8 @@ from typing import TYPE_CHECKING, Any, Dict
 import gymnasium as gym
 from lightning import Fabric
 
-# The observations, the test episode and the model logging of PPO fit this algorithm too
-from sheeprl.algos.ppo.utils import log_models, normalize_obs, prepare_obs, test  # noqa: F401
+# The model logging of PPO fits this algorithm too
+from sheeprl.algos.ppo.utils import log_models  # noqa: F401
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
 
@@ -407,27 +410,14 @@ from typing import Any, Dict
 from lightning import Fabric
 
 from sheeprl.algos.sota.sota import SOTA
-from sheeprl.algos.sota.utils import test
-from sheeprl.core import load_trained_state
-from sheeprl.utils.env import make_env
-from sheeprl.utils.logger import get_log_dir, get_logger
+from sheeprl.core import evaluate as evaluate_trained
 from sheeprl.utils.registry import register_evaluation
 
 
 @register_evaluation(algorithms="sota")
 def evaluate(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
-    logger = get_logger(fabric, cfg)
-    if logger and fabric.is_global_zero:
-        fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(cfg)
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
-
-    # The models are built as by the training (`build`) and restored from the checkpoint
-    env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
-    algo = SOTA(fabric, cfg)
-    trained = load_trained_state(fabric, cfg, algo, state, env.observation_space, env.action_space)
-    env.close()
-    test(algo.policy(trained), fabric, cfg, log_dir)
+    # The models are built as by the training (`build`), restored from the checkpoint and tested (`Algorithm.test`)
+    evaluate_trained(fabric, cfg, state, SOTA(fabric, cfg))
 ```
 
 ### Metrics and Model Manager

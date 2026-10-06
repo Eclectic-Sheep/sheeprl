@@ -13,9 +13,10 @@ from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 
+from sheeprl.algos.dreamer_policy import DreamerPolicy
 from sheeprl.algos.dreamer_v1.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
-from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder, DreamerPolicy
+from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.algos.dreamer_v2.utils import init_weights as dv2_init_weights
@@ -309,7 +310,6 @@ class DreamerV1Policy(nn.Module, DreamerPolicy):
         representation_model (nn.Module| _FabricModule): the representation model.
         actor (nn.Module| _FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of each action.
-        num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
         device (str | torch.device): the device where the model is stored.
@@ -327,51 +327,48 @@ class DreamerV1Policy(nn.Module, DreamerPolicy):
         representation_model: MLP | _FabricModule,
         actor: Actor | _FabricModule,
         actions_dim: Sequence[int],
-        num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
         device: str | torch.device,
         actor_type: str | None = None,
         min_std: float = 0.1,
-        fabric: Fabric | None = None,
         cnn_keys: Sequence[str] = (),
+        schedule: TrainSchedule | None = None,
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.actor = actor
-        self.fabric = fabric
         self.cnn_keys = cnn_keys
-        # The schedule of the training, whose policy steps decay the exploration noise of `act` (set by the algorithm)
-        self.schedule: TrainSchedule | None = None
+        # The schedule of the training, whose policy steps decay the exploration noise of `act`
+        self.schedule = schedule
         self.actions_dim = actions_dim
-        self.num_envs = num_envs
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.device = device
         self.actor_type = actor_type
         self.min_std = min_std
 
-    def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
-        """Initialize the states and the actions for the ended environments.
+    def init_states(self, num_envs: int) -> None:
+        """Zero latent states and actions of `num_envs` environments."""
+        self.num_envs = num_envs
+        self.actions = torch.zeros(1, num_envs, np.sum(self.actions_dim), device=self.device)
+        self.recurrent_state = torch.zeros(1, num_envs, self.recurrent_state_size, device=self.device)
+        self.stochastic_state = torch.zeros(1, num_envs, self.stochastic_size, device=self.device)
 
-        Args:
-            reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
-                If None, then all environments' states are reset.
-                Defaults to None.
-        """
-        if reset_envs is None or len(reset_envs) == 0:
-            self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            self.stochastic_state = torch.zeros(1, self.num_envs, self.stochastic_size, device=self.device)
-        else:
-            self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
-            self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
+        self.actions[:, env_idxes] = torch.zeros_like(self.actions[:, env_idxes])
+        self.recurrent_state[:, env_idxes] = torch.zeros_like(self.recurrent_state[:, env_idxes])
+        self.stochastic_state[:, env_idxes] = torch.zeros_like(self.stochastic_state[:, env_idxes])
 
-    def sample_actions(self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]]) -> Sequence[Tensor]:
-        """The actions with the exploration noise of the policy steps played after this step."""
+    def sample_actions(
+        self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]], greedy: bool = False
+    ) -> Sequence[Tensor]:
+        """The actions with the exploration noise of the policy steps played after this step; the most likely ones,
+        without noise, with `greedy`."""
+        if greedy:
+            return self.get_actions(obs, greedy=True, mask=mask)
         step = self.schedule.policy_step + self.schedule.policy_steps_per_step
         return self.get_exploration_actions(obs, mask=mask, step=step)
 
@@ -435,6 +432,7 @@ def build_agent(
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
+    schedule: Optional[TrainSchedule] = None,
 ) -> Tuple[WorldModel, _FabricModule, _FabricModule, DreamerV1Policy]:
     """Build the models and wrap them with Fabric.
 
@@ -625,13 +623,12 @@ def build_agent(
         fabric_player.setup_module(world_model.rssm.representation_model.module),
         fabric_player.setup_module(actor.module),
         actions_dim,
-        cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric_player.device,
         min_std=cfg.algo.world_model.min_std,
-        fabric=fabric_player,
         cnn_keys=cfg.algo.cnn_keys.encoder,
+        schedule=schedule,
     )
     # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes. Its exploration noise (`get_exploration_actions`) is added uncompiled: it changes with

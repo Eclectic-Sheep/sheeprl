@@ -32,8 +32,9 @@ class Policy(Protocol):
     """Chooses the actions to play in the environments, and keeps the state of every environment if it has one (e.g. a
     recurrent state). The policy modules of the algorithms implement it, e.g. `class PPOPolicy(nn.Module, Policy)`."""
 
-    def act(self, obs: Dict[str, np.ndarray]) -> Act:
-        """The actions for `obs`, the current observations of the environments (one row per environment)."""
+    def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
+        """The actions for `obs`, the current observations of the environments (one row per environment). With
+        `greedy`, the most likely actions (e.g. to test the policy), with no columns."""
         raise NotImplementedError
 
     def random(self, env: Environment) -> Act:
@@ -41,9 +42,9 @@ class Policy(Protocol):
         the environments, without columns."""
         return Act(env.random_actions())
 
-    def init_states(self) -> None:
-        """Create the memory of the policy (e.g. the recurrent state, the previous actions) for every environment,
-        before the first step. A policy without memory does nothing."""
+    def init_states(self, num_envs: int) -> None:
+        """Create the memory of the policy (e.g. the recurrent state, the previous actions) for `num_envs`
+        environments, before their first step. A policy without memory does nothing."""
 
     def reset_state(self, env_idxes: Sequence[int]) -> None:
         """Forget the memory of the policy for the environments `env_idxes`, which start new episodes. It doesn't reset
@@ -87,7 +88,7 @@ class Collector:
     def reset(self) -> None:
         """Reset the environments and create the memory of the policy."""
         self.env.reset()
-        self.policy.init_states()
+        self.policy.init_states(self.env.num_envs)
 
     def step(self) -> EnvStep:
         """Play one step in every environment and write it."""

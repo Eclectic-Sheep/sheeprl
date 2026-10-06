@@ -31,7 +31,8 @@ from lightning.fabric import Fabric
 from torch import Tensor, nn
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
-from sheeprl.algos.dreamer_v2.agent import DreamerPolicy, WorldModel
+from sheeprl.algos.dreamer_policy import DreamerPolicy
+from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.core.collector import Act
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
@@ -728,7 +729,6 @@ class DreamerV3_5Policy(nn.Module, DreamerPolicy):
         rssm: the RSSM.
         actor: the actor.
         actions_dim: the size of every discrete action, or of the continuous actions.
-        num_envs: the number of environments.
         stochastic_size: the number of categorical variables of the stochastic state.
         recurrent_state_size: the size of the recurrent state.
         device: the device of the states.
@@ -741,32 +741,28 @@ class DreamerV3_5Policy(nn.Module, DreamerPolicy):
         rssm: RSSM,
         actor: nn.Module,
         actions_dim: Sequence[int],
-        num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
         device: str | torch.device,
         discrete_size: int = 64,
-        fabric: Fabric | None = None,
         cnn_keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.rssm = rssm
         self.actor = actor
-        self.fabric = fabric
         self.cnn_keys = cnn_keys
         self.actions_dim = actions_dim
-        self.num_envs = num_envs
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.device = device
         self.discrete_size = discrete_size
 
     @torch.no_grad()
-    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+    def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
         """The actions of `DreamerPolicy.act`, with the latent states they were chosen from: the recurrent state
         (`deter`, in float16) and the classes of the stochastic state (`stoch`)."""
-        act = super().act(obs)
+        act = super().act(obs, greedy)
         num_envs = len(next(iter(obs.values())))
         stochastic_state = self.stochastic_state.view(1, num_envs, self.stochastic_size, -1).argmax(-1)
         act.columns["deter"] = self.recurrent_state.half().cpu().numpy()
@@ -774,18 +770,17 @@ class DreamerV3_5Policy(nn.Module, DreamerPolicy):
         act.columns["stoch"] = stochastic_state.cpu().numpy().astype(stoch_dtype)
         return act
 
-    def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
-        """Zero the states and the actions of the environments `reset_envs` (default: all of them)."""
-        if reset_envs is None or len(reset_envs) == 0:
-            self.actions = torch.zeros(1, self.num_envs, int(np.sum(self.actions_dim)), device=self.device)
-            self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            self.stochastic_state = torch.zeros(
-                1, self.num_envs, self.stochastic_size * self.discrete_size, device=self.device
-            )
-        else:
-            self.actions[:, reset_envs] = 0
-            self.recurrent_state[:, reset_envs] = 0
-            self.stochastic_state[:, reset_envs] = 0
+    def init_states(self, num_envs: int) -> None:
+        """Zero latent states and actions of `num_envs` environments."""
+        self.num_envs = num_envs
+        self.actions = torch.zeros(1, num_envs, int(np.sum(self.actions_dim)), device=self.device)
+        self.recurrent_state = torch.zeros(1, num_envs, self.recurrent_state_size, device=self.device)
+        self.stochastic_state = torch.zeros(1, num_envs, self.stochastic_size * self.discrete_size, device=self.device)
+
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
+        self.actions[:, env_idxes] = 0
+        self.recurrent_state[:, env_idxes] = 0
+        self.stochastic_state[:, env_idxes] = 0
 
     def get_actions(
         self, obs: Dict[str, Tensor], greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
@@ -1022,12 +1017,10 @@ def build_agent(
         world_model.rssm,
         actor,
         actions_dim,
-        cfg.env.num_envs,
         world_model_cfg.stochastic_size,
         recurrent_state_size,
         fabric.device,
         discrete_size=world_model_cfg.discrete_size,
-        fabric=fabric,
         cnn_keys=cfg.algo.cnn_keys.encoder,
     )
     # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its

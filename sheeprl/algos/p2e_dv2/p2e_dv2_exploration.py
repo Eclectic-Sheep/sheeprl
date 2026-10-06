@@ -22,15 +22,10 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy, WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter, check_keys
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import (
-    MAX_SAMPLED_BATCHES,
-    actor_objective,
-    build_optimizer,
-    compute_lambda_values,
-    test,
-)
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, actor_objective, build_optimizer, compute_lambda_values
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
+from sheeprl.core.evaluation import run_test
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
@@ -568,7 +563,15 @@ class P2EDV2Exploration(Algorithm):
 
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0, test_name: str = "") -> None:
         # The task actor plays
-        test(self.task_policy(state), self.fabric, self.cfg, log_dir, test_name, policy_step=policy_step)
+        run_test(
+            self.task_policy(state),
+            self.fabric,
+            self.cfg,
+            log_dir,
+            policy_step=policy_step,
+            greedy=self.greedy_test,
+            test_name=test_name,
+        )
 
     def writer(self, state: P2EDV2ExplorationState, policy: DreamerV2Policy) -> SequenceWriter:
         return SequenceWriter(self.cfg, self.actions_dim)

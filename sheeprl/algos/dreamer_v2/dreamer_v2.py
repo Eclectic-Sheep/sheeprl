@@ -24,13 +24,7 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import Actor, DreamerV2Policy, MinedojoActor, WorldModel, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import (
-    MAX_SAMPLED_BATCHES,
-    actor_objective,
-    build_optimizer,
-    compute_lambda_values,
-    test,
-)
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, actor_objective, build_optimizer, compute_lambda_values
 from sheeprl.core import (
     Act,
     Algorithm,
@@ -651,9 +645,6 @@ class DreamerV2(Algorithm):
     def policy(self, state: DreamerV2State) -> DreamerV2Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
-
-    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
-        test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
 
     def writer(self, state: DreamerV2State, policy: DreamerV2Policy) -> SequenceWriter:
         return SequenceWriter(self.cfg, self.actions_dim)

@@ -16,7 +16,6 @@ from sheeprl.algos.droq.agent import DROQAgent, build_agent
 from sheeprl.algos.sac.agent import SACPolicy
 from sheeprl.algos.sac.loss import entropy_loss, policy_loss
 from sheeprl.algos.sac.sac import SAC, SACState
-from sheeprl.algos.sac.utils import test
 from sheeprl.core import autocast, run, update
 from sheeprl.data.samplers import TransitionSampler
 from sheeprl.data.store import ReplayStore
@@ -119,7 +118,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     state, log_dir, policy_step = run(fabric, cfg, algo)
 
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(algo.policy(state), fabric, cfg, log_dir, policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.sac.utils import log_models

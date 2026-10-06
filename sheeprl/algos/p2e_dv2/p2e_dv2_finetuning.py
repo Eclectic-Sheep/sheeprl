@@ -17,9 +17,10 @@ from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy, WorldModel
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter, check_keys, train
-from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, build_optimizer, test
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, build_optimizer
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, load_replay_buffer, run, sequence_store
+from sheeprl.core.evaluation import run_test
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import fs
 from sheeprl.utils.env import actions_dim_of
@@ -152,7 +153,15 @@ class P2EDV2Finetuning(Algorithm):
 
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0, test_name: str = "") -> None:
         # The task actor plays
-        test(self.task_policy(state), self.fabric, self.cfg, log_dir, test_name, policy_step=policy_step)
+        run_test(
+            self.task_policy(state),
+            self.fabric,
+            self.cfg,
+            log_dir,
+            policy_step=policy_step,
+            greedy=self.greedy_test,
+            test_name=test_name,
+        )
 
     def writer(self, state: P2EDV2FinetuningState, policy: DreamerV2Policy) -> SequenceWriter:
         return SequenceWriter(self.cfg, self.actions_dim)

@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
-from lightning import Fabric
 
 from sheeprl.algos.dreamer_v1.dreamer_v1 import SequenceWriter as DV1SequenceWriter
 from sheeprl.algos.dreamer_v2.agent import DreamerPolicy
@@ -28,15 +27,18 @@ class StandInPolicy(DreamerPolicy):
     """A Dreamer policy whose actions come from `get_actions`, which records its resets."""
 
     def __init__(self, actions_dim, get_actions=None):
-        self.fabric = Fabric(accelerator="cpu", devices=1)
+        self.device = "cpu"
         self.cnn_keys = []
         self.actions_dim = actions_dim
         self.actor = SimpleNamespace(is_continuous=False)
         self.get_actions = get_actions
         self.resets = []
 
-    def init_states(self, reset_envs=None):
-        self.resets.append(reset_envs)
+    def init_states(self, num_envs):
+        self.resets.append(num_envs)
+
+    def reset_state(self, env_idxes):
+        self.resets.append(env_idxes)
 
 
 def play(writer_cls, num_envs, random_warmup, policy, random_actions=None, ends=None, n_steps=20):
@@ -138,7 +140,7 @@ def test_dreamer_v1_marks_the_first_steps_of_the_episodes():
         ([1, 1], [0, 2]),
         ([0, 0, 0], None),
     ]
-    assert policy.resets == [None, [1], [0, 2]]
+    assert policy.resets == [num_envs, [1], [0, 2]]
 
 
 def test_dreamer_v3_resets_the_policy_of_the_ended_episodes():
@@ -150,7 +152,7 @@ def test_dreamer_v3_resets_the_policy_of_the_ended_episodes():
     play(
         DV3SequenceWriter, num_envs, False, policy, ends=lambda i: np.array(ends.get(i, [False] * num_envs)), n_steps=4
     )
-    assert policy.resets == [None, [1], [0, 2]]
+    assert policy.resets == [num_envs, [1], [0, 2]]
 
 
 def test_masked_actions_are_never_random():

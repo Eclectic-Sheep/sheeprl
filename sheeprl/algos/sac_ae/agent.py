@@ -14,12 +14,13 @@ from lightning.fabric.wrappers import _FabricModule
 from numpy.typing import NDArray
 from torch import Size, Tensor
 
-from sheeprl.algos.sac_ae.utils import images_as_channels, prepare_obs, weight_init
+from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import cnn_forward, ema_
+from sheeprl.utils.obs import prepare_obs
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
@@ -457,8 +458,8 @@ class SACAEAgent(nn.Module):
 
 class SACAEPolicy(nn.Module, Policy):
     """The policy of SAC-AE: `forward` samples the actions from the observations as tensors, `act` plays them in the
-    environments (`Policy`), from the observations moved to the device of `fabric` (the images `cnn_keys` with their
-    stacked frames as channels)."""
+    environments (`Policy`), from the observations moved to `device` (the images `cnn_keys` with their stacked frames as
+    channels, scaled to [0, 1])."""
 
     def __init__(
         self,
@@ -468,7 +469,7 @@ class SACAEPolicy(nn.Module, Policy):
         fc_logstd: nn.Module,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
-        fabric: Optional[Fabric] = None,
+        device: str | torch.device = "cpu",
         cnn_keys: Sequence[str] = (),
     ):
         super().__init__()
@@ -476,17 +477,18 @@ class SACAEPolicy(nn.Module, Policy):
         self.model = fc
         self.fc_mean = fc_mean
         self.fc_logstd = fc_logstd
-        self.fabric = fabric
+        self.device = torch.device(device)
         self.cnn_keys = cnn_keys
 
         # Action rescaling buffers
         self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
         self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
 
-    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+    def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
         num_envs = len(next(iter(obs.values())))
-        obs = images_as_channels(obs, self.cnn_keys, num_envs)
-        return Act(self(prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)).cpu().numpy())
+        torch_obs = prepare_obs(self.device, obs, cnn_keys=self.cnn_keys, num_envs=num_envs, image_shift=0)
+        actions = self.get_actions(torch_obs, greedy=True) if greedy else self(torch_obs)
+        return Act(actions.cpu().numpy())
 
     def forward(self, obs: Tensor, greedy: bool = False) -> Tensor:
         """Given an observation, it returns a tanh-squashed
@@ -673,7 +675,7 @@ def build_agent(
         copy.deepcopy(agent.actor.fc_logstd),
         action_low=action_space.low,
         action_high=action_space.high,
-        fabric=fabric_player,
+        device=fabric_player.device,
         cnn_keys=cfg.algo.cnn_keys.encoder,
     )
 

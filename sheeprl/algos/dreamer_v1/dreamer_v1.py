@@ -26,7 +26,7 @@ from sheeprl.algos.dreamer_v1.loss import actor_loss, critic_loss, reconstructio
 from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.dreamer_v2 import SequenceWriter as DV2SequenceWriter
 from sheeprl.algos.dreamer_v2.dreamer_v2 import check_keys
-from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, test
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
@@ -516,7 +516,7 @@ class DreamerV1(Algorithm):
         check_keys(fabric, cfg, obs_space)
 
         world_model, actor, critic, self._policy = build_agent(
-            fabric, self.actions_dim, self.is_continuous, cfg, obs_space
+            fabric, self.actions_dim, self.is_continuous, cfg, obs_space, schedule=schedule
         )
 
         world_optimizer = hydra.utils.instantiate(
@@ -537,8 +537,6 @@ class DreamerV1(Algorithm):
             actor_optimizer=actor_optimizer,
             critic_optimizer=critic_optimizer,
         )
-        # The exploration noise of the policy decays with the policy steps
-        self._policy.schedule = schedule
         self.schedule = schedule
         return state, sequence_store(
             fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size=2), cfg.algo.per_rank_sequence_length
@@ -547,9 +545,6 @@ class DreamerV1(Algorithm):
     def policy(self, state: DreamerV1State) -> DreamerV1Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
-
-    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
-        test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
 
     def writer(self, state: DreamerV1State, policy: DreamerV1Policy) -> SequenceWriter:
         return SequenceWriter(self.cfg, self.actions_dim)

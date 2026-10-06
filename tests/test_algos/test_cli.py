@@ -329,7 +329,7 @@ def test_evaluate_p2e_dv3_plays_the_task_actor():
 
     players = []
     # The test of the algorithm (`P2EDV3Exploration.test`)
-    with mock.patch.object(p2e_dv3_exploration, "test", lambda player, *args, **kwargs: players.append(player)):
+    with mock.patch.object(p2e_dv3_exploration, "run_test", lambda player, *args, **kwargs: players.append(player)):
         with mock.patch.object(
             sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False", "seed=42"]
         ):

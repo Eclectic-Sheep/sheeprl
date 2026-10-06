@@ -252,7 +252,7 @@ def build_agent(
         copy.deepcopy(agent.actor.fc_logstd),
         action_low=action_space.low,
         action_high=action_space.high,
-        fabric=fabric_player,
+        device=fabric_player.device,
         mlp_keys=cfg.algo.mlp_keys.encoder,
     )
 

@@ -131,11 +131,11 @@ def test_the_player_resets_the_environments_one_by_one(recwarn):
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
     *_, player = build_agent(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
-    player.init_states()
+    player.init_states(3)
     initial = player.recurrent_state.clone()
     player.recurrent_state[:, 1] += 1.0
     torch.testing.assert_close(player.recurrent_state[:, [0, 2]], initial[:, [0, 2]])
-    player.init_states([1])
+    player.reset_state([1])
     torch.testing.assert_close(player.recurrent_state, initial)
     assert not [w for w in recwarn if "expanded tensors" in str(w.message)]
 
@@ -503,16 +503,16 @@ def test_the_compiled_player_plays_as_the_eager_one(monkeypatch):
     same_random_numbers(monkeypatch)
     played = []
     for enabled in (False, True):
-        _, _, player, _ = small_dreamer_v3([f"algo.compile.enabled={enabled}"], accelerator="cuda")
+        cfg, _, player, _ = small_dreamer_v3([f"algo.compile.enabled={enabled}"], accelerator="cuda")
         torch.manual_seed(1)
-        n = player.num_envs
+        n = cfg.env.num_envs
         obs = {"rgb": torch.rand(1, n, 3, 64, 64, device="cuda") - 0.5, "state": torch.randn(1, n, 5, device="cuda")}
-        player.init_states()
+        player.init_states(n)
         steps = []
         with torch.inference_mode():
             for t in range(4):
                 if t == 2:
-                    player.init_states([0])
+                    player.reset_state([0])
                 actions = torch.cat(player.get_actions(obs), -1)
                 steps.append((actions.clone(), player.recurrent_state.clone()))
         played.append(steps)

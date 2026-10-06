@@ -659,10 +659,10 @@ def test_dreamer_v3_restart_on_exception(standard_args, start_time):
     from sheeprl.envs.dummy import DiscreteDummyEnv
 
     envs, crashes, reset_envs = [], [], []
-    dummy_init, dummy_step, player_init_states = (
+    dummy_init, dummy_step, policy_reset_state = (
         DiscreteDummyEnv.__init__,
         DiscreteDummyEnv.step,
-        DreamerV3Policy.init_states,
+        DreamerV3Policy.reset_state,
     )
 
     def init(self, *args, **kwargs):
@@ -675,9 +675,9 @@ def test_dreamer_v3_restart_on_exception(standard_args, start_time):
             raise RuntimeError("Environment crashed")
         return dummy_step(self, action)
 
-    def init_states(self, reset_envs_idxes=None):
-        reset_envs.append(reset_envs_idxes)
-        return player_init_states(self, reset_envs_idxes)
+    def reset_state(self, env_idxes):
+        reset_envs.append(env_idxes)
+        return policy_reset_state(self, env_idxes)
 
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3", os.environ["LT_DEVICES"])
     run_name = "test_dreamer_v3_restart_on_exception"
@@ -707,7 +707,7 @@ def test_dreamer_v3_restart_on_exception(standard_args, start_time):
     with (
         mock.patch.object(DiscreteDummyEnv, "__init__", init),
         mock.patch.object(DiscreteDummyEnv, "step", step),
-        mock.patch.object(DreamerV3Policy, "init_states", init_states),
+        mock.patch.object(DreamerV3Policy, "reset_state", reset_state),
         mock.patch("time.sleep"),
         mock.patch.object(sys, "argv", args),
     ):

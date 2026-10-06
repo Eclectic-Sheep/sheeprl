@@ -19,7 +19,6 @@ from torch.optim import Optimizer
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPolicy, build_agent
-from sheeprl.algos.ppo_recurrent.utils import prepare_obs, test
 from sheeprl.core import (
     Act,
     Algorithm,
@@ -35,6 +34,7 @@ from sheeprl.core import (
 )
 from sheeprl.utils.compile import compile_enabled, compiled, mark_gradient_step
 from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.obs import images_as_channels, prepare_obs
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae_function, normalize_tensor
 
@@ -65,7 +65,9 @@ class RecurrentRolloutWriter(Writer):
 
         def final_values(env_idxes: np.ndarray) -> np.ndarray:
             final_obs = step.stack_final_obs(env_idxes, self.obs_keys)
-            final_obs = prepare_obs(self.fabric, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes))
+            final_obs = prepare_obs(
+                self.fabric.device, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes), time_dim=True
+            )
             values, _ = self.policy.get_values(
                 final_obs, torch_actions[:, env_idxes, :], tuple(s[:, env_idxes, ...] for s in states)
             )
@@ -79,12 +81,8 @@ class RecurrentRolloutWriter(Writer):
         rewards = rewards.reshape(1, num_envs, -1).astype(np.float32)
 
         # The stacked frames of an image are stored as its channels
-        data = {}
-        for k in self.obs_keys:
-            data[k] = step.obs[k]
-            if k in self.cnn_keys:
-                data[k] = data[k].reshape(num_envs, -1, *data[k].shape[-2:])
-            data[k] = data[k][np.newaxis]
+        obs = images_as_channels({k: step.obs[k] for k in self.obs_keys}, self.cnn_keys, num_envs)
+        data = {k: v[np.newaxis] for k, v in obs.items()}
         data["dones"] = dones
         data["values"] = act.columns["values"].reshape(1, num_envs, -1)
         data["actions"] = act.columns["actions"].reshape(1, num_envs, -1)
@@ -271,9 +269,6 @@ class PPORecurrent(Algorithm):
         """The policy to play with: it shares the modules (and so the weights) of the trained agent (`build_agent`)."""
         return self._policy
 
-    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
-        test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
-
     def writer(self, state: PPORecurrentState, policy: RecurrentPPOPolicy) -> RecurrentRolloutWriter:
         return RecurrentRolloutWriter(self.fabric, self.cfg, policy)
 
@@ -294,7 +289,13 @@ class PPORecurrent(Algorithm):
                 next_obs[k] = rollout.last_step.next_obs[k]
                 if k in cfg.algo.cnn_keys.encoder:
                     next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
-            next_obs = prepare_obs(self.fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
+            next_obs = prepare_obs(
+                self.fabric.device,
+                next_obs,
+                cnn_keys=cfg.algo.cnn_keys.encoder,
+                num_envs=cfg.env.num_envs,
+                time_dim=True,
+            )
             last_act = rollout.last_act
             next_values, _ = self.policy(state).get_values(
                 next_obs, last_act.extras["actions"], last_act.extras["states"]

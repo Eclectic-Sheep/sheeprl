@@ -20,9 +20,10 @@ from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES
 from sheeprl.algos.dreamer_v3.agent import DreamerV3Policy
 from sheeprl.algos.dreamer_v3.dreamer_v3 import SequenceWriter, train
-from sheeprl.algos.dreamer_v3.utils import Moments, test
+from sheeprl.algos.dreamer_v3.utils import Moments
 from sheeprl.algos.p2e_dv3.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, load_replay_buffer, run, sequence_store
+from sheeprl.core.evaluation import run_test
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import fs
 from sheeprl.utils.env import actions_dim_of
@@ -50,6 +51,8 @@ class P2EDV3Finetuning(Algorithm):
     """Dreamer-V3 on the task, starting from the models (and optionally the replay buffer) of the exploration."""
 
     off_policy = True
+    # The test episode samples the actions of the policy
+    greedy_test = False
     # No random actions: the policy trained by the exploration plays from the first step
     random_warmup = False
 
@@ -179,7 +182,15 @@ class P2EDV3Finetuning(Algorithm):
 
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0, test_name: str = "") -> None:
         # The task actor plays
-        test(self.task_policy(state), self.fabric, self.cfg, log_dir, test_name, greedy=False, policy_step=policy_step)
+        run_test(
+            self.task_policy(state),
+            self.fabric,
+            self.cfg,
+            log_dir,
+            policy_step=policy_step,
+            greedy=self.greedy_test,
+            test_name=test_name,
+        )
 
     def writer(self, state: P2EDV3FinetuningState, policy: DreamerV3Policy) -> SequenceWriter:
         return SequenceWriter(self.cfg, self.actions_dim)

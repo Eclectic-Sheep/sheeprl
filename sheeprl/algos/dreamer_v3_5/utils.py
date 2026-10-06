@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, Dict, Sequence
 import gymnasium as gym
 from lightning import Fabric
 
-from sheeprl.algos.dreamer_v3.utils import Moments, prepare_obs, test  # noqa: F401
+from sheeprl.algos.dreamer_v3.utils import Moments  # noqa: F401
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 
 if TYPE_CHECKING:

@@ -24,7 +24,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, actor_objective, reinforce_weight
 from sheeprl.algos.dreamer_v3.agent import Actor, DreamerV3Policy, MinedojoActor, WorldModel, build_agent, clip_actions
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values, test
+from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values
 from sheeprl.core import (
     Act,
     Algorithm,
@@ -716,6 +716,8 @@ class DreamerV3(Algorithm):
     actor and the critic on trajectories imagined from the batch."""
 
     off_policy = True
+    # The test episode samples the actions of the policy
+    greedy_test = False
     restart_crashed_envs = True
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
@@ -793,9 +795,6 @@ class DreamerV3(Algorithm):
     def policy(self, state: DreamerV3State) -> DreamerV3Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
         return self._policy
-
-    def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
-        test(self.policy(state), self.fabric, self.cfg, log_dir, greedy=False, policy_step=policy_step)
 
     def writer(self, state: DreamerV3State, policy: DreamerV3Policy) -> SequenceWriter:
         return SequenceWriter(self.cfg, self.actions_dim)
