@@ -14,6 +14,7 @@ from lightning import Fabric
 
 from sheeprl.core.algorithm import Algorithm, TrainState
 from sheeprl.core.cadence import Cadence
+from sheeprl.core.collector import Collector
 from sheeprl.core.runner import GymEnvironment
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.core.store import load_replay_buffer
@@ -62,16 +63,25 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
     if fabric.is_global_zero:
         save_configs(cfg, log_dir)
     cadence = Cadence(fabric, cfg, log_dir, aggregator, checkpoint, policy_step=schedule.policy_step)
-    player = algo.player(state)
-
-    env.reset()
+    collector = None
+    if type(algo).writer is not Algorithm.writer:
+        policy = algo.policy(state)
+        collector = Collector(env, policy, algo.writer(state, policy), store, schedule, cadence, algo.random_warmup)
+        with torch.inference_mode():
+            collector.reset()
+    else:
+        player = algo.player(state)
+        env.reset()
     for iteration in schedule.iterations():
-        # Play: the time includes the forward pass of the player
+        # Play: the time includes the forward pass of the policy
         with torch.inference_mode(), phase_timer("Time/env_interaction_time"):
-            for _ in range(algo.steps_per_iteration):
-                step = player.step(env, store)
-                schedule.policy_step += schedule.policy_steps_per_step
-                cadence.accumulate_episodes(step.episodes, schedule.policy_step)
+            if collector is not None:
+                collector.collect(algo.steps_per_iteration)
+            else:
+                for _ in range(algo.steps_per_iteration):
+                    step = player.step(env, store)
+                    schedule.policy_step += schedule.policy_steps_per_step
+                    cadence.accumulate_episodes(step.episodes, schedule.policy_step)
 
         # Train: `n_steps` is None for on-policy algorithms (they decide it from the rollout), and is 0 for
         # off-policy algorithms before `algo.learning_starts`

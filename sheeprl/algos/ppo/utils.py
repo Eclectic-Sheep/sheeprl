@@ -12,13 +12,14 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 from torch.optim import Optimizer
 
-from sheeprl.algos.ppo.agent import PPOPolicy
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import polynomial_decay, unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
+
+    from sheeprl.algos.ppo.agent import PPOPolicy
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss", "Loss/entropy_loss"}
 MODELS_TO_REGISTER = {"agent"}

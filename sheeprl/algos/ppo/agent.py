@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,6 +14,8 @@ from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
+from sheeprl.algos.ppo.utils import prepare_obs
+from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
@@ -261,12 +264,27 @@ class PPOAgent(nn.Module):
             )
 
 
-class PPOPolicy(nn.Module):
-    def __init__(self, feature_extractor: MultiEncoder, actor: PPOActor, critic: nn.Module) -> None:
+class PPOPolicy(nn.Module, Policy):
+    """The policy of PPO and A2C: `forward` samples the actions from the observations as tensors, `act` plays them in
+    the environments (`Policy`), from the observations `obs_keys` (the images among them are `cnn_keys`) moved to the
+    device of `fabric`."""
+
+    def __init__(
+        self,
+        feature_extractor: MultiEncoder,
+        actor: PPOActor,
+        critic: nn.Module,
+        fabric: Optional[Fabric] = None,
+        obs_keys: Sequence[str] = (),
+        cnn_keys: Sequence[str] = (),
+    ) -> None:
         super().__init__()
         self.feature_extractor = feature_extractor
         self.critic = critic
         self.actor = actor
+        self.fabric = fabric
+        self.obs_keys = obs_keys
+        self.cnn_keys = cnn_keys
 
     def _normal(self, actor_out: Tensor) -> Tuple[Tensor, Tensor]:
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
@@ -323,6 +341,19 @@ class PPOPolicy(nn.Module):
             return env_actions
         return torch.stack([act.argmax(dim=-1) for act in actions], dim=-1)
 
+    def act(self, obs: Dict[str, np.ndarray]) -> Act:
+        """The actions for `obs`, with their columns: the actions one-hot for discrete actions (the environments take
+        their indices), their log-probabilities and the values of `obs`."""
+        num_envs = len(obs[self.obs_keys[0]])
+        obs = prepare_obs(self.fabric, {k: obs[k] for k in self.obs_keys}, cnn_keys=self.cnn_keys, num_envs=num_envs)
+        actions, logprobs, values = self(obs)
+        columns = {
+            "actions": torch.cat(actions, dim=-1).cpu().numpy(),
+            "logprobs": logprobs.cpu().numpy(),
+            "values": values.cpu().numpy(),
+        }
+        return Act(self.env_actions(actions).cpu().numpy(), columns)
+
     def get_actions(self, obs: Dict[str, Tensor], greedy: bool = False) -> Sequence[Tensor]:
         feat = self.feature_extractor(obs)
         actor_out: List[Tensor] = self.actor(feat)
@@ -373,7 +404,15 @@ def build_agent(
         agent.load_state_dict(agent_state)
 
     # Setup policy agent
-    policy = PPOPolicy(copy.deepcopy(agent.feature_extractor), copy.deepcopy(agent.actor), copy.deepcopy(agent.critic))
+    fabric_player = get_single_device_fabric(fabric)
+    policy = PPOPolicy(
+        copy.deepcopy(agent.feature_extractor),
+        copy.deepcopy(agent.actor),
+        copy.deepcopy(agent.critic),
+        fabric=fabric_player,
+        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
+    )
 
     # Setup training agent
     agent.feature_extractor = setup_module(fabric, agent.feature_extractor)
@@ -381,7 +420,6 @@ def build_agent(
     agent.actor = setup_module(fabric, agent.actor)
 
     # Setup policy agent
-    fabric_player = get_single_device_fabric(fabric)
     policy.feature_extractor = fabric_player.setup_module(policy.feature_extractor)
     policy.critic = fabric_player.setup_module(policy.critic)
     policy.actor = fabric_player.setup_module(policy.actor)

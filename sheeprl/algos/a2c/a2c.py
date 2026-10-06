@@ -8,7 +8,6 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import gymnasium as gym
 import hydra
-import numpy as np
 import torch
 from lightning.fabric import Fabric
 from torch import Tensor
@@ -18,12 +17,10 @@ from torch.optim.lr_scheduler import PolynomialLR
 from sheeprl.algos.a2c.loss import policy_loss
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, value_loss
-from sheeprl.algos.ppo.utils import bootstrap_truncated, normalize_obs, prepare_obs, test
+from sheeprl.algos.ppo.ppo import RolloutWriter
+from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
 from sheeprl.core import (
     Algorithm,
-    Environment,
-    EnvStep,
-    Player,
     ReplayStore,
     TrainSchedule,
     TrainState,
@@ -44,62 +41,6 @@ class A2CState(TrainState):
     optimizer: Optimizer
     # Created with `algo.anneal_lr`, but never stepped: the learning rate is not annealed
     scheduler: Optional[PolynomialLR]
-
-
-class RolloutPlayer(Player):
-    """Plays the policy in the environments and writes every step in the rollout. Unlike PPO's player, the rewards
-    are stored in float64 and are not clipped (`env.clip_rewards` is ignored)."""
-
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPolicy) -> None:
-        self.fabric = fabric
-        self.cfg = cfg
-        self.policy = policy
-        self.cnn_keys = cfg.algo.cnn_keys.encoder
-        self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
-
-    def step(self, env: Environment, rollout: ReplayStore) -> EnvStep:
-        cfg = self.cfg
-        num_envs = env.num_envs
-
-        # Sample the actions: one-hot for discrete actions, while the environments take their indices
-        obs = {k: env.obs[k] for k in self.obs_keys}
-        obs = prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)
-        actions, logprobs, values = self.policy(obs)
-        env_actions = self.policy.env_actions(actions).cpu().numpy()
-        actions = torch.cat(actions, dim=-1).cpu().numpy()
-
-        step = env.step(env_actions)
-
-        def final_values(env_idxes: np.ndarray) -> np.ndarray:
-            final_obs = step.stack_final_obs(env_idxes, self.obs_keys)
-            final_obs = prepare_obs(self.fabric, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes))
-            return self.policy.get_values(final_obs).cpu().numpy()
-
-        # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP:
-        # bootstrap the value of their final observation
-        rewards = bootstrap_truncated(step.rewards, step.terminated, step.truncated, final_values, cfg.algo.gamma)
-        dones = np.logical_or(step.terminated, step.truncated).reshape(num_envs, -1).astype(np.uint8)
-        rewards = rewards.reshape(num_envs, -1)
-
-        # The stacked frames of an image are stored as its channels
-        data = {}
-        for k in self.obs_keys:
-            data[k] = step.obs[k]
-            if k in self.cnn_keys:
-                data[k] = data[k].reshape(num_envs, -1, *data[k].shape[-2:])
-            data[k] = data[k][np.newaxis]
-        data["dones"] = dones[np.newaxis]
-        data["values"] = values.cpu().numpy()[np.newaxis]
-        data["actions"] = actions[np.newaxis]
-        data["logprobs"] = logprobs.cpu().numpy()[np.newaxis]
-        data["rewards"] = rewards[np.newaxis]
-        if cfg.buffer.memmap:
-            data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
-            data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
-        rollout.add(data, validate_args=cfg.buffer.validate_args)
-        # The observations after the last step of the rollout bootstrap its returns
-        rollout.context["next_obs"] = step.next_obs
-        return step
 
 
 def a2c_loss(
@@ -187,8 +128,10 @@ class A2C(Algorithm):
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
 
-    def player(self, state: A2CState) -> RolloutPlayer:
-        return RolloutPlayer(self.fabric, self.cfg, self.policy(state))
+    def writer(self, state: A2CState, policy: PPOPolicy) -> RolloutWriter:
+        # Unlike PPO, the rewards are stored with the dtype of the environments and are not clipped
+        # (`env.clip_rewards` is ignored)
+        return RolloutWriter(self.fabric, self.cfg, policy, clip_rewards=False, rewards_dtype=None)
 
     def batches(
         self, state: A2CState, rollout: ReplayStore, n_steps: Optional[int], iteration: int

@@ -19,13 +19,13 @@ from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
 from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.core import (
+    Act,
     Algorithm,
-    Environment,
     EnvStep,
-    Player,
     ReplayStore,
     TrainSchedule,
     TrainState,
+    Writer,
     autocast,
     rollout_store,
     run,
@@ -43,28 +43,33 @@ class PPOState(TrainState):
     optimizer: Optimizer
 
 
-class RolloutPlayer(Player):
-    """Plays the policy in the environments and writes every step in the rollout."""
+class RolloutWriter(Writer):
+    """Writes every step in the rollout, with the columns of the actions of `PPOPolicy.act`. The rewards of the
+    episodes truncated by the time limit are bootstrapped with the values of `policy`.
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: PPOPolicy) -> None:
+    With `clip_rewards`, the rewards are squashed by a tanh; with `rewards_dtype`, they are stored with that dtype,
+    otherwise with the one of the environments (as A2C does).
+    """
+
+    def __init__(
+        self,
+        fabric: Fabric,
+        cfg: Dict[str, Any],
+        policy: PPOPolicy,
+        clip_rewards: bool,
+        rewards_dtype: Optional[np.dtype] = np.float32,
+    ) -> None:
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
+        self.clip_rewards = clip_rewards
+        self.rewards_dtype = rewards_dtype
         self.cnn_keys = cfg.algo.cnn_keys.encoder
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
 
-    def step(self, env: Environment, rollout: ReplayStore) -> EnvStep:
+    def write(self, rollout: ReplayStore, step: EnvStep, act: Act) -> None:
         cfg = self.cfg
-        num_envs = env.num_envs
-
-        # Sample the actions: one-hot for discrete actions, while the environments take their indices
-        obs = {k: env.obs[k] for k in self.obs_keys}
-        obs = prepare_obs(self.fabric, obs, cnn_keys=self.cnn_keys, num_envs=num_envs)
-        actions, logprobs, values = self.policy(obs)
-        env_actions = self.policy.env_actions(actions).cpu().numpy()
-        actions = torch.cat(actions, dim=-1).cpu().numpy()
-
-        step = env.step(env_actions)
+        num_envs = len(step.rewards)
 
         def final_values(env_idxes: np.ndarray) -> np.ndarray:
             final_obs = step.stack_final_obs(env_idxes, self.obs_keys)
@@ -73,10 +78,12 @@ class RolloutPlayer(Player):
 
         # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP: the
         # value of their final observation is added to the reward, after the rewards are clipped
-        rewards = np.tanh(step.rewards) if cfg.env.clip_rewards else step.rewards
+        rewards = np.tanh(step.rewards) if self.clip_rewards else step.rewards
         rewards = bootstrap_truncated(rewards, step.terminated, step.truncated, final_values, cfg.algo.gamma)
         dones = np.logical_or(step.terminated, step.truncated).reshape(num_envs, -1).astype(np.uint8)
-        rewards = rewards.reshape(num_envs, -1).astype(np.float32)
+        rewards = rewards.reshape(num_envs, -1)
+        if self.rewards_dtype is not None:
+            rewards = rewards.astype(self.rewards_dtype)
 
         # The stacked frames of an image are stored as its channels
         data = {}
@@ -86,9 +93,8 @@ class RolloutPlayer(Player):
                 data[k] = data[k].reshape(num_envs, -1, *data[k].shape[-2:])
             data[k] = data[k][np.newaxis]
         data["dones"] = dones[np.newaxis]
-        data["values"] = values.cpu().numpy()[np.newaxis]
-        data["actions"] = actions[np.newaxis]
-        data["logprobs"] = logprobs.cpu().numpy()[np.newaxis]
+        for k in ("values", "actions", "logprobs"):
+            data[k] = act.columns[k][np.newaxis]
         data["rewards"] = rewards[np.newaxis]
         if cfg.buffer.memmap:
             data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
@@ -96,7 +102,6 @@ class RolloutPlayer(Player):
         rollout.add(data, validate_args=cfg.buffer.validate_args)
         # The observations after the last step of the rollout bootstrap its returns
         rollout.context["next_obs"] = step.next_obs
-        return step
 
 
 def ppo_loss(
@@ -192,8 +197,8 @@ class PPO(Algorithm):
     def test(self, state: TrainState, log_dir: str, policy_step: int = 0) -> None:
         test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step)
 
-    def player(self, state: PPOState) -> RolloutPlayer:
-        return RolloutPlayer(self.fabric, self.cfg, self.policy(state))
+    def writer(self, state: PPOState, policy: PPOPolicy) -> RolloutWriter:
+        return RolloutWriter(self.fabric, self.cfg, policy, clip_rewards=self.cfg.env.clip_rewards)
 
     def batches(
         self, state: PPOState, rollout: ReplayStore, n_steps: Optional[int], iteration: int

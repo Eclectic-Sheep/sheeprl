@@ -1,14 +1,16 @@
 """The interface every algorithm implements, and the training state it works on.
 
-An algorithm is a subclass of `Algorithm` with four methods, plus an optional fifth:
+An algorithm is a subclass of `Algorithm` with five methods, plus an optional sixth:
 
 - `build`: create the modules, the optimizers and the store of the collected data;
-- `player`: the object that plays in the environments and writes what happens in the store;
+- `policy`: the policy that chooses the actions to play in the environments (`sheeprl.core.collector.Policy`);
+- `writer`: the object that writes what happens in the environments in the store (`sheeprl.core.collector.Writer`);
 - `batches`: the training data of one iteration, one batch per gradient step;
 - `train_step`: one gradient step on a batch;
 - `end_iteration` (optional): what changes once per iteration, e.g. annealed coefficients.
 
-The training loop that calls them, identical for every algorithm, is `sheeprl.core.loop.run`.
+The training loop that calls them, identical for every algorithm, is `sheeprl.core.loop.run`: its `Collector` plays
+the policy in the environments and gives every step to the writer.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from lightning import Fabric
 from torch import Tensor, nn
 
 if TYPE_CHECKING:
+    from sheeprl.core.collector import Policy, Writer
     from sheeprl.core.runner import Environment, EnvStep
     from sheeprl.core.schedule import TrainSchedule
 
@@ -104,7 +107,10 @@ class Algorithm:
     # `algo.learning_starts` policy steps, does `algo.replay_ratio` gradient steps per policy step, and the buffer
     # (the store returned by `build`) is saved in the checkpoints when `buffer.checkpoint` is set
     off_policy: bool = False
-    # Whether a crashed environment is created again instead of stopping the run (`GymEnvironment`): the player must
+    # Whether the off-policy algorithm plays random actions (`Policy.random`) until `algo.learning_starts`; otherwise
+    # it plays its policy from the first step (e.g. the finetuning of a policy trained by exploration)
+    random_warmup: bool = True
+    # Whether a crashed environment is created again instead of stopping the run (`GymEnvironment`): the writer must
     # then handle `EnvStep.restarted`, which marks the first observation of the new environment
     restart_crashed_envs: bool = False
 
@@ -132,6 +138,14 @@ class Algorithm:
 
     def player(self, state: TrainState) -> Player:
         """Return the object that plays the current policy in the environments."""
+        raise NotImplementedError
+
+    def policy(self, state: TrainState) -> Policy:
+        """The policy that plays in the environments: it shares its weights with the trained modules of `state`."""
+        raise NotImplementedError
+
+    def writer(self, state: TrainState, policy: Policy) -> Writer:
+        """The object that writes the steps played by `policy` in the store returned by `build`."""
         raise NotImplementedError
 
     def batches(
