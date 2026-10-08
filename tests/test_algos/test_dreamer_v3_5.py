@@ -32,23 +32,13 @@ from sheeprl.algos.dreamer_v3_5.agent import (
 from sheeprl.algos.dreamer_v3_5.loss import TwoHot, lambda_return, symexp_bins
 from sheeprl.algos.dreamer_v3_5.optim import LaProp
 from sheeprl.algos.dreamer_v3_5.utils import Moments
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.samplers import SequenceSampler
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict, symexp
 
 from .compiled import same_random_numbers
-
-
-class RecordingAggregator:
-    """A stand-in for the metric aggregator, which keeps the values of the last gradient step."""
-
-    disabled = False
-
-    def __init__(self):
-        self.values = {}
-
-    def update(self, name, value):
-        self.values[name] = value
 
 
 def most_likely_latents(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -277,7 +267,7 @@ def small_dreamer_v3_5(overrides=(), accelerator="cpu", precision="32-true", act
     continuous = actions == "continuous"
     actions_dim = [2] if continuous else [3]
     torch.manual_seed(0)
-    world_model, actor, critic, target_critic, player = build_agent(fabric, actions_dim, continuous, cfg, obs_space)
+    world_model, actor, critic, target_critic, policy = build_agent(fabric, actions_dim, continuous, cfg, obs_space)
     if peaked:
         with torch.no_grad():
             for head in (world_model.reward_model, critic, target_critic):
@@ -306,8 +296,7 @@ def small_dreamer_v3_5(overrides=(), accelerator="cpu", precision="32-true", act
     batch = {k: v.to(fabric.device) for k, v in batch.items()}
 
     def train_step():
-        aggregator = RecordingAggregator()
-        latents = dreamer_v3_5.train(
+        return dreamer_v3_5.train(
             fabric,
             cfg,
             world_model,
@@ -317,12 +306,10 @@ def small_dreamer_v3_5(overrides=(), accelerator="cpu", precision="32-true", act
             optimizer,
             moments,
             {k: v.clone() for k, v in batch.items()},
-            aggregator,
             actions_dim,
         )
-        return aggregator.values, latents
 
-    return cfg, (world_model, actor, critic, target_critic), player, train_step
+    return cfg, (world_model, actor, critic, target_critic), policy, train_step
 
 
 @pytest.mark.parametrize("actions", ["discrete", "continuous"])
@@ -331,7 +318,7 @@ def test_a_gradient_step_of_dreamer_v3_5(actions, replay_context):
     cfg, models, _, train_step = small_dreamer_v3_5([f"algo.replay_context={replay_context}"], actions=actions)
     world_model, actor, critic, target_critic = models
     before = [[p.detach().clone() for p in m.parameters()] for m in models]
-    metrics, latents = train_step()
+    metrics, latents, _ = train_step()
     assert all(torch.isfinite(torch.as_tensor(v)).all() for v in metrics.values())
     expected = {
         "Loss/world_model_loss",
@@ -353,6 +340,17 @@ def test_a_gradient_step_of_dreamer_v3_5(actions, replay_context):
         deter, stoch = latents
         assert deter.shape == (4, 2, 16) and deter.dtype == torch.float16
         assert stoch.shape == (4, 2, 4) and stoch.dtype == torch.uint8 and stoch.max() < 5
+
+
+@pytest.mark.parametrize("replay_context", [0, 1])
+def test_the_losses_of_the_trained_steps_average_to_the_loss_of_the_world_model(replay_context):
+    # The loss of the world model on every trained step of the batch (not on its context): the priorities of Curious
+    # Replay
+    cfg, _, _, train_step = small_dreamer_v3_5([f"algo.replay_context={replay_context}"])
+    metrics, _, step_losses = train_step()
+    assert step_losses.shape == (cfg.algo.per_rank_sequence_length, cfg.algo.per_rank_batch_size)
+    assert not step_losses.requires_grad
+    torch.testing.assert_close(step_losses.mean(), metrics["Loss/world_model_loss"])
 
 
 def test_the_episodes_start_from_zeros(monkeypatch):
@@ -386,37 +384,35 @@ def test_the_episodes_start_from_zeros(monkeypatch):
         torch.testing.assert_close(recurrent_states(0, T, random_carry)[3:], recurrent_states(3, 3, zeros))
 
 
-def test_the_player_starts_the_environments_from_zeros():
-    _, _, player, _ = small_dreamer_v3_5()
-    player.num_envs = 3
-    player.init_states()
+def test_the_policy_starts_the_environments_from_zeros():
+    _, _, policy, _ = small_dreamer_v3_5()
+    policy.init_states(3)
     obs = {"rgb": torch.rand(1, 3, 3, 64, 64) - 0.5, "state": torch.randn(1, 3, 5)}
     with torch.no_grad():
-        actions = player.get_actions(obs)
+        actions = policy.get_actions(obs)
         # The first recurrent state is 0 (at the initialization the biases are 0): the second one depends on the
         # first stochastic state
-        assert torch.all(player.recurrent_state == 0)
-        actions = player.get_actions(obs)
+        assert torch.all(policy.recurrent_state == 0)
+        actions = policy.get_actions(obs)
     assert len(actions) == 1 and actions[0].shape == (1, 3, 3)
     assert torch.all(actions[0].sum(-1) == 1)
-    assert torch.all(player.recurrent_state.abs().sum(-1) > 0)
-    player.init_states([1])
-    assert torch.all(player.recurrent_state[:, 1] == 0) and torch.all(player.stochastic_state[:, 1] == 0)
-    assert torch.all(player.actions[:, 1] == 0)
-    assert player.recurrent_state[:, [0, 2]].abs().sum() > 0
+    assert torch.all(policy.recurrent_state.abs().sum(-1) > 0)
+    policy.reset_state([1])
+    assert torch.all(policy.recurrent_state[:, 1] == 0) and torch.all(policy.stochastic_state[:, 1] == 0)
+    assert torch.all(policy.actions[:, 1] == 0)
+    assert policy.recurrent_state[:, [0, 2]].abs().sum() > 0
 
 
-def test_the_continuous_actions_of_the_player_are_clipped():
-    _, _, player, _ = small_dreamer_v3_5(actions="continuous")
-    player.num_envs = 64
-    player.init_states()
+def test_the_continuous_actions_of_the_policy_are_clipped():
+    _, _, policy, _ = small_dreamer_v3_5(actions="continuous")
+    policy.init_states(64)
     obs = {"rgb": torch.rand(1, 64, 3, 64, 64) - 0.5, "state": torch.randn(1, 64, 5)}
     with torch.no_grad():
-        (actions,) = player.get_actions(obs)
-    assert actions.abs().max() <= 1 and torch.equal(player.actions, actions)
+        (actions,) = policy.get_actions(obs)
+    assert actions.abs().max() <= 1 and torch.equal(policy.actions, actions)
 
 
-def add_steps(rb: EnvIndependentReplayBuffer, counters: np.ndarray, n: int) -> None:
+def add_steps(rb: ReplayBuffer, counters: np.ndarray, n: int) -> None:
     """Add `n` steps of every environment, with their identifiers (`dreamer_v3_5.STEP_ID_KEY`)."""
     for _ in range(n):
         rb.add(
@@ -430,28 +426,29 @@ def add_steps(rb: EnvIndependentReplayBuffer, counters: np.ndarray, n: int) -> N
 
 
 def test_the_latent_states_are_written_back_at_their_steps():
-    # The buffers of 5 steps go around: the steps of the sampled sequences are found from their identifiers
-    rb = EnvIndependentReplayBuffer(5, n_envs=2, buffer_cls=SequentialReplayBuffer, seed=0)
+    # The buffer of 5 steps goes around: the steps of the sampled sequences are found from their identifiers
+    rb = ReplayBuffer(5, n_envs=2)
     counters = np.zeros(2, np.int64)
     add_steps(rb, counters, 8)
-    sample, step_ids = dreamer_v3_5.sample_sequences(rb, batch_size=4, sequence_length=3, n_samples=1, device="cpu")
+    store = ReplayStore(rb, SequenceSampler(3, seed=0))
+    sample, step_ids = dreamer_v3_5.sample_sequences(store, batch_size=4, n_samples=1)
     step_ids = step_ids[0]
     # The written latent states: their step identifiers, as floats
     deter = torch.as_tensor(np.repeat(step_ids[..., 1:].astype(np.float16), 3, -1))
     stoch = torch.as_tensor(np.repeat(step_ids[..., :1].astype(np.uint8), 2, -1))
     dreamer_v3_5.write_latent_states(rb, [(step_ids, deter, stoch)], rb.buffer_size)
     written = 0
-    for env, buffer in enumerate(rb.buffer):
-        ids = buffer[dreamer_v3_5.STEP_ID_KEY][:, 0]
+    for env in range(rb.n_envs):
+        ids = rb[dreamer_v3_5.STEP_ID_KEY][:, env]
         rows = np.isin(ids[:, 1], step_ids[..., 1][step_ids[..., 0] == env])
-        assert np.all(buffer["deter"][rows, 0] == ids[rows, 1:].astype(np.float16))
-        assert np.all(buffer["stoch"][rows, 0] == env)
-        assert np.all(buffer["deter"][~rows, 0] == 0)
+        assert np.all(rb["deter"][rows, env] == ids[rows, 1:].astype(np.float16))
+        assert np.all(rb["stoch"][rows, env] == env)
+        assert np.all(rb["deter"][~rows, env] == 0)
         written += rows.sum()
     assert written > 0
     # The steps added to every buffer, from the identifiers it holds
     assert np.array_equal(dreamer_v3_5.step_counters(rb), counters)
-    assert np.array_equal(dreamer_v3_5.step_counters(EnvIndependentReplayBuffer(5, n_envs=2)), [0, 0])
+    assert np.array_equal(dreamer_v3_5.step_counters(ReplayBuffer(5, n_envs=2)), [0, 0])
 
 
 def test_the_slow_critic_moves_towards_the_critic():
@@ -475,7 +472,7 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, preci
             [f"algo.compile.enabled={enabled}"], accelerator="cuda", precision=precision, peaked=True
         )
         torch.manual_seed(1)
-        metrics, _ = train_step()
+        metrics, *_ = train_step()
         losses.append({k: torch.as_tensor(v).float().clone() for k, v in metrics.items()})
     for name in (
         "Loss/world_model_loss",
@@ -489,8 +486,8 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, preci
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="The weights are channels-last only on CUDA")
-def test_the_player_shares_the_channels_last_weights_of_the_world_model():
-    _, (world_model, *_), player, train_step = small_dreamer_v3_5(accelerator="cuda")
+def test_the_policy_shares_the_channels_last_weights_of_the_world_model():
+    _, (world_model, *_), policy, train_step = small_dreamer_v3_5(accelerator="cuda")
     convolutions = [
         m.weight
         for model in (world_model.encoder, world_model.observation_model)
@@ -498,8 +495,8 @@ def test_the_player_shares_the_channels_last_weights_of_the_world_model():
         if isinstance(m, nn.Conv2d)
     ]
     assert convolutions and all(w.is_contiguous(memory_format=torch.channels_last) for w in convolutions)
-    before = [p.detach().clone() for p in player.encoder.parameters()]
+    before = [p.detach().clone() for p in policy.encoder.parameters()]
     train_step()
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+    for agent_p, p in zip(world_model.encoder.parameters(), policy.encoder.parameters()):
         assert p.data_ptr() == agent_p.data_ptr()
-    assert any(not torch.equal(b, p) for b, p in zip(before, player.encoder.parameters()))
+    assert any(not torch.equal(b, p) for b, p in zip(before, policy.encoder.parameters()))

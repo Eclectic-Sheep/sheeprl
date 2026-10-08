@@ -28,7 +28,7 @@ We have modified the MineRL environments to have a custom action and observation
 3. Obtain Diamond: you need to set the `env.id` argument to `custom_obtain_diamond`.
 
 > [!NOTE]
-> If you want to use a *MineRL* environment, you must specify it, for example, by setting `env=minerl` in the cli arguments or by creating your custom config file.
+> If you want to use a *MineRL* environment, you must specify it, for example, by setting `env=minerl` in the cli arguments or by creating your custom config file. The `env=minerl_obtain_iron_pickaxe` and `env=minerl_obtain_diamond` configs select the *obtain* tasks.
 >
 > In all these environments, it is possible to have or not a dense reward, you can set the type of the reward by setting the `env.wrapper.dense` argument to `True` if you want a dense reward, to `False` otherwise.
 >
@@ -63,5 +63,5 @@ Finally, we added sticky actions for the `jump` and `attack` actions. You can se
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
-1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the training command with `xvfb-run`. For instance, to train DreamerV2 on the navigate task on a headless machine, you need to run the following command: `xvfb-run python sheeprl.py exp=dreamer_v3 fabric.devices=1 env=minerl env.id=custom_navigate algo.cnn_keys.encoder=[rgb]`.
+1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the training command with `xvfb-run`. For instance, to train DreamerV3 on the navigate task on a headless machine, you need to run the following command: `xvfb-run python sheeprl.py exp=dreamer_v3 fabric.devices=1 env=minerl env.id=custom_navigate algo.cnn_keys.encoder=[rgb]`.
 2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.

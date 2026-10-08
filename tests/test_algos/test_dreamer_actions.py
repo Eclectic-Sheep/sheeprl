@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from sheeprl import ROOT_DIR
-from sheeprl.data.buffers import EnvIndependentReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.envs.dummy import MultiDiscreteDummyEnv
 
 # Two discrete actions of different sizes: one-hot encoded one after the other in the stored actions
@@ -69,7 +69,7 @@ def play(exp: str, args: List[str]) -> Tuple[List[np.ndarray], List[Dict[str, np
     played: List[np.ndarray] = []
     rows: List[Dict[str, np.ndarray]] = []
     env_step = MultiDiscreteDummyEnv.step
-    buffer_add = EnvIndependentReplayBuffer.add
+    buffer_add = ReplayBuffer.add
 
     def recording_step(self, action):
         # The vectorized environment steps its environments in order: a new step every `NUM_ENVS` calls
@@ -90,7 +90,7 @@ def play(exp: str, args: List[str]) -> Tuple[List[np.ndarray], List[Dict[str, np
             mock.patch.object(sys, "argv", argv),
             mock.patch("sheeprl.utils.env.get_dummy_env", lambda id: MultiDiscreteDummyEnv(action_dims=ACTION_DIMS)),
             mock.patch.object(MultiDiscreteDummyEnv, "step", recording_step),
-            mock.patch.object(EnvIndependentReplayBuffer, "add", recording_add),
+            mock.patch.object(ReplayBuffer, "add", recording_add),
         ):
             run()
     finally:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from math import prod
-from typing import Any, Dict, Iterable, List, Optional, Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
 
 import gymnasium
 import hydra
@@ -15,10 +15,12 @@ from numpy.typing import NDArray
 from torch import Size, Tensor
 
 from sheeprl.algos.sac_ae.utils import weight_init
+from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
-from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
-from sheeprl.utils.model import cnn_forward
+from sheeprl.utils.model import cnn_forward, ema_
+from sheeprl.utils.obs import prepare_obs
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
@@ -447,22 +449,18 @@ class SACAEAgent(nn.Module):
 
     @torch.no_grad()
     def critic_target_ema(self) -> None:
-        _ema(self.critic_unwrapped.qfs.parameters(), self.critic_target.qfs.parameters(), self._tau)
+        ema_(self.critic_target.qfs, self.critic_unwrapped.qfs, self._tau)
 
     @torch.no_grad()
     def critic_encoder_target_ema(self) -> None:
-        _ema(self.critic_unwrapped.encoder.parameters(), self.critic_target.encoder.parameters(), self._encoder_tau)
+        ema_(self.critic_target.encoder, self.critic_unwrapped.encoder, self._encoder_tau)
 
 
-def _ema(params: Iterable[Tensor], targets: Iterable[Tensor], tau: float) -> None:
-    """`tau * param + (1 - tau) * target` for all the weights at once, with the same roundings."""
-    targets = list(targets)
-    updates = torch._foreach_mul(list(params), tau)
-    torch._foreach_mul_(targets, 1 - tau)
-    torch._foreach_add_(targets, updates)
+class SACAEPolicy(nn.Module, Policy):
+    """The policy of SAC-AE: `forward` samples the actions from the observations as tensors, `act` plays them in the
+    environments (`Policy`), from the observations moved to `device` (the images `cnn_keys` with their stacked frames as
+    channels, scaled to [0, 1])."""
 
-
-class SACAEPlayer(nn.Module):
     def __init__(
         self,
         feature_extractor: MultiEncoder,
@@ -471,16 +469,26 @@ class SACAEPlayer(nn.Module):
         fc_logstd: nn.Module,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
+        device: str | torch.device = "cpu",
+        cnn_keys: Sequence[str] = (),
     ):
         super().__init__()
         self.encoder = feature_extractor
         self.model = fc
         self.fc_mean = fc_mean
         self.fc_logstd = fc_logstd
+        self.device = torch.device(device)
+        self.cnn_keys = cnn_keys
 
         # Action rescaling buffers
         self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
         self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
+
+    def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
+        num_envs = len(next(iter(obs.values())))
+        torch_obs = prepare_obs(self.device, obs, cnn_keys=self.cnn_keys, num_envs=num_envs, image_shift=0)
+        actions = self.get_actions(torch_obs, greedy=True) if greedy else self(torch_obs)
+        return Act(actions.cpu().numpy())
 
     def forward(self, obs: Tensor, greedy: bool = False) -> Tensor:
         """Given an observation, it returns a tanh-squashed
@@ -560,7 +568,7 @@ def build_agent(
     agent_state: Optional[Dict[str, Tensor]] = None,
     encoder_state: Optional[Dict[str, Tensor]] = None,
     decoder_sate: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[SACAEAgent, _FabricModule, _FabricModule, SACAEPlayer]:
+) -> Tuple[SACAEAgent, _FabricModule, _FabricModule, SACAEPolicy]:
     act_dim = prod(action_space.shape)
     target_entropy = -act_dim
 
@@ -658,14 +666,17 @@ def build_agent(
     if agent_state:
         agent.load_state_dict(tie_actor_convolutions(agent_state))
 
-    # Setup player agent
-    player = SACAEPlayer(
+    # Setup policy agent
+    policy_fabric = get_single_device_fabric(fabric)
+    policy = SACAEPolicy(
         copy.deepcopy(agent.actor.encoder),
         copy.deepcopy(agent.actor.model),
         copy.deepcopy(agent.actor.fc_mean),
         copy.deepcopy(agent.actor.fc_logstd),
         action_low=action_space.low,
         action_high=action_space.high,
+        device=policy_fabric.device,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
     )
 
     # The encoder layers of the actor are tied with the ones of the critic (see `SACAEAgent`): they are trained only
@@ -681,20 +692,19 @@ def build_agent(
 
     # Wrap the target critic with a single-device fabric. This lets the target critic
     # to be on the same device as the agent and to run with the same precision
-    fabric_player = get_single_device_fabric(fabric)
-    agent.critic_target = fabric_player.setup_module(agent.critic_target)
+    agent.critic_target = policy_fabric.setup_module(agent.critic_target)
 
-    # Setup player agent
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.model = fabric_player.setup_module(player.model)
-    player.fc_mean = fabric_player.setup_module(player.fc_mean)
-    player.fc_logstd = fabric_player.setup_module(player.fc_logstd)
-    player.action_scale = player.action_scale.to(fabric_player.device)
-    player.action_bias = player.action_bias.to(fabric_player.device)
+    # Setup policy agent
+    policy.encoder = policy_fabric.setup_module(policy.encoder)
+    policy.model = policy_fabric.setup_module(policy.model)
+    policy.fc_mean = policy_fabric.setup_module(policy.fc_mean)
+    policy.fc_logstd = policy_fabric.setup_module(policy.fc_logstd)
+    policy.action_scale = policy.action_scale.to(policy_fabric.device)
+    policy.action_bias = policy.action_bias.to(policy_fabric.device)
 
-    # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
-        player_p.data = agent_p.data
-    # The step of the player, compiled with `algo.compile` (`compiled_player`)
-    player.forward = compiled_player(player.forward, fabric, cfg)
-    return agent, encoder, decoder, player
+    # Tie weights between the agent and the policy
+    for agent_p, policy_p in zip(agent.actor.parameters(), policy.parameters()):
+        policy_p.data = agent_p.data
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`)
+    policy.forward = compiled_policy(policy.forward, fabric, cfg)
+    return agent, encoder, decoder, policy

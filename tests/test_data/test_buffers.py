@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 from lightning import Fabric
 
-from sheeprl.data.buffers import ReplayBuffer, SequentialReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.utils.memmap import MemmapArray
+from tests.test_data.sampling import draw, draw_tensors
 
 
 def test_replay_buffer_wrong_buffer_size():
@@ -143,24 +144,23 @@ def test_replay_buffer_sample():
     rb = ReplayBuffer(buf_size, n_envs, obs_keys=("a",))
     td1 = {"a": np.random.rand(6, 1, 1)}
     rb.add(td1)
-    s = rb.sample(4)
+    s = draw(rb, 4)
     assert s["a"].shape == tuple([1, 4, 1])
-    s = rb.sample(4, n_samples=3)
+    s = draw(rb, 4, n_samples=3)
     assert s["a"].shape == tuple([3, 4, 1])
-    s = rb.sample(4, n_samples=2, clone=True, sample_next_obs=True)
+    s = draw(rb, 4, n_samples=2, clone=True, sample_next_obs=True)
     assert s["a"].shape == tuple([2, 4, 1])
     assert s["next_a"].shape == tuple([2, 4, 1])
 
 
-@pytest.mark.parametrize("buffer_cls", [ReplayBuffer, SequentialReplayBuffer])
-def test_replay_buffer_sample_seed(buffer_cls):
+@pytest.mark.parametrize("sequence_length", [None, 3])
+def test_replay_buffer_sample_seed(sequence_length):
     data = {"a": np.arange(40, dtype=np.float32).reshape(20, 2, 1)}
-    kwargs = {"sequence_length": 3} if buffer_cls is SequentialReplayBuffer else {}
     samples = []
     for seed in (42, 42, 0):
-        rb = buffer_cls(20, 2, obs_keys=("a",), seed=seed)
+        rb = ReplayBuffer(20, 2, obs_keys=("a",))
         rb.add(data)
-        samples.append(rb.sample(8, n_samples=2, **kwargs)["a"])
+        samples.append(draw(rb, 8, n_samples=2, sequence_length=sequence_length, seed=seed)["a"])
     np.testing.assert_array_equal(samples[0], samples[1])
     assert not np.array_equal(samples[0], samples[2])
 
@@ -172,7 +172,7 @@ def test_replay_buffer_sample_one_sample_next_obs_error():
     td1 = {"a": np.random.rand(1, 1, 1)}
     rb.add(td1)
     with pytest.raises(RuntimeError, match="You want to sample the next observations"):
-        rb.sample(1, sample_next_obs=True)
+        draw(rb, 1, sample_next_obs=True)
 
 
 def test_replay_buffer_getitem_error():
@@ -192,7 +192,7 @@ def test_replay_buffer_get_sample_empty_error():
     n_envs = 1
     rb = ReplayBuffer(buf_size, n_envs)
     with pytest.raises(RuntimeError, match="The buffer has not been initialized"):
-        rb._get_samples(np.zeros((1,), dtype=np.intp), np.zeros((1,), dtype=np.intp), 1, 1, sample_next_obs=True)
+        rb.gather(np.zeros((1,), dtype=np.intp), np.zeros((1,), dtype=np.intp), sample_next_obs=True)
 
 
 def test_replay_buffer_sample_next_obs_not_full():
@@ -201,7 +201,7 @@ def test_replay_buffer_sample_next_obs_not_full():
     rb = ReplayBuffer(buf_size, n_envs)
     td1 = {"observations": np.arange(4).reshape(-1, 1, 1)}
     rb.add(td1)
-    s = rb.sample(10, sample_next_obs=True)
+    s = draw(rb, 10, sample_next_obs=True)
     assert s["observations"].shape == tuple([1, 10, 1])
     assert td1["observations"][-1] not in s["observations"]
 
@@ -212,7 +212,7 @@ def test_replay_buffer_sample_next_obs_full():
     rb = ReplayBuffer(buf_size, n_envs)
     td1 = {"observations": np.arange(8).reshape(-1, 1, 1)}
     rb.add(td1)
-    s = rb.sample(10, sample_next_obs=True)
+    s = draw(rb, 10, sample_next_obs=True)
     assert s["observations"].shape == tuple([1, 10, 1])
     assert td1["observations"][-1] not in s["observations"]
 
@@ -226,7 +226,7 @@ def test_replay_buffer_sample_full_support(sample_next_obs, pos):
     rb = ReplayBuffer(buf_size, 1, obs_keys=("idx",))
     rb.add({"idx": np.arange(buf_size + pos).reshape(-1, 1, 1) % buf_size})
     assert rb.full and rb._pos == pos
-    sampled = set(rb.sample(2000, sample_next_obs=sample_next_obs)["idx"].ravel().tolist())
+    sampled = set(draw(rb, 2000, sample_next_obs=sample_next_obs)["idx"].ravel().tolist())
     expected = set(range(buf_size)) - ({(pos - 1) % buf_size} if sample_next_obs else set())
     assert sampled == expected
 
@@ -237,7 +237,7 @@ def test_replay_buffer_sample_full():
     rb = ReplayBuffer(buf_size, n_envs)
     td1 = {"a": np.random.rand(6, 1, 1)}
     rb.add(td1)
-    s = rb.sample(6)
+    s = draw(rb, 6)
     assert s["a"].shape == tuple([1, 6, 1])
 
 
@@ -247,11 +247,11 @@ def test_replay_buffer_sample_one_element():
     rb = ReplayBuffer(buf_size, n_envs)
     td1 = {"observations": np.random.rand(1, 1, 1)}
     rb.add(td1)
-    sample = rb.sample(1)
+    sample = draw(rb, 1)
     assert rb.full
     assert sample["observations"] == td1["observations"]
     with pytest.raises(ValueError):
-        rb.sample(1, sample_next_obs=True)
+        draw(rb, 1, sample_next_obs=True)
 
 
 def test_replay_buffer_sample_fail():
@@ -259,9 +259,9 @@ def test_replay_buffer_sample_fail():
     n_envs = 1
     rb = ReplayBuffer(buf_size, n_envs)
     with pytest.raises(ValueError, match="No sample has been added to the buffer"):
-        rb.sample(1)
+        draw(rb, 1)
     with pytest.raises(ValueError, match="must be both greater than 0"):
-        rb.sample(-1)
+        draw(rb, -1)
 
 
 def test_memmap_replay_buffer():
@@ -314,7 +314,7 @@ def test_obs_keys_replay_buffer():
         "tmp": np.random.randint(0, 256, (10, n_envs, 5), dtype=np.uint8),
     }
     rb.add(td)
-    sample = rb.sample(10, True)
+    sample = draw(rb, 10, True)
     sample_keys = sample.keys()
     assert "rgb" in sample_keys
     assert "state" in sample_keys
@@ -341,7 +341,7 @@ def test_obs_keys_replay_no_sample_next_obs_buffer():
         "next_tmp": np.random.randint(0, 256, (10, n_envs, 5), dtype=np.uint8),
     }
     rb.add(td)
-    sample = rb.sample(10, False)
+    sample = draw(rb, 10, False)
     sample_keys = sample.keys()
     assert "rgb" in sample_keys
     assert "state" in sample_keys
@@ -361,7 +361,7 @@ def test_sample_tensors():
     rb = ReplayBuffer(buf_size, n_envs)
     td1 = {"observations": np.arange(8).reshape(-1, 1, 1)}
     rb.add(td1)
-    s = rb.sample_tensors(10, sample_next_obs=True, n_samples=3)
+    s = draw_tensors(rb, 10, sample_next_obs=True, n_samples=3)
     assert isinstance(s["observations"], torch.Tensor)
     assert s["observations"].shape == torch.Size([3, 10, 1])
 
@@ -378,7 +378,7 @@ def test_sample_tensor_memmap():
         "observations": np.random.randint(0, 256, (10, n_envs, 3, 64, 64), dtype=np.uint8),
     }
     rb.add(td)
-    sample = rb.sample_tensors(10, False, n_samples=3)
+    sample = draw_tensors(rb, 10, sample_next_obs=False, n_samples=3)
     assert isinstance(sample["observations"], torch.Tensor)
     assert sample["observations"].shape == torch.Size([3, 10, 3, 64, 64])
     del rb
@@ -476,14 +476,13 @@ def test_setitem_error():
         rb["wrong_dims"] = np.zeros((10,))
 
 
-@pytest.mark.parametrize("buffer_cls", [ReplayBuffer, SequentialReplayBuffer])
 @pytest.mark.parametrize("size", [1, 2, 5])
 @pytest.mark.parametrize("first", [0, 1, 2, 5, 6])
 @pytest.mark.parametrize("extra", [1, 3, 6])
-def test_an_add_of_more_steps_than_the_buffer_keeps_the_last_ones(buffer_cls, size, first, extra):
+def test_an_add_of_more_steps_than_the_buffer_keeps_the_last_ones(size, first, extra):
     # The last `size` steps are kept in the rows they would take if added one at a time: an add of more steps than the
     # buffer into a buffer with data crashed
-    rb = buffer_cls(size, 2)
+    rb = ReplayBuffer(size, 2)
     value = lambda start, n: (np.arange(start, start + n).reshape(-1, 1, 1) * 10 + np.arange(2).reshape(1, 2, 1))
     if first:
         rb.add({"a": value(0, first)})

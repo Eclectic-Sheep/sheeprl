@@ -63,7 +63,7 @@ DREAMER_ARGS = [
 
 
 def dreamer_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torch.Tensor]:
-    """The weights of a Dreamer player: the encoder and the RSSM of the world model, and the actor `actor`."""
+    """The weights of a Dreamer policy: the encoder and the RSSM of the world model, and the actor `actor`."""
     return {
         **{k: v for k, v in saved["world_model"].items() if k.startswith(("encoder.", "rssm."))},
         **{"actor." + k: v for k, v in saved[actor].items()},
@@ -71,7 +71,7 @@ def dreamer_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torc
 
 
 def dreamer_v2_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torch.Tensor]:
-    """The weights of a DreamerV2 (or DreamerV1) player: the encoder, the recurrent and representation models of the
+    """The weights of a DreamerV2 (or DreamerV1) policy: the encoder, the recurrent and representation models of the
     world model, and the actor `actor`."""
     world_model = saved["world_model"]
     return {
@@ -286,19 +286,27 @@ def test_evaluation_plays_the_trained_models(name):
     ckpt_path = train(name, root_dir)
     saved = torch.load(ckpt_path, weights_only=False)
 
-    evaluate = importlib.import_module(f"sheeprl.algos.{ALGORITHMS[name].get('module', name)}.evaluate")
+    importlib.import_module(f"sheeprl.algos.{ALGORITHMS[name].get('module', name)}.evaluate")
     played: List[torch.nn.Module] = []
 
-    def test(policy, *args, **kwargs):
+    def run_test(policy, *args, **kwargs):
         played.append(policy)
 
+    # The test of the algorithms (`Algorithm.test`): `sheeprl.core.run_test`, where it is imported
+    modules = [
+        module
+        for module_name, module in list(sys.modules.items())
+        if module_name.startswith("sheeprl.") and hasattr(module, "run_test")
+    ]
     try:
-        with (
-            mock.patch.object(evaluate, "test", test),
-            mock.patch.object(
-                sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False"]
-            ),
-        ):
+        with contextlib.ExitStack() as stack:
+            for module in modules:
+                stack.enter_context(mock.patch.object(module, "run_test", run_test))
+            stack.enter_context(
+                mock.patch.object(
+                    sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False"]
+                )
+            )
             evaluation()
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)

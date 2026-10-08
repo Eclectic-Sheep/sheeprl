@@ -4,19 +4,16 @@ import warnings
 from typing import TYPE_CHECKING, Any, Dict, Sequence
 
 import gymnasium as gym
-import numpy as np
 import torch
 from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from torch import Tensor
 
-from sheeprl.algos.sac.agent import SACPlayer, build_agent
-from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
+
 
 AGGREGATOR_KEYS = {
     "Rewards/rew_avg",
@@ -26,39 +23,6 @@ AGGREGATOR_KEYS = {
     "Loss/alpha_loss",
 }
 MODELS_TO_REGISTER = {"agent"}
-
-
-def prepare_obs(
-    fabric: Fabric, obs: Dict[str, np.ndarray], *, mlp_keys: Sequence[str] = [], num_envs: int = 1, **kwargs
-) -> Tensor:
-    with fabric.device:
-        torch_obs = torch.cat([torch.as_tensor(obs[k].copy(), dtype=torch.float32) for k in mlp_keys], dim=-1)
-    return torch_obs.reshape(num_envs, -1)
-
-
-@torch.no_grad()
-def test(actor: SACPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
-    env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
-    actor.eval()
-    done = False
-    cumulative_rew = 0
-    obs = env.reset(seed=cfg.seed)[0]
-    while not done:
-        # Act greedly through the environment
-        torch_obs = prepare_obs(fabric, obs, mlp_keys=cfg.algo.mlp_keys.encoder)
-        action = actor.get_actions(torch_obs, greedy=True)
-
-        # Single environment step
-        obs, reward, done, truncated, info = env.step(action.cpu().numpy().reshape(env.action_space.shape))
-        done = done or truncated
-        cumulative_rew += reward
-
-        if cfg.dry_run:
-            done = True
-    fabric.print("Test - Reward:", cumulative_rew)
-    if cfg.metric.log_level > 0:
-        fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, policy_step)
-    env.close()
 
 
 def log_models(
@@ -90,16 +54,9 @@ def log_models_from_checkpoint(
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
-    import mlflow  # noqa
+    from sheeprl.algos.sac.sac import SAC
+    from sheeprl.core import log_models_from_checkpoint as log_trained_models
 
-    # Create the models
-    agent, _ = build_agent(fabric, cfg, env.observation_space, env.action_space, state["agent"])
-
-    # Log the model, create a new run if `cfg.run_id` is None.
-    model_info = {}
-    with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["agent"] = mlflow.pytorch.log_model(
-            unwrap_fabric(agent), name="agent", serialization_format="pickle"
-        )
-        mlflow.log_dict(cfg.to_log, "config.json")
-    return model_info
+    return log_trained_models(
+        fabric, env, cfg, state, SAC(fabric, cfg.to_log), lambda trained: {"agent": trained.agent}
+    )

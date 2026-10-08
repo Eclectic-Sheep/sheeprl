@@ -280,7 +280,7 @@ def test_evaluate_p2e_dv3_plays_the_task_actor():
     # The evaluation of a P2E-DV3 checkpoint must play the task actor stored in the checkpoint
     import torch
 
-    from sheeprl.algos.p2e_dv3 import evaluate as p2e_dv3_evaluate
+    from sheeprl.algos.p2e_dv3 import p2e_dv3_exploration
     from sheeprl.cli import evaluation
 
     root_dir = "pytest_test_evaluate_p2e_dv3"
@@ -327,18 +327,19 @@ def test_evaluate_p2e_dv3_plays_the_task_actor():
     ckpt_path = os.path.join(ckpt_root, ckpt_dir, "checkpoint")
     ckpt_path = os.path.join(ckpt_path, os.listdir(ckpt_path)[-1])
 
-    players = []
-    with mock.patch.object(p2e_dv3_evaluate, "test", lambda player, *args, **kwargs: players.append(player)):
+    policies = []
+    # The test of the algorithm (`P2EDV3Exploration.test`)
+    with mock.patch.object(p2e_dv3_exploration, "run_test", lambda policy, *args, **kwargs: policies.append(policy)):
         with mock.patch.object(
             sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False", "seed=42"]
         ):
             evaluation()
 
     actor_task_state = torch.load(ckpt_path, weights_only=False)["actor_task"]
-    player_actor_state = players[0].actor.state_dict()
-    assert player_actor_state.keys() == actor_task_state.keys()
+    policy_actor_state = policies[0].actor.state_dict()
+    assert policy_actor_state.keys() == actor_task_state.keys()
     for k, v in actor_task_state.items():
-        assert torch.equal(player_actor_state[k].cpu(), v.cpu())
+        assert torch.equal(policy_actor_state[k].cpu(), v.cpu())
 
     try:
         shutil.rmtree(os.path.join("logs", "runs", root_dir))

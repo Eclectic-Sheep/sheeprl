@@ -199,16 +199,16 @@ def test_the_images_have_the_configured_size():
 def test_the_batches_of_the_pretraining_are_sampled_16_at_a_time():
     # The batches of all the gradient steps of an iteration were sampled at once: the images of the 1000 steps of the
     # pretraining took 65 GB on the device
-    from sheeprl.data.buffers import ReplayBuffer
+    from sheeprl.data.store import ReplayStore
 
     sizes = []
-    sample_tensors = ReplayBuffer.sample_tensors
+    sample = ReplayStore.sample
 
-    def recording_sample_tensors(self, batch_size, *args, **kwargs):
-        sizes.append(batch_size)
-        return sample_tensors(self, batch_size, *args, **kwargs)
+    def recording_sample(self, batch_size, n_samples=1, **kwargs):
+        sizes.append(n_samples * batch_size)
+        return sample(self, batch_size, n_samples, **kwargs)
 
-    with mock.patch.object(ReplayBuffer, "sample_tensors", recording_sample_tensors):
+    with mock.patch.object(ReplayStore, "sample", recording_sample):
         run_sac_ae(
             [
                 "env.screen_size=64",

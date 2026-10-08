@@ -33,7 +33,7 @@ def reconstruction_loss(
     pc: Optional[Distribution] = None,
     continue_targets: Optional[Tensor] = None,
     continue_scale_factor: float = 1.0,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     Compute the reconstruction loss as described in Eq. 5 in
     [https://arxiv.org/abs/2301.04104](https://arxiv.org/abs/2301.04104).
@@ -69,6 +69,8 @@ def reconstruction_loss(
         state_loss (Tensor): the value of the state loss.
         continue_loss (Tensor): the value of the continue loss (0 if it is not computed).
         reconstruction_loss (Tensor): the value of the overall reconstruction loss.
+        step_losses (Tensor): the overall reconstruction loss of every step, without gradients (the priorities of
+            Curious Replay): the reconstruction loss is their mean.
     """
     rewards.device
     observation_loss = -sum([po[k].log_prob(observations[k]) for k in po.keys()])
@@ -84,12 +86,13 @@ def reconstruction_loss(
         continue_loss = continue_scale_factor * -pc.log_prob(continue_targets)
     else:
         continue_loss = torch.zeros_like(reward_loss)
-    reconstruction_loss = (kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss).mean()
+    step_losses = kl_regularizer * kl_loss + observation_loss + reward_loss + continue_loss
     return (
-        reconstruction_loss,
+        step_losses.mean(),
         kl.mean(),
         kl_loss.mean(),
         reward_loss.mean(),
         observation_loss.mean(),
         continue_loss.mean(),
+        step_losses.detach(),
     )

@@ -1,0 +1,142 @@
+"""When and how a run logs its metrics and saves its checkpoints."""
+
+from __future__ import annotations
+
+from typing import Any, Dict, Optional, Sequence
+
+from lightning import Fabric
+from torch import Tensor
+
+from sheeprl.core.algorithm import TrainState
+from sheeprl.core.environment import Episode
+from sheeprl.core.schedule import TrainSchedule
+from sheeprl.utils import fs
+from sheeprl.utils.metric import MetricAggregator
+from sheeprl.utils.timer import timer
+
+
+class Cadence:
+    """Accumulates the metrics of the training steps and of the ended episodes, logs them every `metric.log_every`
+    policy steps and saves a checkpoint every `checkpoint.every` policy steps (and at the end of the run if
+    `checkpoint.save_last`)."""
+
+    def __init__(
+        self,
+        fabric: Fabric,
+        cfg: Dict[str, Any],
+        log_dir: str,
+        aggregator: Optional[MetricAggregator],
+        checkpoint: Optional[Dict[str, Any]] = None,
+        policy_step: int = 0,
+    ) -> None:
+        """`policy_step` is the one the run starts from (the one of the checkpoint of a resumed run)."""
+        self.fabric = fabric
+        self.cfg = cfg
+        self.log_dir = log_dir
+        self.aggregator = aggregator
+        self.last_log = checkpoint["last_log"] if checkpoint is not None else 0
+        self.last_checkpoint = checkpoint["last_checkpoint"] if checkpoint is not None else 0
+        # Gradient steps done by all the processes, to measure the training speed
+        self.gradient_steps = 0
+        self.last_gradient_steps = 0
+        # The policy step since which the time of the interaction is measured, to measure its speed: a resumed run
+        # times only its own steps, not the ones played after the last log of the run it resumes
+        self.last_timed_step = policy_step
+
+    def accumulate(self, metrics: Dict[str, Tensor]) -> None:
+        """Add the metrics of one gradient step (of every process). Only the metrics listed in
+        `metric.aggregator.metrics` are kept."""
+        self.gradient_steps += self.fabric.world_size
+        if self.aggregator is not None and not self.aggregator.disabled:
+            for name, value in metrics.items():
+                if name in self.aggregator:
+                    self.aggregator.update(name, value)
+
+    def accumulate_episodes(self, episodes: Sequence[Episode], policy_step: int) -> None:
+        """Add the rewards and the lengths of the episodes that have just ended, and print their rewards with
+        `policy_step` (on the process of rank 0)."""
+        if self.cfg.metric.log_level == 0:
+            return
+        for episode in episodes:
+            if self.aggregator and "Rewards/rew_avg" in self.aggregator:
+                self.aggregator.update("Rewards/rew_avg", episode.reward)
+            if self.aggregator and "Game/ep_len_avg" in self.aggregator:
+                self.aggregator.update("Game/ep_len_avg", episode.length)
+            self.fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{episode.env_idx}={episode.reward}")
+
+    def log(self, policy_step: int, iteration: int, schedule: TrainSchedule) -> None:
+        """Log the accumulated metrics and the speed of the run, if it's time to."""
+        cfg = self.cfg
+        if cfg.metric.log_level == 0:
+            return
+        if policy_step - self.last_log < cfg.metric.log_every and iteration != schedule.total_iters:
+            return
+        if self.aggregator is not None and not self.aggregator.disabled:
+            self.fabric.log_dict(self.aggregator.compute(), policy_step)
+            self.aggregator.reset()
+        if schedule.off_policy:
+            # Gradient steps of all the processes per policy step
+            self.fabric.log(
+                "Params/replay_ratio", schedule.gradient_step * self.fabric.world_size / policy_step, policy_step
+            )
+        if not timer.disabled:
+            timer_metrics = timer.compute()
+            if timer_metrics.get("Time/train_time", 0) > 0:
+                # Gradient steps of all the processes per second (the processes train at the same time)
+                self.fabric.log(
+                    "Time/sps_train",
+                    (self.gradient_steps - self.last_gradient_steps) / timer_metrics["Time/train_time"],
+                    policy_step,
+                )
+            if timer_metrics.get("Time/env_interaction_time", 0) > 0:
+                # Environment steps of all the processes per second (the processes play at the same time)
+                self.fabric.log(
+                    "Time/sps_env_interaction",
+                    (policy_step - self.last_timed_step)
+                    * cfg.env.action_repeat
+                    / timer_metrics["Time/env_interaction_time"],
+                    policy_step,
+                )
+            timer.reset()
+        self.last_log = policy_step
+        self.last_timed_step = policy_step
+        self.last_gradient_steps = self.gradient_steps
+
+    def checkpoint(
+        self,
+        state: TrainState,
+        schedule: TrainSchedule,
+        policy_step: int,
+        iteration: int,
+        replay_buffer: Optional[Any] = None,
+    ) -> None:
+        """Save the training state and the counters needed to resume the run, if it's time to.
+
+        `replay_buffer`, if given, is saved too: with several processes, the buffers of all of them, in the
+        checkpoint of rank 0.
+        """
+        cfg = self.cfg
+        every = cfg.checkpoint.every > 0 and policy_step - self.last_checkpoint >= cfg.checkpoint.every
+        last = iteration == schedule.total_iters and cfg.checkpoint.save_last
+        if not (every or last):
+            return
+        self.last_checkpoint = policy_step
+        world_size = self.fabric.world_size
+        ckpt = {
+            **state.state_dict(),
+            "iter_num": iteration * world_size,
+            "batch_size": cfg.algo.per_rank_batch_size * world_size,
+            "per_rank_gradient_steps": schedule.gradient_step,
+            "last_log": self.last_log,
+            "last_checkpoint": self.last_checkpoint,
+        }
+        if schedule.ratio is not None:
+            ckpt["ratio"] = schedule.ratio.state_dict()
+        ckpt_path = fs.join(self.log_dir, f"checkpoint/ckpt_{policy_step}_{self.fabric.global_rank}.ckpt")
+        self.fabric.call(
+            "on_checkpoint_coupled",
+            fabric=self.fabric,
+            ckpt_path=ckpt_path,
+            state=ckpt,
+            replay_buffer=replay_buffer,
+        )

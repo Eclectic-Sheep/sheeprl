@@ -21,6 +21,7 @@ from torch.distributions import (
 )
 from torch.distributions.utils import probs_to_logits
 
+from sheeprl.algos.dreamer_policy import DreamerPolicy
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
@@ -34,7 +35,7 @@ from sheeprl.models.models import (
     MultiDecoder,
     MultiEncoder,
 )
-from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.distribution import SafeTanhTransform
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
@@ -667,23 +668,22 @@ class DecoupledRSSM(RSSM):
         return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
 
-class PlayerDV3(nn.Module):
+class DreamerV3Policy(nn.Module, DreamerPolicy):
     """
-    The model of the Dreamer_v3 player.
+    The model of the Dreamer_v3 policy.
 
     Args:
         encoder (MultiEncoder): the encoder.
         rssm (RSSM | DecoupledRSSM): the RSSM model.
         actor (_FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of the actions.
-        num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
         transition_model (_FabricModule): the transition model.
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
-        actor_type (str, optional): which actor the player is using ('task' or 'exploration').
+        actor_type (str, optional): which actor the policy is using ('task' or 'exploration').
             Default to None.
         decoupled_rssm (bool, optional): whether to use the DecoupledRSSM model.
     """
@@ -694,19 +694,19 @@ class PlayerDV3(nn.Module):
         rssm: RSSM | DecoupledRSSM,
         actor: Actor | MinedojoActor | _FabricModule,
         actions_dim: Sequence[int],
-        num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
         device: str | torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
+        cnn_keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.rssm = rssm
         self.actor = actor
+        self.cnn_keys = cnn_keys
         self.actions_dim = actions_dim
-        self.num_envs = num_envs
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.device = device
@@ -715,25 +715,21 @@ class PlayerDV3(nn.Module):
         self.decoupled_rssm = isinstance(rssm, DecoupledRSSM)
 
     @torch.no_grad()
-    def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
-        """Initialize the states and the actions for the ended environments.
+    def init_states(self, num_envs: int) -> None:
+        """The initial latent states (`RSSM.get_initial_states`) and zero actions of `num_envs` environments."""
+        self.num_envs = num_envs
+        self.actions = torch.zeros(1, num_envs, np.sum(self.actions_dim), device=self.device)
+        recurrent_state, stochastic_state = self.rssm.get_initial_states((1, num_envs))
+        # The initial recurrent state is one, expanded to the environments (their rows share the memory): a copy,
+        # since the states of the environments are then reset one by one
+        self.recurrent_state = recurrent_state.clone()
+        self.stochastic_state = stochastic_state.reshape(1, num_envs, -1)
 
-        Args:
-            reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
-                If None, then all environments' states are reset.
-                Defaults to None.
-        """
-        if reset_envs is None or len(reset_envs) == 0:
-            self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            recurrent_state, stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
-            # The initial recurrent state is one, expanded to the environments (their rows share the memory): a copy,
-            # since the states of the environments are then reset one by one
-            self.recurrent_state = recurrent_state.clone()
-            self.stochastic_state = stochastic_state.reshape(1, self.num_envs, -1)
-        else:
-            self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs], stochastic_state = self.rssm.get_initial_states((1, len(reset_envs)))
-            self.stochastic_state[:, reset_envs] = stochastic_state.reshape(1, len(reset_envs), -1)
+    @torch.no_grad()
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
+        self.actions[:, env_idxes] = torch.zeros_like(self.actions[:, env_idxes])
+        self.recurrent_state[:, env_idxes], stochastic_state = self.rssm.get_initial_states((1, len(env_idxes)))
+        self.stochastic_state[:, env_idxes] = stochastic_state.reshape(1, len(env_idxes), -1)
 
     def get_actions(
         self,
@@ -1037,7 +1033,7 @@ def build_agent(
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
     target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV3]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, DreamerV3Policy]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -1291,23 +1287,23 @@ def build_agent(
 
     if fabric.device.type == "cuda":
         # The convolutions of cuDNN run in the channels-last layout: weights in it spare the conversions of the
-        # activations from and to it (the values of the weights don't change). Before the copy of the player and the
-        # setup, which keep the layout: changing it later would replace the weights the player shares
+        # activations from and to it (the values of the weights don't change). Before the copy of the policy and the
+        # setup, which keep the layout: changing it later would replace the weights the policy shares
         world_model.encoder.to(memory_format=torch.channels_last)
         world_model.observation_model.to(memory_format=torch.channels_last)
 
-    # Create the player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player = PlayerDV3(
+    # Create the policy agent
+    policy_fabric = get_single_device_fabric(fabric)
+    policy = DreamerV3Policy(
         copy.deepcopy(world_model.encoder),
         copy.deepcopy(world_model.rssm),
         copy.deepcopy(actor),
         actions_dim,
-        cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
+        policy_fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
     )
 
     # Setup models with Fabric
@@ -1328,21 +1324,21 @@ def build_agent(
         target_critic.load_state_dict(target_critic_state)
     target_critic = setup_module(fabric, target_critic)
 
-    # Setup the player agent with a single-device Fabric
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.rssm.recurrent_model = fabric_player.setup_module(player.rssm.recurrent_model)
-    player.rssm.transition_model = fabric_player.setup_module(player.rssm.transition_model)
-    player.rssm.representation_model = fabric_player.setup_module(player.rssm.representation_model)
-    player.actor = fabric_player.setup_module(player.actor)
+    # Setup the policy agent with a single-device Fabric
+    policy.encoder = policy_fabric.setup_module(policy.encoder)
+    policy.rssm.recurrent_model = policy_fabric.setup_module(policy.rssm.recurrent_model)
+    policy.rssm.transition_model = policy_fabric.setup_module(policy.rssm.transition_model)
+    policy.rssm.representation_model = policy_fabric.setup_module(policy.rssm.representation_model)
+    policy.actor = policy_fabric.setup_module(policy.actor)
 
-    # Tie weights between the agent and the player
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+    # Tie weights between the agent and the policy
+    for agent_p, p in zip(world_model.encoder.parameters(), policy.encoder.parameters()):
         p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.parameters(), player.rssm.parameters()):
+    for agent_p, p in zip(world_model.rssm.parameters(), policy.rssm.parameters()):
         p.data = agent_p.data
-    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+    for agent_p, p in zip(actor.parameters(), policy.actor.parameters()):
         p.data = agent_p.data
-    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes
-    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
-    return world_model, actor, critic, target_critic, player
+    policy.get_actions = compiled_policy(policy.get_actions, fabric, cfg, cuda_graphs=False)
+    return world_model, actor, critic, target_critic, policy

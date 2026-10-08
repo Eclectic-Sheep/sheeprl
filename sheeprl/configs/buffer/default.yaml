@@ -10,3 +10,23 @@ checkpoint: True  # Used only for off-policy algorithms
 # length), the oldest first, and only the rest of them is sampled uniformly from the buffer, so that every step is
 # trained on soon after it is played (the online queue of DreamerV3)
 online: False
+# Off-policy algorithms: the batches are sampled in a thread while the training uses the previous ones, and moved to the
+# device on a CUDA stream of their own; the first ones of every iteration during the training of the previous one, from
+# the steps written until then (DreamerV3.5, which samples while it trains to write the latent states back, and Curious
+# Replay, which samples every batch with the priorities written by the training on the previous one, don't)
+prefetch: False
+# Off-policy algorithms: the replay buffer is kept in the memory of the device of the training, where its batches are
+# gathered (no copy from the CPU, nothing to prefetch); `memmap` is then ignored. The buffer must fit in the free memory of
+# the device when it is created
+on_device: False
+# DreamerV3 and DreamerV3.5: Curious Replay (Kauvar et al., 2023, https://arxiv.org/abs/2306.15934). The sequences are
+# drawn in proportion to the priority of their last step, `c * beta ** visits + (|loss| + epsilon) ** alpha`, where
+# `visits` counts the batches that trained on the step and `loss` is the loss of the world model on it in the last of
+# them; a new step has `initial_priority`. The values are the ones of the paper
+curious:
+  enabled: False
+  c: 10000
+  beta: 0.7
+  alpha: 0.7
+  epsilon: 0.01
+  initial_priority: 100000

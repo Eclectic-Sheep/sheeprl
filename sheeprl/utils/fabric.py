@@ -137,7 +137,7 @@ def setup_module(fabric: Fabric, module: nn.Module) -> _CompilableFabricModule:
     from the same weights.
 
     The returned module runs every call in the precision of `fabric` and can be compiled with `torch.compile`
-    (`compilable`). It can be shared by the player: it is set up on the device of the process only.
+    (`compilable`). It can be shared by the policy: it is set up on the device of the process only.
     """
     module = compilable(get_single_device_fabric(fabric).setup_module(module))
     if fabric.world_size > 1:

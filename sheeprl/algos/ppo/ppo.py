@@ -1,425 +1,273 @@
+"""Proximal Policy Optimization (https://arxiv.org/abs/1707.06347), written on the shared training loop of
+`sheeprl.core`: `PPO` says how to build, play and train; `sheeprl.core.loop.run` does the rest."""
+
 from __future__ import annotations
 
 import copy
-import warnings
-from typing import Any, Dict, Union
+from dataclasses import dataclass
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 import gymnasium as gym
 import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from lightning.fabric.wrappers import _FabricModule
-from torch import nn
-from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
+from torch import Tensor
+from torch.optim import Optimizer
 
-from sheeprl.algos.ppo.agent import build_agent
+from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, policy_loss, value_loss
-from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated, normalize_obs, prepare_obs, test
-from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.utils import fs
-from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
-from sheeprl.utils.fabric import autocast_cache_scope, update
-from sheeprl.utils.logger import get_log_dir, get_logger
-from sheeprl.utils.metric import MetricAggregator
+from sheeprl.algos.ppo.utils import anneal, bootstrap_truncated
+from sheeprl.core import (
+    Act,
+    Algorithm,
+    EnvStep,
+    ReplayStore,
+    TrainSchedule,
+    TrainState,
+    Writer,
+    autocast,
+    rollout_store,
+    run,
+    update,
+)
+from sheeprl.utils.compile import compiled, mark_gradient_step
+from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.obs import images_as_channels, normalize_obs, prepare_obs
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import phase_timer, timer, training_timer
-from sheeprl.utils.utils import gae_function, normalize_tensor, save_configs
+from sheeprl.utils.utils import gae_function, normalize_tensor
 
 
-def train(
-    fabric: Fabric,
-    agent: Union[nn.Module, _FabricModule],
-    optimizer: torch.optim.Optimizer,
-    data: Dict[str, torch.Tensor],
-    aggregator: MetricAggregator | None,
-    cfg: Dict[str, Any],
-) -> int:
-    """Train the agent on the data collected from the environment and return the gradient steps it did."""
-    indexes = list(range(next(iter(data.values())).shape[0]))
-    if cfg.buffer.share_data:
-        sampler = DistributedSampler(
-            indexes,
-            num_replicas=fabric.world_size,
-            rank=fabric.global_rank,
-            shuffle=True,
-            seed=cfg.seed,
-        )
-    else:
-        sampler = RandomSampler(indexes)
-    sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
+@dataclass
+class PPOState(TrainState):
+    # Feature extractor, actor and critic
+    agent: PPOAgent
+    optimizer: Optimizer
 
-    for epoch in range(cfg.algo.update_epochs):
-        if cfg.buffer.share_data:
-            sampler.sampler.set_epoch(epoch)
-        for batch_idxes in sampler:
-            batch = {k: v[batch_idxes] for k, v in data.items()}
-            normalized_obs = normalize_obs(
-                batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
+
+class PPOWriter(Writer):
+    """Writes every step in the rollout, with the columns of the actions of `PPOPolicy.act`. The rewards of the
+    episodes truncated by the time limit are bootstrapped with the values of `policy`.
+
+    With `clip_rewards`, the rewards are squashed by a tanh; with `rewards_dtype`, they are stored with that dtype,
+    otherwise with the one of the environments (as A2C does).
+    """
+
+    def __init__(
+        self,
+        fabric: Fabric,
+        cfg: Dict[str, Any],
+        policy: PPOPolicy,
+        clip_rewards: bool,
+        rewards_dtype: Optional[np.dtype] = np.float32,
+    ) -> None:
+        self.fabric = fabric
+        self.cfg = cfg
+        self.policy = policy
+        self.clip_rewards = clip_rewards
+        self.rewards_dtype = rewards_dtype
+        self.cnn_keys = cfg.algo.cnn_keys.encoder
+        self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+
+    def write(self, rollout: ReplayStore, step: EnvStep, act: Act) -> None:
+        cfg = self.cfg
+        num_envs = len(step.rewards)
+
+        def final_values(env_idxes: np.ndarray) -> np.ndarray:
+            final_obs = step.stack_final_obs(env_idxes, self.obs_keys)
+            final_obs = prepare_obs(self.fabric.device, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes))
+            return self.policy.get_values(final_obs).cpu().numpy()
+
+        # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP: the
+        # value of their final observation is added to the reward, after the rewards are clipped
+        rewards = np.tanh(step.rewards) if self.clip_rewards else step.rewards
+        rewards = bootstrap_truncated(rewards, step.terminated, step.truncated, final_values, cfg.algo.gamma)
+        dones = np.logical_or(step.terminated, step.truncated).reshape(num_envs, -1).astype(np.uint8)
+        rewards = rewards.reshape(num_envs, -1)
+        if self.rewards_dtype is not None:
+            rewards = rewards.astype(self.rewards_dtype)
+
+        # The stacked frames of an image are stored as its channels
+        obs = images_as_channels({k: step.obs[k] for k in self.obs_keys}, self.cnn_keys, num_envs)
+        data = {k: v[np.newaxis] for k, v in obs.items()}
+        data["dones"] = dones[np.newaxis]
+        for k in ("values", "actions", "logprobs"):
+            data[k] = act.columns[k][np.newaxis]
+        data["rewards"] = rewards[np.newaxis]
+        if cfg.buffer.memmap:
+            data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
+            data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
+        rollout.add(data, validate_args=cfg.buffer.validate_args)
+        # The observations after the last step of the rollout bootstrap its returns
+        rollout.last_step, rollout.last_act = step, act
+
+
+def ppo_loss(
+    agent: PPOAgent,
+    obs: Dict[str, Tensor],
+    actions: Tensor,
+    logprobs: Tensor,
+    values: Tensor,
+    returns: Tensor,
+    advantages: Tensor,
+    clip_coef: Tensor,
+    ent_coef: Tensor,
+    *,
+    actions_dim: Tuple[int, ...],
+    normalize_advantages: bool,
+    vf_coef: float,
+    clip_vloss: bool,
+    reduction: str,
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    """The loss of PPO on a minibatch (Equation 9 in the paper) and its terms: the clipped surrogate objective, the
+    value loss and the entropy of the policy. Can be compiled (`algo.compile`)."""
+    _, new_logprobs, entropy, new_values = agent(obs, torch.split(actions, actions_dim, dim=-1))
+    if normalize_advantages:
+        advantages = normalize_tensor(advantages)
+    pg_loss = policy_loss(new_logprobs, logprobs, advantages, clip_coef, reduction)
+    v_loss = value_loss(new_values, values, returns, clip_coef, clip_vloss, reduction)
+    ent_loss = entropy_loss(entropy, reduction)
+    return pg_loss + vf_coef * v_loss + ent_coef * ent_loss, pg_loss, v_loss, ent_loss
+
+
+class PPO(Algorithm):
+    """Every iteration plays `algo.rollout_steps` steps, then trains for `algo.update_epochs` epochs of minibatches
+    of the rollout with the clipped surrogate objective."""
+
+    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+        super().__init__(fabric, cfg)
+        if "minedojo" in cfg.env.wrapper._target_.lower():
+            raise ValueError(
+                "MineDojo is not currently supported by PPO agent, since it does not take "
+                "into consideration the action masks provided by the environment, but needed "
+                "in order to play correctly the game. "
+                "As an alternative you can use one of the Dreamers' agents."
             )
-            with autocast_cache_scope(fabric):
-                _, logprobs, entropy, new_values = agent(
-                    normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
-                )
-
-                if cfg.algo.normalize_advantages:
-                    batch["advantages"] = normalize_tensor(batch["advantages"])
-
-                # Policy loss
-                pg_loss = policy_loss(
-                    logprobs,
-                    batch["logprobs"],
-                    batch["advantages"],
-                    cfg.algo.clip_coef,
-                    cfg.algo.loss_reduction,
-                )
-
-                # Value loss
-                v_loss = value_loss(
-                    new_values,
-                    batch["values"],
-                    batch["returns"],
-                    cfg.algo.clip_coef,
-                    cfg.algo.clip_vloss,
-                    cfg.algo.loss_reduction,
-                )
-
-                # Entropy loss
-                ent_loss = entropy_loss(entropy, cfg.algo.loss_reduction)
-
-                # Equation (9) in the paper
-                loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
-            update(fabric, loss, optimizer, cfg.algo.max_grad_norm)
-
-            # Update metrics
-            if aggregator and not aggregator.disabled:
-                aggregator.update("Loss/policy_loss", pg_loss.detach())
-                aggregator.update("Loss/value_loss", v_loss.detach())
-                aggregator.update("Loss/entropy_loss", ent_loss.detach())
-
-    return cfg.algo.update_epochs * len(sampler)
-
-
-@register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
-    if "minedojo" in cfg.env.wrapper._target_.lower():
-        raise ValueError(
-            "MineDojo is not currently supported by PPO agent, since it does not take "
-            "into consideration the action masks provided by the environment, but needed "
-            "in order to play correctly the game. "
-            "As an alternative you can use one of the Dreamers' agents."
-        )
-
-    initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
-    initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
-
-    # Initialize Fabric
-    gae = gae_function(cfg.algo.gae_method)
-    rank = fabric.global_rank
-    world_size = fabric.world_size
-    device = fabric.device
-
-    # Resume from checkpoint
-    if cfg.checkpoint.resume_from:
-        state = fs.load_checkpoint(fabric, cfg.checkpoint.resume_from, weights_only=False)
-
-    # Create Logger. This will create the logger only on the
-    # rank-0 process
-    logger = get_logger(fabric, cfg)
-    if logger and fabric.is_global_zero:
-        fabric._loggers = [logger]
-        fabric.logger.log_hyperparams(cfg)
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, log_root=cfg.log_root)
-    fabric.print(f"Log dir: {log_dir}")
-
-    # Environment setup
-    vectorized_env = get_vector_env_cls(cfg.env.sync_env)
-    envs = vectorized_env(
-        [
-            make_env(
-                cfg,
-                cfg.seed + rank * cfg.env.num_envs + i,
-                rank * cfg.env.num_envs,
-                log_dir if rank == 0 else None,
-                "train",
-                vector_env_idx=i,
+        if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
+            raise RuntimeError(
+                "You should specify at least one CNN keys or MLP keys from the cli: "
+                "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
             )
-            for i in range(cfg.env.num_envs)
-        ]
-    )
-    observation_space = envs.single_observation_space
+        # The buffer holds one rollout: every row is trained on, and the returns are computed over all of them
+        if cfg.buffer.size != cfg.algo.rollout_steps:
+            raise ValueError(
+                f"The size of the buffer ({cfg.buffer.size}) must be equal "
+                f"to the rollout steps ({cfg.algo.rollout_steps})"
+            )
+        self.steps_per_iteration = cfg.algo.rollout_steps
+        self.gae = gae_function(cfg.algo.gae_method)
+        # The values the annealed coefficients start from
+        self.initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
+        self.initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
 
-    if not isinstance(observation_space, gym.spaces.Dict):
-        raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
-        raise RuntimeError(
-            "You should specify at least one CNN keys or MLP keys from the cli: "
-            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
-        )
-    if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
-        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
-    obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+    def build(
+        self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
+    ) -> Tuple[PPOState, ReplayStore]:
+        cfg = self.cfg
+        if not isinstance(obs_space, gym.spaces.Dict):
+            raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
+        if cfg.metric.log_level > 0:
+            self.fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
+            self.fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+        actions_dim, is_continuous = actions_dim_of(action_space)
+        agent, self._policy = build_agent(self.fabric, actions_dim, is_continuous, cfg, obs_space)
 
-    is_continuous = isinstance(envs.single_action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(envs.single_action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        envs.single_action_space.shape
-        if is_continuous
-        else (envs.single_action_space.nvec.tolist() if is_multidiscrete else [envs.single_action_space.n])
-    )
-    clip_rewards_fn = lambda r: np.tanh(r) if cfg.env.clip_rewards else r
-    # Create the actor and critic models
-    agent, player = build_agent(
-        fabric,
-        actions_dim,
-        is_continuous,
-        cfg,
-        observation_space,
-        state["agent"] if cfg.checkpoint.resume_from else None,
-    )
+        optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
+        optimizer = self.fabric.setup_optimizers(optimizer)
+        self.total_iters = schedule.total_iters
+        # The annealed coefficients of the iteration as tensors: a compiled step doesn't recompile when they change
+        self.clip_coef = torch.tensor(float(cfg.algo.clip_coef), device=self.fabric.device)
+        self.ent_coef = torch.tensor(float(cfg.algo.ent_coef), device=self.fabric.device)
 
-    # Define the optimizer
-    optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
+        state = PPOState(agent=agent, optimizer=optimizer)
+        return state, rollout_store(self.fabric, cfg, log_dir, cfg.buffer.size)
 
-    if fabric.is_global_zero:
-        save_configs(cfg, log_dir)
+    def policy(self, state: PPOState) -> PPOPolicy:
+        """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
+        return self._policy
 
-    # Load the state from the checkpoint
-    if cfg.checkpoint.resume_from:
-        optimizer.load_state_dict(state["optimizer"])
+    def writer(self, state: PPOState, policy: PPOPolicy) -> PPOWriter:
+        return PPOWriter(self.fabric, self.cfg, policy, clip_rewards=self.cfg.env.clip_rewards)
 
-    # Setup agent and optimizer with Fabric
-    optimizer = fabric.setup_optimizers(optimizer)
-
-    # Create a metric aggregator to log the metrics
-    aggregator = None
-    if not MetricAggregator.disabled:
-        aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
-
-    # Local data
-    # The buffer holds one rollout: every row is trained on, and the returns are computed over all of them
-    if cfg.buffer.size != cfg.algo.rollout_steps:
-        raise ValueError(
-            f"The size of the buffer ({cfg.buffer.size}) must be equal "
-            f"to the rollout steps ({cfg.algo.rollout_steps})"
-        )
-    rb = ReplayBuffer(
-        cfg.buffer.size,
-        cfg.env.num_envs,
-        memmap=cfg.buffer.memmap,
-        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
-        obs_keys=obs_keys,
-    )
-
-    # Global variables
-    last_train = 0
-    train_step = 0
-    start_iter = (
-        # + 1 because the checkpoint is at the end of the update step
-        # (when resuming from a checkpoint, the update at the checkpoint
-        # is ended and you have to start with the next one)
-        (state["iter_num"] // fabric.world_size) + 1
-        if cfg.checkpoint.resume_from
-        else 1
-    )
-    policy_step = state["iter_num"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
-    last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
-    # The policy step since which the interaction is timed: a resumed run times only its own steps, not the ones
-    # played after the last log of the run it resumes
-    last_timed_step = policy_step
-    last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
-    policy_steps_per_iter = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
-    total_iters = cfg.algo.total_steps // policy_steps_per_iter if not cfg.dry_run else 1
-    if cfg.checkpoint.resume_from:
-        cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
-
-    # Warning for log and checkpoint every
-    if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
-        warnings.warn(
-            f"The metric.log_every parameter ({cfg.metric.log_every}) is not a multiple of the "
-            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
-            "the metrics will be logged at the nearest greater multiple of the "
-            "policy_steps_per_iter value."
-        )
-    if cfg.checkpoint.every % policy_steps_per_iter != 0:
-        warnings.warn(
-            f"The checkpoint.every parameter ({cfg.checkpoint.every}) is not a multiple of the "
-            f"policy_steps_per_iter value ({policy_steps_per_iter}), so "
-            "the checkpoint will be saved at the nearest greater multiple of the "
-            "policy_steps_per_iter value."
-        )
-
-    # Get the first environment observation and start the optimization
-    step_data = {}
-    next_obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]  # [N_envs, N_obs]
-    for k in obs_keys:
-        if k in cfg.algo.cnn_keys.encoder:
-            next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
-        step_data[k] = next_obs[k][np.newaxis]
-
-    for iter_num in range(start_iter, total_iters + 1):
+    def batches(
+        self, state: PPOState, rollout: ReplayStore, n_steps: Optional[int], iteration: int
+    ) -> Iterator[Dict[str, Tensor]]:
+        cfg = self.cfg
         # The learning rate and the coefficients of the iteration
-        anneal(cfg, optimizer, iter_num, total_iters, initial_clip_coef, initial_ent_coef)
-
-        with torch.inference_mode():
-            for _ in range(0, cfg.algo.rollout_steps):
-                policy_step += cfg.env.num_envs * world_size
-
-                # Measure environment interaction time: this considers both the model forward
-                # to get the action given the observation and the time taken into the environment
-                with phase_timer("Time/env_interaction_time"):
-                    # Sample an action given the observation received by the environment
-                    torch_obs = prepare_obs(
-                        fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
-                    )
-                    actions, logprobs, values = player(torch_obs)
-                    # The continuous tanh-normal actions are stored before the tanh, and played after it
-                    real_actions = player.env_actions(actions).cpu().numpy()
-                    actions = torch.cat(actions, -1).cpu().numpy()
-
-                    # Single environment step
-                    obs, rewards, terminated, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
-
-                    def final_values(env_idxes: np.ndarray) -> np.ndarray:
-                        final_obs = {k: np.stack([info["final_obs"][i][k] for i in env_idxes]) for k in obs_keys}
-                        final_obs = prepare_obs(
-                            fabric, final_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=len(env_idxes)
-                        )
-                        return player.get_values(final_obs).cpu().numpy()
-
-                    # The rewards are clipped before the values of the final observations of the truncated episodes
-                    # are added to them
-                    rewards = bootstrap_truncated(
-                        clip_rewards_fn(rewards), terminated, truncated, final_values, cfg.algo.gamma
-                    )
-                    dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
-                    rewards = rewards.reshape(cfg.env.num_envs, -1).astype(np.float32)
-
-                # Update the step data
-                step_data["dones"] = dones[np.newaxis]
-                step_data["values"] = values.cpu().numpy()[np.newaxis]
-                step_data["actions"] = actions[np.newaxis]
-                step_data["logprobs"] = logprobs.cpu().numpy()[np.newaxis]
-                step_data["rewards"] = rewards[np.newaxis]
-                if cfg.buffer.memmap:
-                    step_data["returns"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
-                    step_data["advantages"] = np.zeros_like(rewards, shape=(1, *rewards.shape))
-
-                # Append data to buffer
-                rb.add(step_data, validate_args=cfg.buffer.validate_args)
-
-                # Update the observation and dones
-                next_obs = {}
-                for k in obs_keys:
-                    _obs = obs[k]
-                    if k in cfg.algo.cnn_keys.encoder:
-                        _obs = _obs.reshape(cfg.env.num_envs, -1, *_obs.shape[-2:])
-                    step_data[k] = _obs[np.newaxis]
-                    next_obs[k] = _obs
-
-                if cfg.metric.log_level > 0:
-                    for i, ep_rew, ep_len in get_episode_stats(info):
-                        if aggregator and "Rewards/rew_avg" in aggregator:
-                            aggregator.update("Rewards/rew_avg", ep_rew)
-                        if aggregator and "Game/ep_len_avg" in aggregator:
-                            aggregator.update("Game/ep_len_avg", ep_len)
-                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew}")
-
-        # Transform the data into PyTorch Tensors
-        local_data = rb.to_tensor(dtype=None, device=device, from_numpy=cfg.buffer.from_numpy)
+        anneal(cfg, state.optimizer, iteration, self.total_iters, self.initial_clip_coef, self.initial_ent_coef)
+        self.clip_coef.fill_(cfg.algo.clip_coef)
+        self.ent_coef.fill_(cfg.algo.ent_coef)
+        data = rollout.read()
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
-            torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
-            next_values = player.get_values(torch_obs)
-            returns, advantages = gae(
-                local_data["rewards"],
-                local_data["values"],
-                local_data["dones"],
+            next_obs = {k: rollout.last_step.next_obs[k] for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder}
+            next_obs = prepare_obs(
+                self.fabric.device, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
+            )
+            next_values = self.policy(state).get_values(next_obs)
+            returns, advantages = self.gae(
+                data["rewards"],
+                data["values"],
+                data["dones"],
                 next_values,
                 cfg.algo.rollout_steps,
                 cfg.algo.gamma,
                 cfg.algo.gae_lambda,
             )
-            # Add returns and advantages to the buffer
-            local_data["returns"] = returns.float()
-            local_data["advantages"] = advantages.float()
+            data["returns"] = returns.float()
+            data["advantages"] = advantages.float()
 
-        if cfg.buffer.share_data and fabric.world_size > 1:
-            # Gather all the tensors from all the world and reshape them
-            gathered_data: Dict[str, torch.Tensor] = fabric.all_gather(local_data)
-            # Flatten the first three dimensions: [World_Size, Buffer_Size, Num_Envs]
-            gathered_data = {k: v.flatten(start_dim=0, end_dim=2).float() for k, v in gathered_data.items()}
+        if cfg.buffer.share_data and self.fabric.world_size > 1:
+            # Train on the rollouts of all the processes: flatten [World_Size, Rollout_Steps, Num_Envs]
+            data = self.fabric.all_gather(data)
+            data = {k: v.flatten(start_dim=0, end_dim=2).float() for k, v in data.items()}
         else:
-            # Flatten the first two dimensions: [Buffer_Size, Num_Envs]
-            gathered_data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in local_data.items()}
+            # Flatten [Rollout_Steps, Num_Envs]
+            data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in data.items()}
 
-        with training_timer(fabric.device):
-            gradient_steps = train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
-        # The gradient steps of all the processes
-        train_step += world_size * gradient_steps
+        yield from rollout.minibatches(data, cfg.algo.update_epochs)
 
-        if cfg.metric.log_level > 0:
-            # Log lr and coefficients
-            fabric.log("Info/learning_rate", optimizer.param_groups[0]["lr"], policy_step)
-            fabric.log("Info/clip_coef", cfg.algo.clip_coef, policy_step)
-            fabric.log("Info/ent_coef", cfg.algo.ent_coef, policy_step)
+    def train_step(self, state: PPOState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
+        cfg = self.cfg.algo
+        # The loss is compiled when `algo.compile.enabled` is set
+        mark_gradient_step(self.fabric, self.cfg)
+        obs = normalize_obs(batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder)
+        with autocast(self.fabric):
+            loss, pg_loss, v_loss, ent_loss = compiled(ppo_loss, self.fabric, self.cfg)(
+                state.agent,
+                obs,
+                batch["actions"],
+                batch["logprobs"],
+                batch["values"],
+                batch["returns"],
+                batch["advantages"],
+                self.clip_coef,
+                self.ent_coef,
+                actions_dim=tuple(int(dim) for dim in state.agent.actions_dim),
+                normalize_advantages=cfg.normalize_advantages,
+                vf_coef=cfg.vf_coef,
+                clip_vloss=cfg.clip_vloss,
+                reduction=cfg.loss_reduction,
+            )
+        update(self.fabric, loss, state.optimizer, max_grad_norm=cfg.max_grad_norm)
+        return {
+            "Loss/policy_loss": pg_loss.detach(),
+            "Loss/value_loss": v_loss.detach(),
+            "Loss/entropy_loss": ent_loss.detach(),
+        }
 
-            # Log metrics
-            if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):
-                # Sync distributed metrics
-                if aggregator and not aggregator.disabled:
-                    metrics_dict = aggregator.compute()
-                    fabric.log_dict(metrics_dict, policy_step)
-                    aggregator.reset()
 
-                # Sync distributed timers
-                if not timer.disabled:
-                    timer_metrics = timer.compute()
-                    if "Time/train_time" in timer_metrics and timer_metrics["Time/train_time"] > 0:
-                        fabric.log(
-                            "Time/sps_train",
-                            (train_step - last_train) / timer_metrics["Time/train_time"],
-                            policy_step,
-                        )
-                    if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
-                        fabric.log(
-                            "Time/sps_env_interaction",
-                            ((policy_step - last_timed_step) * cfg.env.action_repeat)
-                            / timer_metrics["Time/env_interaction_time"],
-                            policy_step,
-                        )
-                    timer.reset()
+@register_algorithm()
+def main(fabric: Fabric, cfg: Dict[str, Any]):
+    algo = PPO(fabric, cfg)
+    state, log_dir, policy_step = run(fabric, cfg, algo)
 
-                # Reset counters
-                last_log = policy_step
-                last_timed_step = policy_step
-                last_train = train_step
-
-        # Checkpoint model
-        if (cfg.checkpoint.every > 0 and policy_step - last_checkpoint >= cfg.checkpoint.every) or (
-            iter_num == total_iters and cfg.checkpoint.save_last
-        ):
-            last_checkpoint = policy_step
-            state = {
-                "agent": agent.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "iter_num": iter_num * world_size,
-                "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
-                "last_log": last_log,
-                "last_checkpoint": last_checkpoint,
-            }
-            ckpt_path = fs.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
-            fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
-
-    envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(player, fabric, cfg, log_dir, policy_step=policy_step)
+        algo.test(state, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.ppo.utils import log_models
         from sheeprl.utils.mlflow import register_model
 
-        models_to_log = {"agent": agent}
-        register_model(fabric, log_models, cfg, models_to_log)
+        register_model(fabric, log_models, cfg, {"agent": state.agent})

@@ -13,6 +13,7 @@ from lightning import Fabric
 from omegaconf import OmegaConf
 
 from sheeprl.cli import resume_from_checkpoint
+from sheeprl.core import loop
 from sheeprl.utils.env import make_env
 from sheeprl.utils.utils import dotdict
 
@@ -103,7 +104,8 @@ def test_p2e_finetuning_normalizes_the_actions_as_the_exploration(explored_with,
     # The finetuning takes the options of its exploration before anything else: it is stopped right after
     with (
         mock.patch.object(Fabric, "load", return_value={}),
-        mock.patch.object(finetuning, "get_logger", side_effect=Stop),
+        # The finetuning stops where the training loop of the core creates the logger
+        mock.patch.object(loop, "get_logger", side_effect=Stop),
         pytest.raises(Stop),
     ):
         finetuning.main(Fabric(accelerator="cpu", devices=1), cfg, exploration_cfg)
