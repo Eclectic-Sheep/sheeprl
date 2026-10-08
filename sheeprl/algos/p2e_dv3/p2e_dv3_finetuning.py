@@ -212,7 +212,7 @@ class P2EDV3Finetuning(Algorithm):
             tau = cfg.algo.critic.tau
             ema_(state.target_critic_task, state.critic_task, tau)
 
-        metrics = train(
+        metrics, _ = train(
             self.fabric,
             state.world_model,
             state.actor_task,

@@ -219,7 +219,7 @@ def train(
 
     # Dynamic Learning: the one of DreamerV3, whose reward and continue models learn from the latent states without
     # changing them
-    posteriors, recurrent_states, world_model_metrics = world_model_learning(
+    posteriors, recurrent_states, world_model_metrics, _ = world_model_learning(
         fabric, cfg, world_model, world_optimizer, data, detach_heads=True
     )
     world_optimizer.zero_grad(set_to_none=True)

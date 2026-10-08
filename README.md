@@ -501,6 +501,7 @@ Every algorithm stores its steps in a single kind of storage, the `ReplayBuffer`
 - `TransitionSampler`: single steps (SAC, DroQ, SAC-AE);
 - `SequenceSampler`: sequences of consecutive steps of a single environment (the Dreamers, Plan2Explore);
 - `EpisodeSampler`: sequences inside the episodes that ended, with their ends prioritized with `buffer.prioritize_ends` (DreamerV2 with `buffer.type=episode`);
+- `CuriousSequenceSampler`: sequences drawn by the priorities of [Curious Replay](https://arxiv.org/abs/2306.15934), from the number of trainings on their steps and the losses of the world model on them (DreamerV3 and DreamerV3.5 with `buffer.curious.enabled=True`);
 - `EpochSampler`: the minibatches of the epochs of an on-policy update (PPO, A2C, PPO-recurrent).
 
 The off-policy algorithms train on a `sheeprl.data.store.ReplayStore`: a storage and a sampler, whose batches go to the device of the training. The store is saved in the checkpoints with its sampler, whose generator a resumed run continues. With `buffer.prefetch` the next batches are sampled in a thread while the training uses the current ones, and with `buffer.on_device` the storage is kept in the memory of the device, where its batches are gathered (see the [configs howto](./howto/configs.md#buffer)).

@@ -36,6 +36,7 @@ from sheeprl.core import (
     run,
     sequence_store,
 )
+from sheeprl.data.samplers import SAMPLED_STEPS, CuriousSequenceSampler
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import (
@@ -199,7 +200,7 @@ def world_model_loss(
     continue_scale_factor: float,
     detach_heads: bool = False,
     entropies: bool = True,
-) -> Tuple[Tensor, Tensor, Tensor, Dict[str, Tensor]]:
+) -> Tuple[Tensor, Tensor, Tensor, Dict[str, Tensor], Tensor]:
     """The loss of the world model on a batch of sequences (Eq. 4 in the paper), without the optimization step: it
     can be compiled (`algo.compile`). The configuration is given by `world_model_loss_kwargs`.
 
@@ -208,8 +209,8 @@ def world_model_loss(
         entropies: whether to compute the entropies of the posteriors and of the priors (metrics).
 
     Returns:
-        The loss, the posteriors and the recurrent states of the batch (the starting points of the imagination), and
-        the metrics.
+        The loss, the posteriors and the recurrent states of the batch (the starting points of the imagination), the
+        metrics, and the loss of every step (`[T, B]`, without gradients: the priorities of Curious Replay).
     """
     # The environment interaction goes like this:
     # Actions:           a0       a1       a2      a4
@@ -300,7 +301,7 @@ def world_model_loss(
     posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], stochastic_size, discrete_size)
 
     # World model optimization step. Eq. 4 in the paper
-    rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
+    rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss, step_losses = reconstruction_loss(
         po,
         batch_obs,
         pr,
@@ -330,7 +331,7 @@ def world_model_loss(
         metrics["State/prior_entropy"] = (
             Independent(OneHotCategorical(logits=priors_logits.detach()), 1).entropy().mean().detach()
         )
-    return rec_loss, posteriors, recurrent_states, metrics
+    return rec_loss, posteriors, recurrent_states, metrics, step_losses
 
 
 def world_model_learning(
@@ -340,22 +341,23 @@ def world_model_learning(
     world_optimizer: Optimizer,
     data: Dict[str, Tensor],
     detach_heads: bool = False,
-) -> Tuple[Tensor, Tensor, Dict[str, Tensor]]:
+) -> Tuple[Tensor, Tensor, Dict[str, Tensor], Tensor]:
     """One update of the world model on a batch of sequences (dynamic learning, Eq. 4 in the paper).
 
     Args:
         detach_heads: the reward and continue models learn from the latent states without changing them (P2E).
 
     Returns:
-        The posteriors and the recurrent states of the batch, the starting points of the imagination, and the metrics
-        (with the norm of the gradients before clipping, `Grads/world_model`, when they are clipped).
+        The posteriors and the recurrent states of the batch, the starting points of the imagination, the metrics
+        (with the norm of the gradients before clipping, `Grads/world_model`, when they are clipped), and the loss of
+        every step (`[T, B]`, without gradients: the priorities of Curious Replay).
     """
     # Every sequence starts an episode: the world model starts from its initial state
     data["is_first"][0, :] = torch.ones_like(data["is_first"][0, :])
     mark_gradient_step(fabric, cfg)
     # Cast the weights to low precision once for the whole forward pass, not at every step of the unroll
     with autocast_cache_scope(fabric):
-        rec_loss, posteriors, recurrent_states, metrics = compiled(world_model_loss, fabric, cfg)(
+        rec_loss, posteriors, recurrent_states, metrics, step_losses = compiled(world_model_loss, fabric, cfg)(
             world_model,
             data,
             **world_model_loss_kwargs(cfg),
@@ -369,7 +371,7 @@ def world_model_learning(
     )
     if world_model_grads:
         metrics["Grads/world_model"] = world_model_grads.mean().detach()
-    return posteriors, recurrent_states, metrics
+    return posteriors, recurrent_states, metrics, step_losses
 
 
 def imagine_trajectories(
@@ -658,7 +660,7 @@ def train(
     is_continuous: bool,
     actions_dim: Sequence[int],
     moments: Moments,
-) -> None:
+) -> Tuple[Dict[str, Tensor], Tensor]:
     """Runs one-step update of the agent: the world model learns from the batch (`world_model_learning`), then the
     actor and the critic from the trajectories imagined from it (`behaviour_learning`).
 
@@ -676,8 +678,14 @@ def train(
         is_continuous (bool): whether or not the environment is continuous.
         actions_dim (Sequence[int]): the actions dimension.
         moments (Moments): the moments for normalizing the lambda values.
+
+    Returns:
+        The metrics, and the loss of the world model on every step of the batch (`[T, B]`, without gradients: the
+        priorities of Curious Replay).
     """
-    posteriors, recurrent_states, metrics = world_model_learning(fabric, cfg, world_model, world_optimizer, data)
+    posteriors, recurrent_states, metrics, step_losses = world_model_learning(
+        fabric, cfg, world_model, world_optimizer, data
+    )
     behaviour = behaviour_learning(
         fabric,
         cfg,
@@ -707,13 +715,16 @@ def train(
     actor_optimizer.zero_grad(set_to_none=True)
     critic_optimizer.zero_grad(set_to_none=True)
     world_optimizer.zero_grad(set_to_none=True)
-    return metrics
+    return metrics, step_losses
 
 
 class DreamerV3(Algorithm):
     """Every iteration plays one step in every environment and writes it in the replay buffer, then does
     `algo.replay_ratio` gradient steps per policy step, each on its own batch of sequences: the world model, then the
-    actor and the critic on trajectories imagined from the batch."""
+    actor and the critic on trajectories imagined from the batch.
+
+    With Curious Replay (`buffer.curious.enabled`), the sequences are drawn by priorities that the losses of the world
+    model on every batch update (`CuriousSequenceSampler`)."""
 
     off_policy = True
     # The test episode samples the actions of the policy
@@ -788,7 +799,12 @@ class DreamerV3(Algorithm):
         )
         # One buffer of sequences per environment, sampled independently
         buffer = sequence_store(
-            fabric, cfg, log_dir, env_buffer_size(fabric, cfg, dry_run_size=2), cfg.algo.per_rank_sequence_length
+            fabric,
+            cfg,
+            log_dir,
+            env_buffer_size(fabric, cfg, dry_run_size=2),
+            cfg.algo.per_rank_sequence_length,
+            curious=True,
         )
         return state, buffer
 
@@ -802,7 +818,17 @@ class DreamerV3(Algorithm):
     def batches(
         self, state: DreamerV3State, buffer: ReplayStore, n_steps: int, iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
-        yield from buffer.batches(n_steps, self.cfg.algo.per_rank_batch_size, MAX_SAMPLED_BATCHES)
+        batch_size = self.cfg.algo.per_rank_batch_size
+        if not isinstance(buffer.sampler, CuriousSequenceSampler):
+            yield from buffer.batches(n_steps, batch_size, MAX_SAMPLED_BATCHES)
+            return
+        # Curious Replay: every batch is drawn with the priorities written from the losses of the world model on the
+        # previous one (`train_step`), once the training on it is done
+        for _ in range(n_steps):
+            sample = buffer.sample(batch_size, numpy_keys=(SAMPLED_STEPS,))
+            steps = sample.pop(SAMPLED_STEPS)[0]
+            yield {k: v[0].float() for k, v in sample.items()}
+            buffer.update_priorities(steps, self.step_losses)
 
     def train_step(self, state: DreamerV3State, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg
@@ -811,7 +837,8 @@ class DreamerV3(Algorithm):
         if step % cfg.algo.critic.per_rank_target_network_update_freq == 0:
             tau = 1 if step == 0 else cfg.algo.critic.tau
             ema_(state.target_critic, state.critic, tau)
-        metrics = train(
+        # The losses of the world model on the steps of the batch are the priorities of Curious Replay (`batches`)
+        metrics, self.step_losses = train(
             self.fabric,
             state.world_model,
             state.actor,

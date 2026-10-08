@@ -10,6 +10,8 @@ The samplers of a replay buffer are `ReplaySampler`s:
 - `SequenceSampler`: sequences of consecutive steps of a `ReplayBuffer`, every one from a single environment, of shape
   `[n_samples, sequence_length, batch_size, ...]`;
 - `EpisodeSampler`: sequences inside the episodes of a `ReplayBuffer`;
+- `CuriousSequenceSampler`: sequences of a `ReplayBuffer` drawn by the priorities of Curious Replay, which the training
+  updates with the losses of the world model on them (`SumTree` keeps them).
 The rollout of an on-policy algorithm is read whole instead, and its `EpochSampler` draws the minibatches of the
 epochs of its update: it shuffles the indices of the rollout, so it is not a `ReplaySampler`.
 
@@ -30,6 +32,10 @@ if TYPE_CHECKING:
 
 # No queued sequences: the environments and the first steps of none
 _NO_SEQUENCES = (np.empty(0, dtype=np.intp), np.empty(0, dtype=np.intp))
+
+# The key of the steps of the sequences in the samples of a `CuriousSequenceSampler`: the environment and the number of
+# every step (the steps added to its environment before it), of shape `[n_samples, sequence_length, batch_size, 2]`
+SAMPLED_STEPS = "sampled_steps"
 
 
 def _oldest_first(envs: np.ndarray, starts: np.ndarray, n: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -260,24 +266,29 @@ class SequenceSampler(ReplaySampler):
         clone: bool = False,
     ) -> Dict[str, np.ndarray]:
         _check_samples(batch_size, n_samples)
-        online = self.online if online is None else online
-        n, sequence_length = batch_size * n_samples, self.sequence_length
+        rows, envs = self.first_rows(storage, batch_size * n_samples, self.online if online is None else online)
+        samples = storage.gather(
+            rows,
+            envs,
+            sequence_length=self.sequence_length,
+            sample_next_obs=self.sample_next_obs,
+            clone=clone,
+        )
+        return {k: _sequences(v, n_samples, batch_size) for k, v in samples.items()}
+
+    def first_rows(self, storage: ReplayBuffer, n: int, online: bool) -> Tuple[np.ndarray, np.ndarray]:
+        """The first rows and the environments of `n` sequences: with `online`, the ones of the online queue first, the
+        oldest first, then the ones drawn (`draw`)."""
+        sequence_length = self.sequence_length
         envs, starts = (
             self.queue.pending(storage, sequence_length, self.sample_next_obs, n) if online else _NO_SEQUENCES
         )
         envs, starts = envs[:n], starts[:n]
         first_rows, env_rows = self.draw(storage, n - len(starts))
-        # The queued sequences leave the queue once the uniform ones are drawn: a sample that fails leaves it as it is
+        # The queued sequences leave the queue once the other ones are drawn: a sample that fails leaves it as it is
         if online:
             self.queue.take(envs, starts, sequence_length)
-        samples = storage.gather(
-            np.concatenate((starts % storage.buffer_size, first_rows)),
-            np.concatenate((envs, env_rows)),
-            sequence_length=sequence_length,
-            sample_next_obs=self.sample_next_obs,
-            clone=clone,
-        )
-        return {k: _sequences(v, n_samples, batch_size) for k, v in samples.items()}
+        return np.concatenate((starts % storage.buffer_size, first_rows)), np.concatenate((envs, env_rows))
 
 
 def _draw_per_env(storage: ReplayBuffer, rng: np.random.Generator, n: int, span: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -516,3 +527,197 @@ def _column(storage: ReplayBuffer, key: str, rows: np.ndarray, env: int) -> np.n
     if torch.is_tensor(values):
         return values[torch.as_tensor(rows, device=values.device), env].cpu().numpy().reshape(-1).astype(bool)
     return np.asarray(values[rows, env]).reshape(-1).astype(bool)
+
+
+class SumTree:
+    """The priorities of `capacity` elements, from which the elements are drawn in proportion to their priorities in
+    logarithmic time: a binary tree whose leaves are the priorities and whose every other node holds the sum of its two
+    children. It is an array: the root at 1, the children of the node `i` at `2 * i` and `2 * i + 1`, and the leaves
+    from `first_leaf`, the first power of two not smaller than `capacity` (the leaves after the elements stay zero)."""
+
+    def __init__(self, capacity: int) -> None:
+        self.capacity = capacity
+        self.first_leaf = 1 << max(capacity - 1, 0).bit_length()
+        self.nodes = np.zeros(2 * self.first_leaf, dtype=np.float64)
+
+    @property
+    def total(self) -> float:
+        """The sum of the priorities."""
+        return float(self.nodes[1])
+
+    def __getitem__(self, elements: np.ndarray) -> np.ndarray:
+        """The priorities of `elements`."""
+        return self.nodes[self.first_leaf + np.asarray(elements, dtype=np.int64)]
+
+    def update(self, elements: np.ndarray, priorities: np.ndarray) -> None:
+        """Set the priorities of `elements` (an element repeated gets its last one), and the sums above them."""
+        nodes = self.first_leaf + np.asarray(elements, dtype=np.int64).reshape(-1)
+        if len(nodes) == 0:
+            return
+        priorities = np.broadcast_to(np.asarray(priorities, dtype=np.float64), nodes.shape)
+        # The last priority of every element (NumPy doesn't say which one an assignment to repeated indices keeps)
+        nodes, last = np.unique(nodes[::-1], return_index=True)
+        self.nodes[nodes] = priorities[::-1][last]
+        # The leaves are at the same depth: one level of sums at a time, up to the root
+        while nodes[0] > 1:
+            nodes = np.unique(nodes // 2)
+            self.nodes[nodes] = self.nodes[2 * nodes] + self.nodes[2 * nodes + 1]
+
+    def find(self, values: np.ndarray) -> np.ndarray:
+        """The elements at the cumulative priorities `values`, in [0, `total`): with `values` drawn uniformly, an
+        element is found with a probability proportional to its priority. An element of zero priority is never found."""
+        values = np.asarray(values, dtype=np.float64).reshape(-1)
+        nodes = np.ones(len(values), dtype=np.int64)
+        while len(nodes) > 0 and nodes[0] < self.first_leaf:
+            left = 2 * nodes
+            left_sum = self.nodes[left]
+            # Right when the value is beyond the sum of the left subtree, unless the right one is empty (the rounding of
+            # the sums can leave a value there)
+            right = (values >= left_sum) & (self.nodes[left + 1] > 0)
+            values = np.where(right, values - left_sum, values)
+            nodes = left + right
+        return nodes - self.first_leaf
+
+
+class CuriousSequenceSampler(SequenceSampler):
+    """Curious Replay (Kauvar et al., 2023, https://arxiv.org/abs/2306.15934), as its implementation with DreamerV3
+    (https://github.com/AutonomousAgentsLab/cr-dv3) does it: sequences of `sequence_length` consecutive steps of a
+    `ReplayBuffer` from a single environment, as a `SequenceSampler` draws them, but drawn in proportion to the
+    priority of their last step,
+
+        priority = c * beta ** visits + (|loss| + epsilon) ** alpha,
+
+    where `visits` counts the batches that trained on the step and `loss` is the loss of the world model on it in the
+    last of them: the steps trained on the fewest times and the ones the world model predicts worst are trained on more.
+    A new step has `initial_priority` (larger than the others: it is trained on soon) and no visits. The training gives
+    the losses of every batch back to the sampler (`update`), with the steps of its sequences (`SAMPLED_STEPS`, in the
+    samples).
+
+    The priorities are the leaves of a `SumTree`, one per row and environment of the buffer. A step that can't end a
+    sequence, with fewer than `sequence_length - 1` steps before it in the buffer of its environment (e.g. the first
+    steps written, or the oldest ones), has zero priority: a sequence never crosses the row of the next step of its
+    environment, nor reads rows never written. The sampler finds the steps added to the buffer at every `sample` and
+    `update`, and its priorities are saved with it in the checkpoints. With `online`, the batches start with the
+    sequences of the online queue, the oldest first, and only the rest of them is drawn by priority.
+    """
+
+    def __init__(
+        self,
+        sequence_length: int,
+        c: float = 1e4,
+        beta: float = 0.7,
+        alpha: float = 0.7,
+        epsilon: float = 0.01,
+        initial_priority: float = 1e5,
+        online: bool = False,
+        seed: int | np.random.SeedSequence | None = None,
+        rng: np.random.Generator | None = None,
+        queue: OnlineQueue | None = None,
+    ):
+        super().__init__(sequence_length, online=online, seed=seed, rng=rng, queue=queue)
+        self.c, self.beta, self.alpha, self.epsilon = c, beta, alpha, epsilon
+        self.initial_priority = initial_priority
+        # The priorities (a leaf per row and environment: `row * n_envs + env`), the batches that trained on every step
+        # (`[buffer_size, n_envs]`), and the steps of every environment that have their priorities. Created with the
+        # shape of the buffer, at the first sample
+        self.tree: Optional[SumTree] = None
+        self.visits: Optional[np.ndarray] = None
+        self.known: Optional[np.ndarray] = None
+
+    def continue_from(self, source: ReplaySampler) -> None:
+        """Draw with the generator of `source`, the sampler of a checkpoint, and with its priorities if it is a
+        `CuriousSequenceSampler` of sequences as long: otherwise every step of the buffer starts with the initial
+        priority."""
+        super().continue_from(source)
+        if isinstance(source, CuriousSequenceSampler) and source.sequence_length == self.sequence_length:
+            self.tree, self.visits, self.known = source.tree, source.visits, source.known
+        else:
+            self.tree = self.visits = self.known = None
+
+    def sample(
+        self,
+        storage: ReplayBuffer,
+        batch_size: int,
+        n_samples: int = 1,
+        online: Optional[bool] = None,
+        clone: bool = False,
+    ) -> Dict[str, np.ndarray]:
+        """The batches of `SequenceSampler.sample`, with the steps of their sequences (`SAMPLED_STEPS`)."""
+        _check_samples(batch_size, n_samples)
+        rows, envs = self.first_rows(storage, batch_size * n_samples, self.online if online is None else online)
+        samples = storage.gather(rows, envs, sequence_length=self.sequence_length, clone=clone)
+        samples[SAMPLED_STEPS] = self._steps(storage, rows, envs)
+        return {k: _sequences(v, n_samples, batch_size) for k, v in samples.items()}
+
+    def draw(self, storage: ReplayBuffer, n: int) -> Tuple[np.ndarray, np.ndarray]:
+        """The first rows and the environments of `n` sequences drawn in proportion to the priorities of their last
+        steps."""
+        self._find_new_steps(storage)
+        if self.tree.total <= 0:
+            raise ValueError(
+                f"Cannot sample a sequence of length {self.sequence_length}: no environment of the buffer holds as "
+                "many steps"
+            )
+        last_rows, envs = np.divmod(self.tree.find(self.rng.uniform(0, self.tree.total, size=n)), storage.n_envs)
+        return ((last_rows - self.sequence_length + 1) % storage.buffer_size).astype(np.intp), envs.astype(np.intp)
+
+    def update(self, storage: ReplayBuffer, steps: np.ndarray, losses: np.ndarray) -> None:
+        """Write the priorities of the steps of a batch after the training on it: every step gets one more visit (one,
+        also when sequences of the batch overlap there) and the loss of the world model on it in the last sequence of
+        the batch that holds it. The steps overwritten since the batch was sampled are skipped.
+
+        Args:
+            storage: the buffer the batch was sampled from.
+            steps: the steps of the sequences of the batch (`SAMPLED_STEPS`), of shape `[T, B, 2]`: the environment and
+                the number of every step.
+            losses: the losses of the world model on the steps, of shape `[T, B]`.
+        """
+        self._find_new_steps(storage)
+        size, n_envs = storage.buffer_size, storage.n_envs
+        # One sequence after the other: the last occurrence of a step is in the last sequence that holds it
+        envs = np.asarray(steps[..., 0], dtype=np.int64).T.reshape(-1)
+        numbers = np.asarray(steps[..., 1], dtype=np.int64).T.reshape(-1)
+        losses = np.asarray(losses, dtype=np.float64).T.reshape(-1)
+        oldest = np.maximum(storage.env_added[envs] - size, 0)
+        kept = numbers >= oldest
+        envs, numbers, losses, oldest = envs[kept], numbers[kept], losses[kept], oldest[kept]
+        # Every step once, at its last occurrence
+        leaves = numbers % size * n_envs + envs
+        _, from_end = np.unique(leaves[::-1], return_index=True)
+        last = len(leaves) - 1 - from_end
+        envs, numbers, losses, oldest = envs[last], numbers[last], losses[last], oldest[last]
+        rows = numbers % size
+        self.visits[rows, envs] += 1
+        priorities = self.c * self.beta ** self.visits[rows, envs] + (np.abs(losses) + self.epsilon) ** self.alpha
+        # The steps that no longer end a sequence keep zero priority
+        ends = numbers >= oldest + self.sequence_length - 1
+        self.tree.update(rows * n_envs + envs, np.where(ends, priorities, 0.0))
+
+    def _find_new_steps(self, storage: ReplayBuffer) -> None:
+        """Give the steps added to `storage` since the previous call their initial priority and no visits, and zero
+        the priorities of the steps that no longer end a sequence (the first step of their sequence was overwritten)."""
+        added, size, n_envs, length = storage.env_added, storage.buffer_size, storage.n_envs, self.sequence_length
+        if self.tree is None or self.visits.shape != (size, n_envs) or (added < self.known).any():
+            # A new buffer
+            self.tree = SumTree(size * n_envs)
+            self.visits = np.zeros((size, n_envs), dtype=np.int64)
+            self.known = np.zeros(n_envs, dtype=np.int64)
+        for env in np.flatnonzero(added > self.known):
+            # The steps in the buffer are the ones from `oldest`, and the ones from `oldest + length - 1` end a sequence
+            oldest = max(added[env] - size, 0)
+            first_new = max(self.known[env], oldest)
+            new = np.arange(first_new, added[env])
+            self.visits[new % size, env] = 0
+            steps = np.concatenate((np.arange(oldest, min(oldest + length - 1, first_new)), new))
+            priorities = np.where(steps >= oldest + length - 1, self.initial_priority, 0.0)
+            self.tree.update(steps % size * n_envs + env, priorities)
+            self.known[env] = added[env]
+
+    def _steps(self, storage: ReplayBuffer, rows: np.ndarray, envs: np.ndarray) -> np.ndarray:
+        """The steps of the sequences that start at the rows `rows` of the environments `envs`, of shape
+        `[len(rows), sequence_length, 2]`: the environment and the number of every step."""
+        # The number of the first step: the steps added to its environment before it, counted back from the newest one
+        newest = storage.positions[envs] - 1
+        first = storage.env_added[envs] - 1 - (newest - rows) % storage.buffer_size
+        numbers = first[:, np.newaxis] + np.arange(self.sequence_length)
+        return np.stack((np.broadcast_to(envs[:, np.newaxis], numbers.shape), numbers), -1).astype(np.int64)

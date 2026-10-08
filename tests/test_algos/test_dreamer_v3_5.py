@@ -318,7 +318,7 @@ def test_a_gradient_step_of_dreamer_v3_5(actions, replay_context):
     cfg, models, _, train_step = small_dreamer_v3_5([f"algo.replay_context={replay_context}"], actions=actions)
     world_model, actor, critic, target_critic = models
     before = [[p.detach().clone() for p in m.parameters()] for m in models]
-    metrics, latents = train_step()
+    metrics, latents, _ = train_step()
     assert all(torch.isfinite(torch.as_tensor(v)).all() for v in metrics.values())
     expected = {
         "Loss/world_model_loss",
@@ -340,6 +340,17 @@ def test_a_gradient_step_of_dreamer_v3_5(actions, replay_context):
         deter, stoch = latents
         assert deter.shape == (4, 2, 16) and deter.dtype == torch.float16
         assert stoch.shape == (4, 2, 4) and stoch.dtype == torch.uint8 and stoch.max() < 5
+
+
+@pytest.mark.parametrize("replay_context", [0, 1])
+def test_the_losses_of_the_trained_steps_average_to_the_loss_of_the_world_model(replay_context):
+    # The loss of the world model on every trained step of the batch (not on its context): the priorities of Curious
+    # Replay
+    cfg, _, _, train_step = small_dreamer_v3_5([f"algo.replay_context={replay_context}"])
+    metrics, _, step_losses = train_step()
+    assert step_losses.shape == (cfg.algo.per_rank_sequence_length, cfg.algo.per_rank_batch_size)
+    assert not step_losses.requires_grad
+    torch.testing.assert_close(step_losses.mean(), metrics["Loss/world_model_loss"])
 
 
 def test_the_episodes_start_from_zeros(monkeypatch):
@@ -461,7 +472,7 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, preci
             [f"algo.compile.enabled={enabled}"], accelerator="cuda", precision=precision, peaked=True
         )
         torch.manual_seed(1)
-        metrics, _ = train_step()
+        metrics, *_ = train_step()
         losses.append({k: torch.as_tensor(v).float().clone() for k, v in metrics.items()})
     for name in (
         "Loss/world_model_loss",

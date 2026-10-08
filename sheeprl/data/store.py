@@ -8,7 +8,8 @@ The stores are built here for the three ways the algorithms train on their data:
 - `transition_store`: the replay buffer of an off-policy algorithm trained on single steps (SAC, DroQ, SAC-AE), read by
   a `TransitionSampler`;
 - `sequence_store`: the replay buffer of an algorithm trained on sequences of one environment (the Dreamers), read by a
-  `SequenceSampler` or an `EpisodeSampler`, with `env_buffer_size` steps per environment.
+  `SequenceSampler` or an `EpisodeSampler`, with `env_buffer_size` steps per environment, or by the
+  `CuriousSequenceSampler` of Curious Replay (`buffer.curious`) for DreamerV3 and DreamerV3.5.
 
 The training loop saves the replay buffers of the off-policy algorithms in the checkpoints when `buffer.checkpoint` is
 set (`load_replay_buffer` restores them).
@@ -25,7 +26,14 @@ from lightning import Fabric
 from torch import Tensor
 
 from sheeprl.data.buffers import ReplayBuffer, get_tensor
-from sheeprl.data.samplers import EpisodeSampler, EpochSampler, ReplaySampler, SequenceSampler, TransitionSampler
+from sheeprl.data.samplers import (
+    CuriousSequenceSampler,
+    EpisodeSampler,
+    EpochSampler,
+    ReplaySampler,
+    SequenceSampler,
+    TransitionSampler,
+)
 from sheeprl.utils import fs
 
 if TYPE_CHECKING:
@@ -144,6 +152,15 @@ class ReplayStore:
             for k, v in samples.items()
         }
 
+    def update_priorities(self, steps: np.ndarray, losses: Tensor | np.ndarray) -> None:
+        """Give the losses of the world model on the steps `steps` of a batch, after the training on it, to the sampler
+        of Curious Replay (`CuriousSequenceSampler.update`), which writes their priorities. The losses are read on the
+        CPU once."""
+        if torch.is_tensor(losses):
+            losses = losses.detach().float().cpu().numpy()
+        with self._lock:
+            self.sampler.update(self.storage, steps, losses)
+
     def read(self) -> Dict[str, Tensor]:
         """The steps of the storage, `[Buffer_Size, Num_Envs, ...]` (e.g. the whole rollout of an on-policy algorithm),
         on the device, in their dtypes."""
@@ -234,8 +251,9 @@ class ReplayStore:
 
     def load(self, saved: "ReplayStore") -> "ReplayStore":
         """This store with the storage of `saved`, a store from a checkpoint, and its sampler continuing the generator
-        of the sampler of `saved` (with its own configuration: e.g. a finetuning that loads the buffer of its
-        exploration samples it as configured). The online queue restarts empty, with the steps added from now on."""
+        of the sampler of `saved` (and its priorities, with Curious Replay), with its own configuration: e.g. a
+        finetuning that loads the buffer of its exploration samples it as configured. The online queue restarts empty,
+        with the steps added from now on."""
         self.wait()
         self.sampler.continue_from(saved.sampler)
         self.sampler.reset_online(saved.storage)
@@ -248,6 +266,7 @@ def rollout_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, size: int) 
     """The store of an on-policy algorithm: a rollout of `size` steps of every environment of the process, whose
     minibatches have `algo.per_rank_batch_size` steps (from the rollouts of all the processes with
     `buffer.share_data`)."""
+    curious_replay(cfg, supported=False)
     storage = ReplayBuffer(
         size,
         cfg.env.num_envs,
@@ -273,6 +292,7 @@ def transition_store(
     (`TransitionSampler`, with the next observations with `buffer.sample_next_obs` and the online queue with
     `buffer.online`). Every process trains on its own data, as the Dreamers do, and `update` averages the gradients over
     the processes."""
+    curious_replay(cfg, supported=False)
     storage = ReplayBuffer(
         cfg.buffer.size // int(cfg.env.num_envs * fabric.world_size) if not cfg.dry_run else 1,
         cfg.env.num_envs,
@@ -283,6 +303,21 @@ def transition_store(
     )
     sampler = TransitionSampler(cfg.buffer.sample_next_obs, cfg.buffer.online, seed=cfg.seed + fabric.global_rank)
     return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy, cfg.buffer.prefetch)
+
+
+def curious_replay(cfg: Dict[str, Any], supported: bool = True) -> Optional[Dict[str, Any]]:
+    """The configuration of Curious Replay (`buffer.curious`) when it is enabled, else `None` (also with a configuration
+    saved before it existed). It raises when it is enabled for an algorithm that doesn't train with it (not
+    `supported`): its sequences would be drawn with priorities never updated."""
+    curious = cfg.buffer.get("curious") or {}
+    if not curious.get("enabled", False):
+        return None
+    if not supported:
+        raise ValueError(
+            f"Curious Replay (`buffer.curious.enabled=True`) is implemented for DreamerV3 and DreamerV3.5, "
+            f"not for {cfg.algo.name}"
+        )
+    return curious
 
 
 def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> int:
@@ -308,16 +343,22 @@ def sequence_store(
     buffer_size: int,
     sequence_length: int,
     buffer_type: str = "sequential",
+    curious: bool = False,
 ) -> ReplayStore:
     """The store of an algorithm trained on sequences (the Dreamers): a buffer of `buffer_size` steps per environment
     (`env_buffer_size`), every environment written at its own row (its first steps after the end of an episode),
     sampled in sequences of `sequence_length` steps of a single environment: anywhere (`buffer_type="sequential"`,
     `SequenceSampler`) or inside the episodes that ended (`"episode"`, `EpisodeSampler`, with their ends prioritized
     with `buffer.prioritize_ends`), with the online queue with `buffer.online`. Every process samples its buffer with a
-    generator of its own."""
+    generator of its own.
+
+    An algorithm that trains with Curious Replay (`curious`: it gives the losses of the world model on every batch to
+    `ReplayStore.update_priorities`) draws the sequences anywhere by their priorities (`CuriousSequenceSampler`) when
+    `buffer.curious.enabled` is set."""
     buffer_type = buffer_type.lower()
     if buffer_type not in ("sequential", "episode"):
         raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
+    curious_cfg = curious_replay(cfg, supported=curious and buffer_type == "sequential")
     storage = ReplayBuffer(
         buffer_size,
         n_envs=cfg.env.num_envs,
@@ -330,6 +371,17 @@ def sequence_store(
         sampler = EpisodeSampler(
             sequence_length,
             prioritize_ends=cfg.buffer.prioritize_ends,
+            online=cfg.buffer.online,
+            seed=cfg.seed + fabric.global_rank,
+        )
+    elif curious_cfg is not None:
+        sampler = CuriousSequenceSampler(
+            sequence_length,
+            c=float(curious_cfg["c"]),
+            beta=float(curious_cfg["beta"]),
+            alpha=float(curious_cfg["alpha"]),
+            epsilon=float(curious_cfg["epsilon"]),
+            initial_priority=float(curious_cfg["initial_priority"]),
             online=cfg.buffer.online,
             seed=cfg.seed + fabric.global_rank,
         )

@@ -289,7 +289,7 @@ def test_the_actor_learns_by_the_dynamics_and_by_reinforce_as_objective_mix_mixe
     mix = "null" if objective_mix is None else objective_mix
     _, _, policy, train_step = small_dreamer_v3([f"algo.actor.objective_mix={mix}"], continuous=continuous)
     before = [p.detach().clone() for p in policy.actor.parameters()]
-    metrics = train_step()
+    metrics, _ = train_step()
     assert recorded["graph"] is graph
     if continuous:
         assert (recorded["actions"].abs() > 1).any()
@@ -413,10 +413,19 @@ def test_a_gradient_step_of_dreamer_v3(decoupled_rssm):
     # Both RSSMs: the priors are computed after the unroll, the initial states once per sequence
     _, world_model, _, train_step = small_dreamer_v3([f"algo.world_model.decoupled_rssm={decoupled_rssm}"])
     before = [p.detach().clone() for p in world_model.parameters()]
-    metrics = train_step()
+    metrics, _ = train_step()
     assert all(torch.isfinite(torch.as_tensor(v)).all() for v in metrics.values())
     assert {"Loss/world_model_loss", "Loss/policy_loss", "Loss/value_loss", "State/kl"} <= set(metrics)
     assert any(not torch.equal(b, a) for b, a in zip(before, world_model.parameters()))
+
+
+def test_the_losses_of_the_steps_average_to_the_loss_of_the_world_model():
+    # The loss of the world model on every step of the batch: the priorities of Curious Replay
+    cfg, _, _, train_step = small_dreamer_v3([])
+    metrics, step_losses = train_step()
+    assert step_losses.shape == (cfg.algo.per_rank_sequence_length, cfg.algo.per_rank_batch_size)
+    assert not step_losses.requires_grad
+    torch.testing.assert_close(step_losses.mean(), metrics["Loss/world_model_loss"])
 
 
 def test_cuda_graphs_are_used_only_in_the_tested_precisions(monkeypatch):
@@ -471,7 +480,7 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, preci
         # prediction keeps them the same
         with torch.no_grad():
             world_model.continue_model.model[-1].bias.fill_(3.0)
-        losses.append({k: torch.as_tensor(v).float().clone() for k, v in train_step().items()})
+        losses.append({k: torch.as_tensor(v).float().clone() for k, v in train_step()[0].items()})
     for name in ("Loss/world_model_loss", "Loss/observation_loss", "Loss/state_loss", "Loss/value_loss"):
         torch.testing.assert_close(losses[1][name], losses[0][name], rtol=tolerance, atol=tolerance)
 

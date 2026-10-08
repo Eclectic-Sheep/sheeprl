@@ -801,6 +801,65 @@ def test_dreamer_v3_5_writes_back_the_latent_states_of_the_trained_steps(standar
     assert len(written) > 0 and all(written)
 
 
+# A small DreamerV3 on images and vectors
+DREAMER_V3_ARGS = [
+    "exp=dreamer_v3",
+    "env=dummy",
+    "algo.dense_units=8",
+    "algo.world_model.encoder.cnn_channels_multiplier=2",
+    "algo.world_model.recurrent_model.recurrent_state_size=8",
+    "algo.world_model.representation_model.hidden_size=8",
+    "algo.world_model.transition_model.hidden_size=8",
+    "algo.cnn_keys.encoder=[rgb]",
+    "algo.mlp_keys.encoder=[state]",
+]
+
+
+@pytest.mark.parametrize("dreamer_args", [DREAMER_V3_ARGS, [*DREAMER_V3_5_ARGS, "algo.replay_context=1"]])
+def test_the_dreamers_write_the_priorities_of_curious_replay(standard_args, dreamer_args, start_time):
+    # After every gradient step, the losses of the world model on the trained steps of the batch become the priorities
+    # of its steps
+    if os.environ["LT_DEVICES"] != "1":
+        pytest.skip("The priorities are checked in the process of rank 0")
+    from sheeprl.data.store import ReplayStore
+
+    updates = []
+    update_priorities = ReplayStore.update_priorities
+
+    def recording_update(store, steps, losses):
+        visits = store.sampler.visits.sum() if store.sampler.visits is not None else 0
+        update_priorities(store, steps, losses)
+        updates.append(
+            (steps.shape, tuple(losses.shape), bool(torch.isfinite(losses).all()), store.sampler.visits.sum() - visits)
+        )
+
+    root_dir = os.path.join(f"pytest_{start_time}", "dreamer_curious_replay", os.environ["LT_DEVICES"])
+    args = [arg for arg in standard_args if not arg.startswith("dry_run")] + [
+        *dreamer_args,
+        "env.id=discrete_dummy",
+        "algo.total_steps=24",
+        "algo.learning_starts=8",
+        "algo.per_rank_batch_size=2",
+        "algo.per_rank_sequence_length=3",
+        "algo.replay_ratio=1",
+        "algo.horizon=2",
+        "buffer.size=16",
+        "buffer.curious.enabled=True",
+        "algo.run_test=False",
+        f"root_dir={root_dir}",
+        "run_name=test_dreamer_curious_replay",
+    ]
+    with mock.patch.object(ReplayStore, "update_priorities", recording_update), mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+    # One update per gradient step, with the steps and the losses of the 3 trained steps of the 2 sequences: every
+    # trained step is visited once more (overlapping sequences share their steps)
+    assert len(updates) > 0
+    for steps_shape, losses_shape, finite, new_visits in updates:
+        assert steps_shape == (3, 2, 2) and losses_shape == (3, 2) and finite
+        assert 3 <= new_visits <= 6
+
+
 # Small Dreamers (and Plan2Explore) on images and vectors, which train on sequences of one step in the dry run
 SMALL_DREAMER_ARGS = [
     "env=dummy",

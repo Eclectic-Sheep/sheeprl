@@ -43,6 +43,7 @@ from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return, 
 from sheeprl.algos.dreamer_v3_5.utils import Moments
 from sheeprl.core import Act, Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
 from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.samplers import SAMPLED_STEPS, CuriousSequenceSampler
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.env import actions_dim_of
@@ -101,7 +102,7 @@ def world_model_loss(
     dynamic_scale: float,
     representation_scale: float,
     entropies: bool = True,
-) -> Tuple[Tensor, Tensor, Tensor, Tensor, Dict[str, Tensor]]:
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Dict[str, Tensor], Tensor]:
     """The loss of the world model on a batch of sequences (time first), without the optimization step: it can be
     compiled (`algo.compile`). The configuration is given by `world_model_loss_kwargs`.
 
@@ -119,7 +120,8 @@ def world_model_loss(
         The loss (the losses of the world model scaled by `algo.loss_scales`), the latent states of the batch with
         their gradients if the replay loss of the critic trains the world model (`algo.critic.replay_grad`), the
         posteriors and the recurrent states of the batch without gradients (the starting points of the imagination and
-        the latent states written back in the replay buffer), and the metrics.
+        the latent states written back in the replay buffer), the metrics, and the loss of every step (`[T, B]`,
+        without gradients: the priorities of Curious Replay).
     """
     sequence_length, batch_size = is_first.shape[:2]
     encoder_obs = {k: obs[k].float() / 255.0 - 0.5 for k in cnn_keys}
@@ -180,12 +182,21 @@ def world_model_loss(
     if entropies:
         metrics["State/post_entropy"] = -(posteriors_logits.exp() * posteriors_logits).sum((-2, -1)).mean().detach()
         metrics["State/prior_entropy"] = -(priors_logits.exp() * priors_logits).sum((-2, -1)).mean().detach()
+    # The loss of every step, whose mean is the loss
+    step_losses = (
+        observation_scale * observation_loss
+        + reward_scale * reward_loss
+        + continue_scale * continue_loss
+        + dynamic_scale * dynamic_loss
+        + representation_scale * representation_loss
+    )
     return (
         loss,
         latent_states if replay_grad else latent_states.detach(),
         posteriors.detach(),
         recurrent_states.detach(),
         metrics,
+        step_losses.detach(),
     )
 
 
@@ -331,7 +342,7 @@ def train(
     moments: Moments,
     data: Dict[str, Tensor],
     actions_dim: Sequence[int],
-) -> Tuple[Dict[str, Tensor], Optional[Tuple[Tensor, Tensor]]]:
+) -> Tuple[Dict[str, Tensor], Optional[Tuple[Tensor, Tensor]], Tensor]:
     """One gradient step of the agent on a batch of sequences (time first): the world model, the actor and the critic
     together, on the sum of their losses.
 
@@ -339,8 +350,9 @@ def train(
     training starts from the latent state of the last of them (kept in the replay buffer) and the actions taken there.
 
     Returns:
-        The latent states of the trained steps (the recurrent states in float16 and the classes of the stochastic
-        states), to write back in the replay buffer; `None` without replay context.
+        The metrics; the latent states of the trained steps (the recurrent states in float16 and the classes of the
+        stochastic states), to write back in the replay buffer, `None` without replay context; and the loss of the
+        world model on every trained step (`[T, B]`, without gradients: the priorities of Curious Replay).
     """
     world_model_cfg = cfg.algo.world_model
     context = cfg.algo.replay_context
@@ -371,7 +383,9 @@ def train(
     scales = cfg.algo.loss_scales
     # Cast the weights to low precision once for the whole forward pass, not at every step of the unroll
     with autocast_cache_scope(fabric):
-        wm_loss, latent_states, posteriors, recurrent_states, metrics = compiled(world_model_loss, fabric, cfg)(
+        wm_loss, latent_states, posteriors, recurrent_states, metrics, step_losses = compiled(
+            world_model_loss, fabric, cfg
+        )(
             world_model,
             obs,
             prev_actions,
@@ -432,8 +446,9 @@ def train(
 
     if context > 0:
         classes = posteriors.unflatten(-1, (stochastic_size, discrete_size)).argmax(-1)
-        return metrics, (recurrent_states.half(), classes.to(torch.uint8) if discrete_size <= 256 else classes)
-    return metrics, None
+        latents = (recurrent_states.half(), classes.to(torch.uint8) if discrete_size <= 256 else classes)
+        return metrics, latents, step_losses
+    return metrics, None, step_losses
 
 
 @torch.no_grad()
@@ -447,8 +462,10 @@ def sample_sequences(store: ReplayStore, batch_size: int, n_samples: int) -> Tup
     """`n_samples` batches of sequences, of shape `[n_samples, sequence_length, batch_size, ...]` and in the dtypes of
     the buffer, on the device of `store`, but the identifiers of their steps (`STEP_ID_KEY`), on the CPU. With
     `buffer.online`, the batches start with the sequences of the online queue of the buffer."""
-    sample = store.sample(batch_size, n_samples, numpy_keys=(STEP_ID_KEY,))
+    sample = store.sample(batch_size, n_samples, numpy_keys=(STEP_ID_KEY, SAMPLED_STEPS))
     step_ids = sample.pop(STEP_ID_KEY)
+    # The steps of the sequences given by the sampler of Curious Replay are the ones of the identifiers
+    sample.pop(SAMPLED_STEPS, None)
     return sample, step_ids
 
 
@@ -554,7 +571,10 @@ class DreamerV3_5(Algorithm):
     """Every iteration plays one step in every environment and writes it in the replay buffer, then does
     `algo.replay_ratio` gradient steps per policy step, each on its own batch of sequences preceded by
     `algo.replay_context` steps, whose latent states start the sequences: the world model, the actor and the critic,
-    with one optimizer. The latent states computed by the trainings are written back in the buffer."""
+    with one optimizer. The latent states computed by the trainings are written back in the buffer.
+
+    With Curious Replay (`buffer.curious.enabled`), the sequences are drawn by priorities that the losses of the world
+    model on every batch update (`CuriousSequenceSampler`)."""
 
     off_policy = True
     # The test episode samples the actions of the policy
@@ -605,7 +625,7 @@ class DreamerV3_5(Algorithm):
         sampling_cfg = dotdict(copy.deepcopy(cfg.as_dict()))
         sampling_cfg.algo.per_rank_sequence_length = self.sampled_length
         self.buffer_size = env_buffer_size(fabric, sampling_cfg, dry_run_size=2)
-        return state, sequence_store(fabric, cfg, log_dir, self.buffer_size, self.sampled_length)
+        return state, sequence_store(fabric, cfg, log_dir, self.buffer_size, self.sampled_length, curious=True)
 
     def policy(self, state: DreamerV3_5State) -> DreamerV3_5Policy:
         """The policy to play with: it shares its weights with the trained agent (`build_agent`)."""
@@ -619,19 +639,25 @@ class DreamerV3_5(Algorithm):
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
         # The batches are sampled a few at a time: the latent states computed on them (`train_step`) are written back in
-        # the buffer before the next ones are sampled
-        for first in range(0, n_steps, MAX_SAMPLED_BATCHES):
-            n_samples = min(MAX_SAMPLED_BATCHES, n_steps - first)
+        # the buffer before the next ones are sampled. With Curious Replay one at a time: every batch is drawn with the
+        # priorities written from the losses of the world model on the previous one, once the training on it is done
+        curious = isinstance(buffer.sampler, CuriousSequenceSampler)
+        chunk = 1 if curious else MAX_SAMPLED_BATCHES
+        for first in range(0, n_steps, chunk):
+            n_samples = min(chunk, n_steps - first)
             sample, step_ids = sample_sequences(buffer, cfg.algo.per_rank_batch_size, n_samples)
             self.latent_updates: List[Tuple[np.ndarray, Tensor, Tensor]] = []
             for i in range(n_samples):
                 self.step_ids = step_ids[i, self.context :]
                 yield {k: v[i] for k, v in sample.items()}
+                if curious:
+                    buffer.update_priorities(self.step_ids, self.step_losses)
             write_latent_states(buffer.storage, self.latent_updates, self.buffer_size)
 
     def train_step(self, state: DreamerV3_5State, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg
-        metrics, latents = train(
+        # The losses of the world model on the trained steps are the priorities of Curious Replay (`batches`)
+        metrics, latents, self.step_losses = train(
             self.fabric,
             cfg,
             state.world_model,

@@ -113,6 +113,16 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
         "args": ["exp=dreamer_v3_5", *DREAMER_V3_5_ARGS],
         "random_actions": False,
     },
+    # With Curious Replay, whose priorities are saved in the checkpoints with the buffer
+    "dreamer_v3_curious": {
+        "module": "sheeprl.algos.dreamer_v3.dreamer_v3",
+        "args": ["exp=dreamer_v3", *DREAMER_ARGS, "buffer.curious.enabled=True"],
+    },
+    "dreamer_v3_5_curious": {
+        "module": "sheeprl.algos.dreamer_v3_5.dreamer_v3_5",
+        "args": ["exp=dreamer_v3_5", *DREAMER_V3_5_ARGS, "buffer.curious.enabled=True"],
+        "random_actions": False,
+    },
     "p2e_dv3_exploration": {
         "module": "sheeprl.algos.p2e_dv3.p2e_dv3_exploration",
         "args": ["exp=p2e_dv3_exploration", *DREAMER_ARGS],

@@ -432,15 +432,23 @@ checkpoint: True  # Used only for off-policy algorithms
 online: False
 prefetch: False
 on_device: False
+curious:
+  enabled: False
+  c: 10000
+  beta: 0.7
+  alpha: 0.7
+  epsilon: 0.01
+  initial_priority: 100000
 ```
 
 The `size` is set by the experiment configs. For the off-policy algorithms it is the capacity of the replay buffer. The buffer of PPO and A2C holds one rollout, so its size must be equal to `algo.rollout_steps` (their experiment configs set `size: ${algo.rollout_steps}`); the buffer of PPO-recurrent always holds one rollout of `algo.rollout_steps` steps. For more information about the `memmap` and `checkpoint` parameters, check the [logs and checkpoints howto](./logs_and_checkpoints.md#buffer-checkpoint).
 
-The last three parameters are used only by the off-policy algorithms:
+The last four parameters are used only by the off-policy algorithms:
 
 - `online`: the batches start with the steps added since the previous ones, the oldest first, and only the rest of them is sampled uniformly (the online queue of DreamerV3): every step is trained on soon after it is played.
 - `prefetch`: the next batches are sampled in a thread while the training uses the current ones, and moved to the device on a CUDA stream of their own; the first ones of an iteration are sampled during the training of the previous one. It pays off when the samples are large (images, sequences): e.g. about 1.17x faster end to end for SAC-AE on pixels, 1.05x for DreamerV3 on Atari, nothing for SAC on states.
 - `on_device`: the replay buffer is kept in the memory of the device of the training, where its batches are gathered, with no copy from the CPU (`memmap` is then ignored). It must fit in the free memory of the device when it is created.
+- `curious` (DreamerV3 and DreamerV3.5): [Curious Replay](https://arxiv.org/abs/2306.15934) (Kauvar et al., 2023), as in its [implementation with DreamerV3](https://github.com/AutonomousAgentsLab/cr-dv3). With `enabled: True` the sequences are drawn in proportion to the priority of their last step, `c * beta ** visits + (|loss| + epsilon) ** alpha`: `visits` counts the batches that trained on the step (once per batch, also when two sequences of the batch hold it) and `loss` is the loss of the world model on it in the last of them, so the steps trained on the fewest times and the ones the world model predicts worst are trained on more. A new step has `initial_priority` and no visits. Every batch is sampled after the training on the previous one, whose losses (read on the CPU once per gradient step) give the priorities of its steps: the batches aren't prefetched (`prefetch` is ignored). The priorities are saved in the checkpoints with the buffer. The defaults are the values of the paper. It combines with `online`: the batches start with the sequences of the online queue, and only the rest of them is drawn by priority.
 
 ### Environment
 
