@@ -4,6 +4,7 @@ The modules are not wrapped in `DistributedDataParallel` (`setup_module`): with 
 the gradients itself, with one all-reduce per optimizer step and only for the weights that step updates.
 """
 
+import dataclasses
 import itertools
 from typing import Any, Iterable, List, Optional
 from unittest import mock
@@ -11,10 +12,12 @@ from unittest import mock
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.accelerators import XLAAccelerator
+from lightning.fabric.plugins.precision import HalfPrecision, MixedPrecision
 from lightning.fabric.strategies import SingleDeviceStrategy, SingleDeviceXLAStrategy
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 from torch.optim import Optimizer
+from torch.utils._pytree import tree_map
 
 
 def get_single_device_fabric(fabric: Fabric) -> Fabric:
@@ -66,6 +69,32 @@ def autocast_cache_scope(fabric: Fabric) -> torch.autocast:
     return torch.autocast(device_type=fabric.device.type, enabled=False)
 
 
+def _cast_floats(data: Any, dtype: torch.dtype) -> Any:
+    """`_convert_fp_tensor` of Lightning on every floating-point tensor of `data`, traceable by `torch.compile`
+    (Lightning's `apply_to_collection` checks for dataclasses, which Dynamo 2.6 can't trace: a graph break at every call
+    of a module whose outputs aren't only tensors, e.g. the distributions of the actors).
+
+    As in Lightning, the fields of a dataclass set by its `__init__` are cast and the other ones are kept: the dataclass
+    is rebuilt by calling its `__init__` again (Lightning deep-copies it). Dynamo 2.6 traces neither
+    `dataclasses.is_dataclass` and `dataclasses.replace` (`hasattr` on a class) nor `type(x)(...)`: the dataclass is
+    found with `hasattr` on the instance and rebuilt with `x.__class__(...)`."""
+
+    def cast(x: Any) -> Any:
+        if isinstance(x, Tensor):
+            return x.to(dtype) if torch.is_floating_point(x) else x
+        if hasattr(x, "__dataclass_fields__") and not isinstance(x, type):
+            fields = dataclasses.fields(x)
+            result = x.__class__(**{f.name: _cast_floats(getattr(x, f.name), dtype) for f in fields if f.init})
+            for f in fields:
+                if not f.init:
+                    setattr(result, f.name, getattr(x, f.name))
+            return result
+        return x
+
+    # The dataclasses not registered in `torch.utils._pytree` are leaves of the tree: `cast` rebuilds them
+    return tree_map(cast, data)
+
+
 class _CompilableFabricModule(_FabricModule):
     """A `_FabricModule` that can be compiled with `torch.compile`.
 
@@ -81,6 +110,12 @@ class _CompilableFabricModule(_FabricModule):
         if not torch.compiler.is_compiling():
             return super().forward(*args, **kwargs)
         precision = self._strategy.precision
+        if isinstance(precision, (MixedPrecision, HalfPrecision)):
+            args, kwargs = _cast_floats((args, kwargs), precision._desired_input_dtype)
+            with precision.forward_context():
+                output = self._forward_module(*args, **kwargs)
+            return _cast_floats(output, torch.get_default_dtype())
+        # The other precisions (e.g., 32-true): the conversions of Lightning
         args, kwargs = precision.convert_input((args, kwargs))
         with precision.forward_context():
             output = self._forward_module(*args, **kwargs)
