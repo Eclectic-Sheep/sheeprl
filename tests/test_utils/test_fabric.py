@@ -1,3 +1,5 @@
+from dataclasses import dataclass, field
+
 import pytest
 import torch
 from lightning import Fabric
@@ -55,6 +57,74 @@ def test_a_compilable_module_is_compiled_in_one_graph(precision):
         gradients.append([p.grad.clone() for p in module.parameters()])
     for compiled, eager in zip(*gradients):
         torch.testing.assert_close(compiled, eager)
+
+
+class _DistributionLike(nn.Module):
+    """A module whose outputs aren't only tensors, like the actors, which output distributions."""
+
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(4, 2)
+
+    def forward(self, x):
+        out = self.linear(x)
+        return torch.distributions.Normal(out, out.exp()), {"count": 3}
+
+
+@pytest.mark.parametrize("precision", ["32-true", "bf16-true", "bf16-mixed"])
+def test_a_compilable_module_with_distribution_outputs_is_compiled_in_one_graph(precision):
+    # Lightning's `apply_to_collection` checks for dataclasses, which Dynamo 2.6 can't trace: the graph broke at every
+    # call of the module
+    fabric = Fabric(accelerator="cpu", devices=1, precision=precision)
+    module = compilable(fabric.setup_module(_DistributionLike()))
+    x = torch.randn(3, 4)
+
+    def fn(x):
+        distribution, info = module(x)
+        return distribution.mean.float().mean() + distribution.stddev.float().mean() + info["count"]
+
+    compiled = torch.compile(fn, fullgraph=True, backend="aot_eager")
+    loss = compiled(x)
+    torch.testing.assert_close(loss, fn(x))
+
+
+@dataclass
+class _Outputs:
+    mean: torch.Tensor
+    actions: torch.Tensor
+    total: torch.Tensor = field(init=False)
+
+    def __post_init__(self):
+        self.total = self.mean.sum()
+
+
+class _DataclassOutputs(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(4, 2)
+
+    def forward(self, x):
+        out = self.linear(x)
+        return _Outputs(out, out.argmax(-1))
+
+
+@pytest.mark.parametrize("precision", ["32-true", "bf16-true", "bf16-mixed"])
+def test_a_compilable_module_casts_its_dataclass_outputs_as_lightning(precision):
+    # As without compiling: the fields set by `__init__` in the default type, the other ones as they were
+    fabric = Fabric(accelerator="cpu", devices=1, precision=precision)
+    module = compilable(fabric.setup_module(_DataclassOutputs()))
+    x = torch.randn(3, 4)
+
+    def fn(x):
+        outputs = module(x)
+        return outputs.mean, outputs.actions, outputs.total
+
+    compiled = torch.compile(fn, fullgraph=True, backend="aot_eager")(x)
+    eager = fn(x)
+    assert compiled[0].dtype == torch.float32
+    for c, e in zip(compiled, eager):
+        assert c.dtype == e.dtype
+        torch.testing.assert_close(c, e)
 
 
 def set_up_on_two_processes(fabric):
