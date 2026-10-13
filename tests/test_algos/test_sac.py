@@ -2,6 +2,7 @@
 ones, and the target critics move towards the critics with the formula of the loop over their weights."""
 
 import copy
+from types import SimpleNamespace
 
 import gymnasium as gym
 import hydra
@@ -129,15 +130,28 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, algo)
             aggregator, losses, grads = recording(module, patch)
             torch.manual_seed(1)
             if algo == "sac":
-                sac.train(fabric, agent, *optimizers, copy.copy(data), aggregator, 0, cfg, 1)
+                for name, value in sac.train(fabric, agent, *optimizers, copy.copy(data), 0, cfg, 1).items():
+                    aggregator.update(name, value)
             else:
 
-                class Buffer:
-                    def sample_tensors(self, batch_size, **kwargs):
-                        n = batch_size // B
-                        return {k: v.repeat(n, *([1] * (v.dim() - 1)))[None] for k, v in data.items()}
+                class Store:
+                    # Every batch is `data` (`ReplayStore.sample`); the actor's sampler shares the generator
+                    sampler = SimpleNamespace(rng=None, queue=None)
 
-                droq.train(fabric, agent, *optimizers, Buffer(), aggregator, cfg, 2)
+                    def sample(self, batch_size, n_samples=1, **kwargs):
+                        return {k: v[None].repeat(n_samples, *([1] * v.dim())) for k, v in data.items()}
+
+                    def batches(self, n_steps, batch_size, max_sampled=None):
+                        for _ in range(n_steps):
+                            yield {k: v.float() for k, v in data.items()}
+
+                # Two gradient steps of DroQ: two updates of the critics, then one of the actor
+                droq_algo = droq.DroQ(fabric, cfg)
+                actor_optimizer, qf_optimizer, alpha_optimizer = optimizers
+                state = sac.SACState(agent, qf_optimizer, actor_optimizer, alpha_optimizer)
+                for step, batch in enumerate(droq_algo.batches(state, Store(), 2, 1)):
+                    for name, value in droq_algo.train_step(state, batch, step).items():
+                        aggregator.update(name, value)
         results.append((losses, grads))
     assert_same_step(*results)
 
@@ -233,6 +247,7 @@ def test_the_compiled_losses_of_sac_ae_are_the_ones_of_the_eager_losses(monkeypa
         with monkeypatch.context() as patch:
             aggregator, losses, grads = recording(sac_ae, patch)
             torch.manual_seed(1)
-            sac_ae.train(fabric, *models, *optimizers, copy.copy(data), aggregator, 0, cfg)
+            for name, value in sac_ae.train(fabric, *models, *optimizers, copy.copy(data), 0, cfg).items():
+                aggregator.update(name, value)
         results.append((losses, grads))
     assert_same_step(*results)

@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
+import numpy as np
 import torch
 import torch.nn as nn
 from lightning import Fabric
@@ -10,9 +11,34 @@ from torch import Tensor
 from torch.distributions import Independent, Normal, OneHotCategorical
 
 from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor, ortho_init_linear_layers
+from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import MLP, MultiEncoder
-from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
+from sheeprl.utils.obs import prepare_obs
+
+
+def lstm_unroll(
+    x: Tensor,
+    states: Tuple[Tensor, Tensor],
+    weight_ih: Tensor,
+    bias_ih: Tensor,
+    weight_hh: Tensor,
+    bias_hh: Tensor,
+) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+    """A single-layer `nn.LSTM` on the sequences `x` (time first) from `states`, computed from its weights with the
+    equations of PyTorch (https://pytorch.org/docs/stable/generated/torch.nn.LSTM.html): the same values up to the
+    rounding."""
+    h, c = states[0][0], states[1][0]
+    # The inputs of all the steps at once
+    x = torch.nn.functional.linear(x, weight_ih, bias_ih)
+    outputs = []
+    for t in range(x.shape[0]):
+        i, f, g, o = (x[t] + torch.nn.functional.linear(h, weight_hh, bias_hh)).chunk(4, -1)
+        c = torch.sigmoid(f) * c + torch.sigmoid(i) * torch.tanh(g)
+        h = torch.sigmoid(o) * torch.tanh(c)
+        outputs.append(h)
+    return torch.stack(outputs), (h.unsqueeze(0), c.unsqueeze(0))
 
 
 class RecurrentModel(nn.Module):
@@ -41,6 +67,14 @@ class RecurrentModel(nn.Module):
             hidden_size=lstm_hidden_size,
             batch_first=False,
         )
+        # The weights of the LSTM, for the compiled loss: `torch.compile` doesn't trace the code that reaches `nn.LSTM`
+        # (a tuple: they stay the weights of the LSTM, also in the state dict)
+        self._lstm_weights = (
+            self._lstm.weight_ih_l0,
+            self._lstm.bias_ih_l0,
+            self._lstm.weight_hh_l0,
+            self._lstm.bias_hh_l0,
+        )
         if post_rnn_mlp_cfg.apply:
             self._post_mlp = MLP(
                 input_dims=lstm_hidden_size,
@@ -67,15 +101,18 @@ class RecurrentModel(nn.Module):
     def forward(
         self, input: Tensor, states: Tuple[Tensor, Tensor], mask: Optional[Tensor] = None
     ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
+        """The outputs of the LSTM at every step of the sequences and its last states.
+
+        The padded steps of the sequences (`mask` False) follow their valid ones: the LSTM runs on them too, which
+        doesn't change the outputs of the valid steps, without packing the sequences (it read their lengths on the
+        host). The returned states are the ones after the last step, padded or not."""
         x = self._pre_mlp(input)
-        self._lstm.flatten_parameters()
-        if mask is not None:
-            # To avoid: RuntimeError: 'lengths' argument should be a 1D CPU int64 tensor, but got 1D cuda:0 Long tensor
-            lengths = mask.sum(dim=0).view(-1).cpu()
-            x = torch.nn.utils.rnn.pack_padded_sequence(x, lengths=lengths, batch_first=False, enforce_sorted=False)
-        out, states = self._lstm(x, states)
-        if mask is not None:
-            out, _ = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=False, total_length=mask.shape[0])
+        if torch.compiler.is_compiling():
+            # `torch.compile` doesn't trace `nn.LSTM`: the same steps, from its weights
+            out, states = lstm_unroll(x, states, *self._lstm_weights)
+        else:
+            self._lstm.flatten_parameters()
+            out, states = self._lstm(x, states)
         shape = out.shape
         return self._post_mlp(out.view(-1, *shape[2:])).view(shape), states
 
@@ -93,16 +130,12 @@ class RecurrentPPOAgent(nn.Module):
         mlp_keys: Sequence[str],
         is_continuous: bool,
         distribution_cfg: Dict[str, Any],
-        num_envs: int = 1,
         screen_size: int = 64,
-        device: Union[torch.device, str] = "cpu",
     ):
         super().__init__()
-        self.num_envs = num_envs
         self.actions_dim = actions_dim
         self.distribution_cfg = distribution_cfg
         self.rnn_hidden_size = rnn_cfg.lstm.hidden_size
-        self.device = torch.device(device) if isinstance(device, str) else device
 
         # Encoder
         in_channels = sum([prod(obs_space[k].shape[:-2]) for k in cnn_keys])
@@ -180,24 +213,6 @@ class RecurrentPPOAgent(nn.Module):
         if critic_cfg.ortho_init:
             ortho_init_linear_layers(self.critic, gain=sqrt(2), output_gain=1.0)
 
-        # Initial recurrent states for both the actor and critic rnn
-        self._initial_states: Tensor = self.reset_hidden_states()
-
-    @property
-    def initial_states(self) -> Tuple[Tensor, Tensor]:
-        return self._initial_states
-
-    @initial_states.setter
-    def initial_states(self, value: Tuple[Tensor, Tensor]) -> None:
-        self._initial_states = value
-
-    def reset_hidden_states(self) -> Tuple[Tensor, Tensor]:
-        states = (
-            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
-            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
-        )
-        return states
-
     def _get_actions(
         self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None
     ) -> Tuple[Tuple[Tensor, ...], Tensor, Tensor]:
@@ -271,7 +286,13 @@ class RecurrentPPOAgent(nn.Module):
         return actions, logprobs, entropies, values, states
 
 
-class RecurrentPPOPlayer(nn.Module):
+class RecurrentPPOPolicy(nn.Module, Policy):
+    """The policy of recurrent PPO: `forward` samples the actions from the observations, the previous actions and the
+    previous recurrent states as tensors; `act` plays them in the environments (`Policy`), from the observations
+    `obs_keys` (the images among them are `cnn_keys`) moved to `device`, and keeps the recurrent state and the previous
+    actions of every environment (`init_states`). When an episode ends, its previous actions are reset, and its
+    recurrent state too with `reset_recurrent_state_on_done`."""
+
     def __init__(
         self,
         feature_extractor: MultiEncoder,
@@ -280,6 +301,10 @@ class RecurrentPPOPlayer(nn.Module):
         critic: nn.Module,
         rnn_hidden_size: int,
         actions_dim: Sequence[int],
+        device: str | torch.device = "cpu",
+        obs_keys: Sequence[str] = (),
+        cnn_keys: Sequence[str] = (),
+        reset_recurrent_state_on_done: bool = True,
     ) -> None:
         super().__init__()
         self.feature_extractor = feature_extractor
@@ -288,21 +313,13 @@ class RecurrentPPOPlayer(nn.Module):
         self.actor = actor
         self.rnn_hidden_size = rnn_hidden_size
         self.actions_dim = actions_dim
-
-    @property
-    def initial_states(self) -> Tuple[Tensor, Tensor]:
-        return self._initial_states
-
-    @initial_states.setter
-    def initial_states(self, value: Tuple[Tensor, Tensor]) -> None:
-        self._initial_states = value
-
-    def reset_hidden_states(self) -> Tuple[Tensor, Tensor]:
-        states = (
-            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
-            torch.zeros(1, self.num_envs, self.rnn_hidden_size, device=self.device),
-        )
-        return states
+        self.device = torch.device(device)
+        self.obs_keys = obs_keys
+        self.cnn_keys = cnn_keys
+        self.reset_recurrent_state_on_done = reset_recurrent_state_on_done
+        # The recurrent states and the actions preceding the next step of every environment (`init_states`)
+        self.prev_states: Optional[Tuple[Tensor, Tensor]] = None
+        self.prev_actions: Optional[np.ndarray] = None
 
     def _get_actions(
         self, pre_dist: Tuple[Tensor, ...], actions: Optional[List[Tensor]] = None, greedy: bool = False
@@ -390,6 +407,56 @@ class RecurrentPPOPlayer(nn.Module):
         out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
         return self._get_values(out), states
 
+    def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
+        """The actions for `obs`, with their columns: the actions one-hot for discrete actions (the environments take
+        their indices), their log-probabilities, the values of `obs`, and the recurrent states (`prev_hx`, `prev_cx`)
+        and the actions (`prev_actions`) that preceded them. Its extras are the actions and the recurrent states as
+        tensors, which bootstrap the returns."""
+        num_envs = len(obs[self.obs_keys[0]])
+        torch_obs = prepare_obs(
+            self.device, {k: obs[k] for k in self.obs_keys}, cnn_keys=self.cnn_keys, num_envs=num_envs, time_dim=True
+        )
+        torch_prev_actions = torch.from_numpy(self.prev_actions).to(self.device).float()
+        if greedy:
+            actions, states = self.get_actions(torch_obs, torch_prev_actions, self.prev_states, greedy=True)
+        else:
+            actions, logprobs, values, states = self(
+                torch_obs, prev_actions=torch_prev_actions, prev_states=self.prev_states
+            )
+        if self.actor.is_continuous:
+            env_actions = torch.stack(actions, -1).cpu().numpy()
+        else:
+            env_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+        torch_actions = torch.cat(actions, dim=-1)
+        if greedy:
+            self.prev_actions, self.prev_states = torch_actions.cpu().numpy(), states
+            return Act(env_actions)
+        columns = {
+            "actions": torch_actions.cpu().numpy(),
+            "logprobs": logprobs.cpu().numpy(),
+            "values": values.cpu().numpy(),
+            "prev_hx": self.prev_states[0].cpu().numpy(),
+            "prev_cx": self.prev_states[1].cpu().numpy(),
+            "prev_actions": self.prev_actions,
+        }
+        self.prev_actions, self.prev_states = columns["actions"], states
+        return Act(env_actions, columns, {"actions": torch_actions, "states": states})
+
+    def init_states(self, num_envs: int) -> None:
+        self.prev_states = (
+            torch.zeros(1, num_envs, self.rnn_hidden_size, device=self.device),
+            torch.zeros(1, num_envs, self.rnn_hidden_size, device=self.device),
+        )
+        self.prev_actions = np.zeros((1, num_envs, sum(self.actions_dim)))
+
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
+        # Multiplied by the mask of the episodes that go on, as the rollout resets them in the training
+        dones = np.zeros((1, self.prev_actions.shape[1], 1), dtype=np.float32)
+        dones[:, env_idxes] = 1
+        self.prev_actions = (1 - dones) * self.prev_actions
+        if self.reset_recurrent_state_on_done:
+            self.prev_states = tuple((1 - torch.as_tensor(dones, device=self.device)) * s for s in self.prev_states)
+
     def get_actions(
         self,
         obs: Dict[str, Tensor],
@@ -425,7 +492,7 @@ def build_agent(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[RecurrentPPOAgent, RecurrentPPOPlayer]:
+) -> Tuple[RecurrentPPOAgent, RecurrentPPOPolicy]:
     agent = RecurrentPPOAgent(
         actions_dim=actions_dim,
         obs_space=obs_space,
@@ -437,9 +504,7 @@ def build_agent(
         mlp_keys=cfg.algo.mlp_keys.encoder,
         is_continuous=is_continuous,
         distribution_cfg=cfg.distribution,
-        num_envs=cfg.env.num_envs,
         screen_size=cfg.env.screen_size,
-        device=fabric.device,
     )
     if agent_state:
         agent.load_state_dict(agent_state)
@@ -450,18 +515,22 @@ def build_agent(
     agent.critic = setup_module(fabric, agent.critic)
     agent.actor = setup_module(fabric, agent.actor)
 
-    # Setup player agent: it plays with the modules of the agent, without the wrappers of the distributed training. A
+    # Setup policy agent: it plays with the modules of the agent, without the wrappers of the distributed training. A
     # copy with the weights tied lost them on CUDA, where the LSTM moves its weights into a new buffer at every forward
-    # (`flatten_parameters`): the player played with the initial weights for the whole training
-    fabric_player = get_single_device_fabric(fabric)
-    player = RecurrentPPOPlayer(
-        fabric_player.setup_module(agent.feature_extractor.module),
-        fabric_player.setup_module(agent.rnn.module),
-        fabric_player.setup_module(agent.actor.module),
-        fabric_player.setup_module(agent.critic.module),
+    # (`flatten_parameters`): the policy played with the initial weights for the whole training
+    policy_fabric = get_single_device_fabric(fabric)
+    policy = RecurrentPPOPolicy(
+        policy_fabric.setup_module(agent.feature_extractor.module),
+        policy_fabric.setup_module(agent.rnn.module),
+        policy_fabric.setup_module(agent.actor.module),
+        policy_fabric.setup_module(agent.critic.module),
         cfg.algo.rnn.lstm.hidden_size,
         actions_dim,
+        device=policy_fabric.device,
+        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
+        reset_recurrent_state_on_done=cfg.algo.reset_recurrent_state_on_done,
     )
-    # The step of the player, compiled with `algo.compile` (`compiled_player`)
-    player.forward = compiled_player(player.forward, fabric, cfg)
-    return agent, player
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`)
+    policy.forward = compiled_policy(policy.forward, fabric, cfg)
+    return agent, policy

@@ -38,3 +38,7 @@ python sheeprl.py exp=dreamer_v3 env=dmc env.wrapper.domain_name=walker env.wrap
 > [!NOTE]
 >
 > By default the `env.sync_env` parameter is set to `True`. We recommend not changing this value for the MuJoCo environments to work properly.
+
+> [!NOTE]
+>
+> The Dreamers (`dreamer_v1`, `dreamer_v2`, `dreamer_v3`, `p2e_dv1`, `p2e_dv2` and `p2e_dv3`) set `algo.normalize_actions=True`: their continuous actions are in $[-1, 1]$, and the `NormalizeAction` wrapper (`sheeprl/envs/wrappers.py`) rescales them to the bounds of the action space of the environment, e.g. of a MuJoCo environment. The DMC wrapper already exposes its actions in $[-1, 1]$ and rescales them to the bounds of the task.

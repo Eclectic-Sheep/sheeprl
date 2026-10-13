@@ -10,8 +10,9 @@ from lightning.pytorch.utilities.seed import isolate_rng
 from torch import nn
 
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
+from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
-from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
+from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.agent import build_agent as dv2_build_agent
 from sheeprl.algos.dreamer_v2.utils import init_weights
 from sheeprl.models.models import MLP
@@ -48,7 +49,7 @@ def build_agent(
     _FabricModule,
     _FabricModule,
     _FabricModule,
-    PlayerDV2,
+    DreamerV2Policy,
 ]:
     """Build the models and wrap them with Fabric.
 
@@ -95,7 +96,7 @@ def build_agent(
     latent_state_size = stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Create exploration models
-    world_model, actor_exploration, critic_exploration, target_critic_exploration, player = dv2_build_agent(
+    world_model, actor_exploration, critic_exploration, target_critic_exploration, policy = dv2_build_agent(
         fabric,
         actions_dim=actions_dim,
         is_continuous=is_continuous,
@@ -189,12 +190,12 @@ def build_agent(
     for i in range(len(ensembles)):
         ensembles[i] = setup_module(fabric, ensembles[i])
 
-    # Setup player agent
-    if cfg.algo.player.actor_type != "exploration":
-        fabric_player = get_single_device_fabric(fabric)
-        player_actor = unwrap_fabric(actor_task)
-        player.actor = fabric_player.setup_module(player_actor)
-        for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
+    # Setup policy agent
+    if cfg.algo.policy.actor_type != "exploration":
+        policy_fabric = get_single_device_fabric(fabric)
+        policy_actor = unwrap_fabric(actor_task)
+        policy.actor = policy_fabric.setup_module(policy_actor)
+        for agent_p, p in zip(actor_task.parameters(), policy.actor.parameters()):
             p.data = agent_p.data
 
     return (
@@ -206,5 +207,5 @@ def build_agent(
         actor_exploration,
         critic_exploration,
         target_critic_exploration,
-        player,
+        policy,
     )

@@ -22,14 +22,11 @@ from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v2 import dreamer_v2
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import (
-    actor_objective,
-    build_buffer,
-    build_optimizer,
-    env_buffer_size,
-    sample_batches,
-)
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, actor_objective, build_optimizer
+from sheeprl.core import env_buffer_size, sequence_store
+from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.samplers import EpisodeSampler, SequenceSampler
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
 
@@ -72,21 +69,32 @@ def test_the_free_nats_bound_the_kl_of_every_step_without_free_avg():
 
 @pytest.mark.parametrize("buffer_type", ["sequential", "episode"])
 def test_the_buffer_holds_buffer_size_steps_of_the_process(buffer_type, tmp_path):
-    # The episode buffer, shared by the environments of the process, held `buffer.size` divided by their number
+    # The episode buffer, shared by the environments of the process, held `buffer.size` divided by their number: now
+    # every environment holds its share of the steps, sampled in sequences anywhere or inside their episodes
     cfg = dotdict(
         {
             "dry_run": False,
             "seed": 0,
-            "buffer": {"size": 1000, "type": buffer_type, "memmap": False, "prioritize_ends": False},
+            "buffer": {
+                "size": 1000,
+                "type": buffer_type,
+                "memmap": False,
+                "prioritize_ends": False,
+                "online": False,
+                "from_numpy": False,
+                "prefetch": False,
+                "on_device": False,
+            },
             "env": {"num_envs": 4},
             "algo": {"per_rank_sequence_length": 5, "cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
         }
     )
-    buffer = build_buffer(SimpleNamespace(world_size=2, global_rank=0), cfg, str(tmp_path), dry_run_size=2)
-    if buffer_type == "episode":
-        assert isinstance(buffer, EpisodeBuffer) and buffer.buffer_size == 500
-    else:
-        assert isinstance(buffer, EnvIndependentReplayBuffer) and buffer.buffer_size == 125
+    fabric = SimpleNamespace(world_size=2, global_rank=0, device="cpu")
+    buffer_size = env_buffer_size(fabric, cfg, dry_run_size=2)
+    store = sequence_store(fabric, cfg, str(tmp_path), buffer_size, 5, buffer_type=buffer_type)
+    # Split among the environments of the process, also the episodes
+    assert isinstance(store.storage, ReplayBuffer) and store.storage.buffer_size == 125
+    assert isinstance(store.sampler, EpisodeSampler if buffer_type == "episode" else SequenceSampler)
 
 
 @pytest.mark.parametrize("output_channels", [[1], [3], [3, 3]])
@@ -207,7 +215,8 @@ def test_the_actors_are_trained_with_the_configured_objective(module, args, expe
         ("dreamer_v2", "sheeprl.algos.dreamer_v2.dreamer_v2"),
         ("p2e_dv2_exploration", "sheeprl.algos.p2e_dv2.p2e_dv2_exploration"),
         ("dreamer_v3", "sheeprl.algos.dreamer_v3.dreamer_v3"),
-        ("p2e_dv3_exploration", "sheeprl.algos.p2e_dv3.p2e_dv3_exploration"),
+        # Both actors of P2E-DV3 learn with the loss of DreamerV3
+        ("p2e_dv3_exploration", "sheeprl.algos.dreamer_v3.dreamer_v3"),
     ],
 )
 def test_the_entropy_of_the_tanh_normal_actors_is_estimated(exp, module):
@@ -258,18 +267,12 @@ def test_the_batches_of_an_iteration_are_sampled_16_at_a_time():
     # DreamerV2 (`algo.per_rank_pretrain_steps`) would take 100 batches on the device
     calls = []
 
-    class Buffer:
-        def sample_tensors(self, batch_size, sequence_length, n_samples, **kwargs):
+    class Sampler:
+        def sample(self, storage, batch_size, n_samples, online=None):
             calls.append(n_samples)
-            return {"rewards": torch.arange(n_samples).view(-1, 1, 1).expand(n_samples, sequence_length, batch_size)}
+            return {"rewards": np.arange(n_samples).reshape(-1, 1, 1).repeat(2, 1).repeat(batch_size, 2)}
 
-    cfg = dotdict(
-        {
-            "algo": {"per_rank_batch_size": 3, "per_rank_sequence_length": 2},
-            "buffer": {"from_numpy": False, "online": False},
-        }
-    )
-    batches = list(sample_batches(SimpleNamespace(device="cpu"), cfg, Buffer(), 40))
+    batches = list(ReplayStore(None, Sampler()).batches(40, 3, MAX_SAMPLED_BATCHES))
     assert calls == [16, 16, 8]
     assert len(batches) == 40
     assert all(batch["rewards"].shape == (2, 3) and batch["rewards"].dtype == torch.float32 for batch in batches)
@@ -517,6 +520,7 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, conti
         with monkeypatch.context() as patch:
             aggregator, losses, grads = recording(dreamer_v2, patch)
             torch.manual_seed(1)
-            dreamer_v2.train(fabric, *models, *optimizers, data, aggregator, cfg, actions_dim)
+            for name, value in dreamer_v2.train(fabric, *models, *optimizers, data, cfg, actions_dim).items():
+                aggregator.update(name, value)
         results.append((losses, grads))
     assert_same_step(*results)

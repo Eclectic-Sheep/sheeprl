@@ -20,9 +20,10 @@ from torch.distributions import (
     TransformedDistribution,
 )
 
+from sheeprl.algos.dreamer_policy import DreamerPolicy
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.distribution import SafeTanhTransform, TruncatedNormal
 
 # The epsilon of the LayerNorms: the one of the `LayerNormalization` of Keras, which the official implementation uses
@@ -763,9 +764,9 @@ class WorldModel(nn.Module):
         self.continue_model = continue_model
 
 
-class PlayerDV2(nn.Module):
+class DreamerV2Policy(nn.Module, DreamerPolicy):
     """
-    The model of the Dreamer_v2 player.
+    The model of the Dreamer_v2 policy.
 
     Args:
         encoder (nn.Module | _FabricModule): the encoder.
@@ -773,14 +774,13 @@ class PlayerDV2(nn.Module):
         representation_model (nn.Module | _FabricModule): the representation model.
         actor (nn.Module | _FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of the actions.
-        num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
         device (str | torch.device): the device where the model is stored.
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
-        actor_type (str, optional): which actor the player is using ('task' or 'exploration').
+        actor_type (str, optional): which actor the policy is using ('task' or 'exploration').
             Default to None.
     """
 
@@ -791,44 +791,37 @@ class PlayerDV2(nn.Module):
         representation_model: nn.Module | _FabricModule,
         actor: nn.Module | _FabricModule,
         actions_dim: Sequence[int],
-        num_envs: int,
         stochastic_size: int,
         recurrent_state_size: int,
         device: str | torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
+        cnn_keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.actor = actor
+        self.cnn_keys = cnn_keys
         self.actions_dim = actions_dim
-        self.num_envs = num_envs
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.device = device
         self.discrete_size = discrete_size
         self.actor_type = actor_type
 
-    def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
-        """Initialize the states and the actions for the ended environments.
+    def init_states(self, num_envs: int) -> None:
+        """Zero latent states and actions of `num_envs` environments."""
+        self.num_envs = num_envs
+        self.actions = torch.zeros(1, num_envs, np.sum(self.actions_dim), device=self.device)
+        self.recurrent_state = torch.zeros(1, num_envs, self.recurrent_state_size, device=self.device)
+        self.stochastic_state = torch.zeros(1, num_envs, self.stochastic_size * self.discrete_size, device=self.device)
 
-        Args:
-            reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
-                If None, then all environments' states are reset.
-                Defaults to None.
-        """
-        if reset_envs is None or len(reset_envs) == 0:
-            self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            self.stochastic_state = torch.zeros(
-                1, self.num_envs, self.stochastic_size * self.discrete_size, device=self.device
-            )
-        else:
-            self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
-            self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
+        self.actions[:, env_idxes] = torch.zeros_like(self.actions[:, env_idxes])
+        self.recurrent_state[:, env_idxes] = torch.zeros_like(self.recurrent_state[:, env_idxes])
+        self.stochastic_state[:, env_idxes] = torch.zeros_like(self.stochastic_state[:, env_idxes])
 
     def get_actions(
         self,
@@ -873,7 +866,7 @@ def build_agent(
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
     target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV2]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, DreamerV2Policy]:
     """Build the models and wrap them with Fabric.
 
     Args:
@@ -1084,19 +1077,19 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
-    # Create the player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player = PlayerDV2(
+    # Create the policy agent
+    policy_fabric = get_single_device_fabric(fabric)
+    policy = DreamerV2Policy(
         copy.deepcopy(world_model.encoder),
         copy.deepcopy(world_model.rssm.recurrent_model),
         copy.deepcopy(world_model.rssm.representation_model),
         copy.deepcopy(actor),
         actions_dim,
-        cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
+        policy_fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
     )
 
     # Setup models with Fabric
@@ -1115,24 +1108,24 @@ def build_agent(
     target_critic = copy.deepcopy(critic.module)
     if target_critic_state:
         target_critic.load_state_dict(target_critic_state)
-    target_critic = fabric_player.setup_module(target_critic)
+    target_critic = policy_fabric.setup_module(target_critic)
 
-    # Setup the player agent with a single-device Fabric
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.recurrent_model = fabric_player.setup_module(player.recurrent_model)
-    player.representation_model = fabric_player.setup_module(player.representation_model)
-    player.actor = fabric_player.setup_module(player.actor)
+    # Setup the policy agent with a single-device Fabric
+    policy.encoder = policy_fabric.setup_module(policy.encoder)
+    policy.recurrent_model = policy_fabric.setup_module(policy.recurrent_model)
+    policy.representation_model = policy_fabric.setup_module(policy.representation_model)
+    policy.actor = policy_fabric.setup_module(policy.actor)
 
-    # Tie weights between the agent and the player
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+    # Tie weights between the agent and the policy
+    for agent_p, p in zip(world_model.encoder.parameters(), policy.encoder.parameters()):
         p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.recurrent_model.parameters(), player.recurrent_model.parameters()):
+    for agent_p, p in zip(world_model.rssm.recurrent_model.parameters(), policy.recurrent_model.parameters()):
         p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.representation_model.parameters(), player.representation_model.parameters()):
+    for agent_p, p in zip(world_model.rssm.representation_model.parameters(), policy.representation_model.parameters()):
         p.data = agent_p.data
-    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+    for agent_p, p in zip(actor.parameters(), policy.actor.parameters()):
         p.data = agent_p.data
-    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes
-    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
-    return world_model, actor, critic, target_critic, player
+    policy.get_actions = compiled_policy(policy.get_actions, fabric, cfg, cuda_graphs=False)
+    return world_model, actor, critic, target_critic, policy

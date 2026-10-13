@@ -48,10 +48,3 @@ critic:
 optimizer:
   lr: 1e-3
   eps: 1e-4
-# Compile the step of the player with `torch.compile` (`player`): faster steps in the environments, after a compilation
-# at the start. `mode` is the one of `torch.compile`: `reduce-overhead` also replays its kernels with CUDA graphs (with
-# `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used)
-compile:
-  enabled: False
-  mode: reduce-overhead
-  player: True

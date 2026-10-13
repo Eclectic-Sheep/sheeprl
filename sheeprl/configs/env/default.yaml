@@ -6,6 +6,15 @@ screen_size: 64
 action_repeat: 1
 grayscale: False
 clip_rewards: False
+# On-policy algorithms only (`sheeprl/envs/normalization.py`): standardize the vector observations
+# (`algo.mlp_keys.encoder`) with their running mean and std, and divide the rewards by the running std of the
+# discounted return (with `algo.gamma`), then clip them. The statistics are saved in the checkpoints
+normalization:
+  obs: False
+  rewards: False
+  clip_obs: 10.0
+  clip_rewards: 10.0
+  epsilon: 1e-8
 capture_video: True
 frame_stack_dilation: 1
 actions_as_observation:

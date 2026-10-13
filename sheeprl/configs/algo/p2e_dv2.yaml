@@ -6,7 +6,7 @@ defaults:
 name: p2e_dv2
 intrinsic_reward_multiplier: 1
 
-player:
+policy:
   actor_type: exploration
 
 ensembles:

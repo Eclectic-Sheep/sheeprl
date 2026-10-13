@@ -1,4 +1,4 @@
-## Install Atari environments
+## Install Super Mario Bros environment
 First, we should install the Super Mario Bros environment with:
 
 ```bash
@@ -36,8 +36,9 @@ The parameters under the `wrapper` key are explained below:
 
 ## Train your agent
 
-It is important to remember that not all the algorithms can work with images, so it is necessary to check the first table in the [README](../README.md) and select a proper algorithm.
+It is important to remember that not all the algorithms can work with images and discrete actions, so it is necessary to check the first two tables in the [README](../README.md) and select a proper algorithm.
 The list of selectable algorithms is given below:
+* `a2c`
 * `dreamer_v1`
 * `dreamer_v2`
 * `dreamer_v3`
@@ -45,6 +46,7 @@ The list of selectable algorithms is given below:
 * `p2e_dv2`
 * `p2e_dv3`
 * `ppo`
+* `ppo_recurrent`
 * `sac_ae`
 
 Once you have chosen the algorithm you want to train, you can start the train, for instance, of the ppo agent by running:
@@ -52,3 +54,5 @@ Once you have chosen the algorithm you want to train, you can start the train, f
 ```bash
 python sheeprl.py exp=ppo env=super_mario_bros env.id=SuperMarioBros-v0 algo.cnn_keys.encoder=[rgb] fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2 algo.mlp_keys.encoder=[]
 ```
+
+The `sheeprl/configs/exp` folder also contains ready-made Super Mario Bros experiments: `exp=ppo_super_mario_bros` and `exp=dreamer_v3_super_mario_bros`.

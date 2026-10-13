@@ -148,7 +148,7 @@ def assert_allowed(actions):
 
 def test_the_minedojo_actor_of_dreamer_v2_samples_allowed_actions_in_every_environment():
     # With more than one environment, the mask of the destroyed items was written with the indices of the last
-    # environment of the previous loop: the player crashed
+    # environment of the previous loop: the policy crashed
     actor = make_actor(DV2MinedojoActor, "discrete", actions_dim=MINEDOJO_ACTIONS_DIM, is_continuous=False)
     actions, _ = actor(torch.randn(1, 3, LATENT), mask=minedojo_masks())
     assert_allowed(actions)

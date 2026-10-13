@@ -10,7 +10,7 @@ algo:
   name: p2e_dv1_finetuning
   learning_starts: 5000
   total_steps: 1000000
-  player:
+  policy:
     actor_type: exploration
 
 buffer:

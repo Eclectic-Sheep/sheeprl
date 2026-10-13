@@ -6,10 +6,7 @@ import gymnasium as gym
 from lightning import Fabric
 
 from sheeprl.algos.dreamer_v3.utils import AGGREGATOR_KEYS as AGGREGATOR_KEYS_DV3
-from sheeprl.algos.dreamer_v3.utils import Moments
-from sheeprl.algos.p2e_dv3.agent import build_agent
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
-from sheeprl.utils.utils import unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -64,98 +61,28 @@ def log_models_from_checkpoint(
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
-    import mlflow  # noqa
+    from sheeprl.algos.p2e_dv3.p2e_dv3_exploration import P2EDV3Exploration
+    from sheeprl.algos.p2e_dv3.p2e_dv3_finetuning import P2EDV3Finetuning
+    from sheeprl.core import log_models_from_checkpoint as log_trained_models
 
-    # Create the models
-    is_continuous = isinstance(env.action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(env.action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        env.action_space.shape
-        if is_continuous
-        else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
-    )
-    (
-        world_model,
-        ensembles,
-        actor_task,
-        critic_task,
-        target_critic_task,
-        actor_exploration,
-        critics_exploration,
-        _,
-    ) = build_agent(
-        fabric,
-        actions_dim,
-        is_continuous,
-        cfg,
-        env.observation_space,
-        state["world_model"],
-        state["ensembles"] if "exploration" in cfg.algo.name else None,
-        state["actor_task"],
-        state["critic_task"],
-        state["target_critic_task"],
-        state["actor_exploration"] if "exploration" in cfg.algo.name else None,
-        state["critics_exploration"] if "exploration" in cfg.algo.name else None,
-    )
-    moments_task = Moments(
-        cfg.algo.actor.moments.decay,
-        cfg.algo.actor.moments.max,
-        cfg.algo.actor.moments.percentile.low,
-        cfg.algo.actor.moments.percentile.high,
-    )
-    moments_task.load_state_dict(state["moments_task"])
+    exploration = "exploration" in cfg.to_log.algo.name
 
-    if "exploration" in cfg.algo.name:
-        moments_exploration = {
-            k: Moments(
-                cfg.algo.actor.moments.decay,
-                cfg.algo.actor.moments.max,
-                cfg.algo.actor.moments.percentile.low,
-                cfg.algo.actor.moments.percentile.high,
-            )
-            for k in critics_exploration.keys()
+    def models(trained: Any) -> Dict[str, Any]:
+        models = {
+            "world_model": trained.world_model,
+            "actor_task": trained.actor_task,
+            "critic_task": trained.critic_task,
+            "target_critic_task": trained.target_critic_task,
+            "moments_task": trained.moments_task,
         }
-        for k, m in moments_exploration.items():
-            m.load_state_dict(state[f"moments_exploration_{k}"])
+        if exploration:
+            models["ensembles"] = trained.ensembles
+            models["actor_exploration"] = trained.actor_exploration
+            for k, critic in trained.critics_exploration.items():
+                models[f"critic_exploration_{k}"] = critic["module"]
+                models[f"target_critic_exploration_{k}"] = critic["target_module"]
+                models[f"moments_exploration_{k}"] = critic["moments"]
+        return models
 
-    # Log the model, create a new run if `cfg.run_id` is None.
-    model_info = {}
-    with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["world_model"] = mlflow.pytorch.log_model(
-            unwrap_fabric(world_model), name="world_model", serialization_format="pickle"
-        )
-        model_info["actor_task"] = mlflow.pytorch.log_model(
-            unwrap_fabric(actor_task), name="actor_task", serialization_format="pickle"
-        )
-        model_info["critic_task"] = mlflow.pytorch.log_model(
-            unwrap_fabric(critic_task), name="critic_task", serialization_format="pickle"
-        )
-        model_info["target_critic_task"] = mlflow.pytorch.log_model(
-            unwrap_fabric(target_critic_task), name="target_critic_task", serialization_format="pickle"
-        )
-        model_info["moments_task"] = mlflow.pytorch.log_model(
-            moments_task, name="moments_task", serialization_format="pickle"
-        )
-        if "exploration" in cfg.algo.name:
-            model_info["ensembles"] = mlflow.pytorch.log_model(
-                unwrap_fabric(ensembles), name="ensembles", serialization_format="pickle"
-            )
-            model_info["actor_exploration"] = mlflow.pytorch.log_model(
-                unwrap_fabric(actor_exploration), name="actor_exploration", serialization_format="pickle"
-            )
-            for k in critics_exploration.keys():
-                model_info[f"critic_exploration_{k}"] = mlflow.pytorch.log_model(
-                    unwrap_fabric(critics_exploration[k]["module"]),
-                    name=f"critic_exploration_{k}",
-                    serialization_format="pickle",
-                )
-                model_info[f"target_critic_exploration_{k}"] = mlflow.pytorch.log_model(
-                    unwrap_fabric(critics_exploration[k]["target_module"]),
-                    name=f"target_critic_exploration_{k}",
-                    serialization_format="pickle",
-                )
-                model_info[f"moments_exploration_{k}"] = mlflow.pytorch.log_model(
-                    moments_exploration[k], name=f"moments_exploration_{k}", serialization_format="pickle"
-                )
-        mlflow.log_dict(cfg.to_log, "config.json")
-    return model_info
+    algorithm = P2EDV3Exploration if exploration else P2EDV3Finetuning
+    return log_trained_models(fabric, env, cfg, state, algorithm(fabric, cfg.to_log), models)

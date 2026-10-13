@@ -1,4 +1,4 @@
-"""The losses and the players of the algorithms compiled with `torch.compile` (`algo.compile`)."""
+"""The losses and the policies of the algorithms compiled with `torch.compile` (`algo.compile`)."""
 
 from __future__ import annotations
 
@@ -36,27 +36,32 @@ def compile_enabled(fabric: Fabric, cfg: Dict[str, Any]) -> bool:
     return bool((cfg.algo.get("compile") or {}).get("enabled", False))
 
 
-def compiled(fn: Callable, fabric: Fabric, cfg: Dict[str, Any]) -> Callable:
-    """`fn` compiled with `torch.compile` when `algo.compile.enabled` is set (compiled once, at the first call)."""
+def compiled(fn: Callable, fabric: Fabric, cfg: Dict[str, Any], cuda_graphs: bool = True) -> Callable:
+    """`fn` compiled with `torch.compile` when `algo.compile.enabled` is set (compiled once, at the first call).
+
+    Without `cuda_graphs`, `reduce-overhead` falls back to the default mode: the gradients of a loss accumulated over
+    several backward passes (e.g. A2C) live in the memory of the CUDA graphs, which the next replay overwrites."""
     if not compile_enabled(fabric, cfg):
         return fn
     mode = compile_mode(cfg)
+    if not cuda_graphs and mode == "reduce-overhead":
+        mode = None
     if (fn, mode) not in _COMPILED:
         _COMPILED[fn, mode] = torch.compile(fn, mode=mode)
     return _COMPILED[fn, mode]
 
 
-def compiled_player(fn: Callable, fabric: Fabric, cfg: Dict[str, Any], cuda_graphs: bool = True) -> Callable:
-    """`fn`, the function that a player calls at every step (e.g. its `forward`), compiled with `torch.compile` when
-    `algo.compile.enabled` and `algo.compile.player` are set, for the inputs of its first call: called with other
+def compiled_policy(fn: Callable, fabric: Fabric, cfg: Dict[str, Any], cuda_graphs: bool = True) -> Callable:
+    """`fn`, the function that a policy calls at every step (e.g. its `forward`), compiled with `torch.compile` when
+    `algo.compile.enabled` and `algo.compile.policy` are set, for the inputs of its first call: called with other
     inputs (e.g. the final observations of some of the environments, or the ones of the test) it runs uncompiled,
     instead of being compiled again.
 
     With CUDA graphs (`algo.compile.mode=reduce-overhead`) its outputs are copied: the next replay of a CUDA graph
-    overwrites its outputs (e.g. the states of a recurrent player, given back at the next step). Without `cuda_graphs`
-    `reduce-overhead` falls back to the default mode: e.g. for the players that keep their states in their attributes,
+    overwrites its outputs (e.g. the states of a recurrent policy, given back at the next step). Without `cuda_graphs`
+    `reduce-overhead` falls back to the default mode: e.g. for the policies that keep their states in their attributes,
     which the next replay would overwrite."""
-    if not compile_enabled(fabric, cfg) or not (cfg.algo.get("compile") or {}).get("player", True):
+    if not compile_enabled(fabric, cfg) or not (cfg.algo.get("compile") or {}).get("policy", True):
         return fn
     mode = compile_mode(cfg)
     if not cuda_graphs and mode == "reduce-overhead":
@@ -64,7 +69,7 @@ def compiled_player(fn: Callable, fabric: Fabric, cfg: Dict[str, Any], cuda_grap
     compiled_fn = torch.compile(fn, mode=mode)
     first_inputs = None
 
-    def player_fn(*args, **kwargs):
+    def policy_fn(*args, **kwargs):
         nonlocal first_inputs
         inputs = _signature(args, kwargs)
         if first_inputs is None:
@@ -76,7 +81,7 @@ def compiled_player(fn: Callable, fabric: Fabric, cfg: Dict[str, Any], cuda_grap
             outputs = tree_map(lambda x: x.clone() if isinstance(x, Tensor) else x, outputs)
         return outputs
 
-    return player_fn
+    return policy_fn
 
 
 def _signature(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Tuple[Any, ...]:

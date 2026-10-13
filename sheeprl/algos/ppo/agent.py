@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -13,10 +14,12 @@ from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
+from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
-from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import per_layer_ortho_init_weights
+from sheeprl.utils.obs import prepare_obs
 from sheeprl.utils.utils import safetanh
 
 
@@ -221,8 +224,8 @@ class PPOAgent(nn.Module):
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
         std = log_std.exp()
         normal = Independent(Normal(mean, std), 1)
-        # The actions played are stored before the tanh (`PPOPlayer.env_actions`): their log-probability is computed
-        # from them, as the player did, also where the tanh saturates
+        # The actions played are stored before the tanh (`PPOPolicy.env_actions`): their log-probability is computed
+        # from them, as the policy did, also where the tanh saturates
         actions = actions[0].float()
         log_prob = normal.log_prob(actions) - tanh_log_abs_det_jacobian(actions)
         return actions, log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1)
@@ -261,12 +264,27 @@ class PPOAgent(nn.Module):
             )
 
 
-class PPOPlayer(nn.Module):
-    def __init__(self, feature_extractor: MultiEncoder, actor: PPOActor, critic: nn.Module) -> None:
+class PPOPolicy(nn.Module, Policy):
+    """The policy of PPO and A2C: `forward` samples the actions from the observations as tensors, `act` plays them in
+    the environments (`Policy`), from the observations `obs_keys` (the images among them are `cnn_keys`) moved to
+    `device`."""
+
+    def __init__(
+        self,
+        feature_extractor: MultiEncoder,
+        actor: PPOActor,
+        critic: nn.Module,
+        device: str | torch.device = "cpu",
+        obs_keys: Sequence[str] = (),
+        cnn_keys: Sequence[str] = (),
+    ) -> None:
         super().__init__()
         self.feature_extractor = feature_extractor
         self.critic = critic
         self.actor = actor
+        self.device = torch.device(device)
+        self.obs_keys = obs_keys
+        self.cnn_keys = cnn_keys
 
     def _normal(self, actor_out: Tensor) -> Tuple[Tensor, Tensor]:
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
@@ -323,6 +341,25 @@ class PPOPlayer(nn.Module):
             return env_actions
         return torch.stack([act.argmax(dim=-1) for act in actions], dim=-1)
 
+    def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
+        """The actions for `obs`, with their columns: the actions one-hot for discrete actions (the environments take
+        their indices), their log-probabilities and the values of `obs`."""
+        num_envs = len(obs[self.obs_keys[0]])
+        obs = prepare_obs(self.device, {k: obs[k] for k in self.obs_keys}, cnn_keys=self.cnn_keys, num_envs=num_envs)
+        if greedy:
+            # The modes of the distributions, the continuous ones already squashed with `tanh_normal`
+            actions = self.get_actions(obs, greedy=True)
+            if self.actor.is_continuous:
+                return Act(torch.cat(actions, dim=-1).cpu().numpy())
+            return Act(torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy())
+        actions, logprobs, values = self(obs)
+        columns = {
+            "actions": torch.cat(actions, dim=-1).cpu().numpy(),
+            "logprobs": logprobs.cpu().numpy(),
+            "values": values.cpu().numpy(),
+        }
+        return Act(self.env_actions(actions).cpu().numpy(), columns)
+
     def get_actions(self, obs: Dict[str, Tensor], greedy: bool = False) -> Sequence[Tensor]:
         feat = self.feature_extractor(obs)
         actor_out: List[Tensor] = self.actor(feat)
@@ -356,7 +393,7 @@ def build_agent(
     cfg: Dict[str, Any],
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[PPOAgent, PPOPlayer]:
+) -> Tuple[PPOAgent, PPOPolicy]:
     agent = PPOAgent(
         actions_dim=actions_dim,
         obs_space=obs_space,
@@ -372,27 +409,34 @@ def build_agent(
     if agent_state:
         agent.load_state_dict(agent_state)
 
-    # Setup player agent
-    player = PPOPlayer(copy.deepcopy(agent.feature_extractor), copy.deepcopy(agent.actor), copy.deepcopy(agent.critic))
+    # Setup policy agent
+    policy_fabric = get_single_device_fabric(fabric)
+    policy = PPOPolicy(
+        copy.deepcopy(agent.feature_extractor),
+        copy.deepcopy(agent.actor),
+        copy.deepcopy(agent.critic),
+        device=policy_fabric.device,
+        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+        cnn_keys=cfg.algo.cnn_keys.encoder,
+    )
 
     # Setup training agent
     agent.feature_extractor = setup_module(fabric, agent.feature_extractor)
     agent.critic = setup_module(fabric, agent.critic)
     agent.actor = setup_module(fabric, agent.actor)
 
-    # Setup player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player.feature_extractor = fabric_player.setup_module(player.feature_extractor)
-    player.critic = fabric_player.setup_module(player.critic)
-    player.actor = fabric_player.setup_module(player.actor)
+    # Setup policy agent
+    policy.feature_extractor = policy_fabric.setup_module(policy.feature_extractor)
+    policy.critic = policy_fabric.setup_module(policy.critic)
+    policy.actor = policy_fabric.setup_module(policy.actor)
 
-    # Tie weights between the agent and the player
-    for agent_p, player_p in zip(agent.feature_extractor.parameters(), player.feature_extractor.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.actor.parameters(), player.actor.parameters()):
-        player_p.data = agent_p.data
-    for agent_p, player_p in zip(agent.critic.parameters(), player.critic.parameters()):
-        player_p.data = agent_p.data
-    # The step of the player, compiled with `algo.compile` (`compiled_player`)
-    player.forward = compiled_player(player.forward, fabric, cfg)
-    return agent, player
+    # Tie weights between the agent and the policy
+    for agent_p, policy_p in zip(agent.feature_extractor.parameters(), policy.feature_extractor.parameters()):
+        policy_p.data = agent_p.data
+    for agent_p, policy_p in zip(agent.actor.parameters(), policy.actor.parameters()):
+        policy_p.data = agent_p.data
+    for agent_p, policy_p in zip(agent.critic.parameters(), policy.critic.parameters()):
+        policy_p.data = agent_p.data
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`)
+    policy.forward = compiled_policy(policy.forward, fabric, cfg)
+    return agent, policy

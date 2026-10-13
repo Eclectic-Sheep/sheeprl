@@ -4,7 +4,7 @@ There are two types of algorithms in this repository:
 1. the ones that can work with both image and vector observations.
 2. The ones that can work with only vector observations.
 
-In the first case, the observations are returned in the form of python dictionary, whereas in the second case, the observations are returned as 1-dimensional arrays or 3/4-dimensional arrays for grayscale/RGB or stacked images, respectively.
+In both cases, the observations are returned in the form of python dictionary (the environments that return a single array are wrapped by the `make_env` function in `./sheeprl/utils/env.py`, which puts the array in a dictionary). The algorithms of the second type concatenate the vector observations selected with `algo.mlp_keys.encoder`.
 
 ### Both observations
 The algorithms that can work with both image and vector observations are specified in [Table 1](../README.md) in the README, and are reported here:
@@ -51,6 +51,10 @@ For image observations, it is possible to stack the last $n$ observations with t
 python sheeprl.py exp=... env=dmc algo.cnn_keys.encoder=[rgb] env.frame_stack=3
 ```
 
+> [!NOTE]
+>
+> The Dreamer and Plan2Explore algorithms do not stack the frames: they ignore the `env.frame_stack` argument.
+
 #### How to choose the correct keys
 When the environment provides both the vector and image observations, you just need to specify which observations you want to use with the  `algo.mlp_keys` and  `algo.cnn_keys`, respectively.
 
@@ -67,8 +71,8 @@ There can be three possible scenarios:
 
 #### Different observations for the Encoder and the Decoder
 You can specify different observations for the encoder and the decoder, but there are some constraints:
-1. The *mlp* and *cnn* keys of the decoder must be contained in the *mlp* and *cnn* keys of the decoder respectively.
-2. Both the intersections between the *mlp* and *cnn* keys of the encoder and decoder cannot be empty.
+1. The *mlp* and *cnn* keys of the decoder must be contained in the *mlp* and *cnn* keys of the encoder respectively.
+2. The intersections between the *mlp* keys of the encoder and decoder and between the *cnn* keys of the encoder and decoder cannot be both empty.
 
 You can specify the *mlp* and *cnn* keys of the decoder as follows:
 ```bash
@@ -80,9 +84,9 @@ The algorithms that work with only vector observations are reported here:
 * SAC
 * Droq
 
-For any of them you **must select** only the environments that provide vector observations. For instance, you can train the *SAC* algorithm on the `LunarLanderContinuous-v3` environment, but you cannot train it on the `CarRacing-v2` environment.
+For any of them you **must select** only the environments that provide vector observations. For instance, you can train the *SAC* algorithm on the `LunarLanderContinuous-v3` environment, but you cannot train it on the `CarRacing-v3` environment.
 
-For these algorithms, you have to specify the *mlp* keys you want to encode. As usual, you have to specify them through the `mlp_keys.encoder` and `mlp_keys.decoder` arguments (in the command or the configs).
+For these algorithms, you have to specify the *mlp* keys you want to encode. As usual, you have to specify them through the `algo.mlp_keys.encoder` argument (in the command or the configs); these algorithms have no decoder, and the *cnn* keys are ignored.
 
 For instance, you can train a SAC agent on the `LunarLanderContinuous-v3` with the following command:
 ```bash
@@ -118,7 +122,7 @@ python examples/observation_space.py env=atari agent=dreamer_v3 env.id=MsPacmanN
 >```
 >  Observation space of `LunarLander-v3` environment for `dreamer_v3` agent:
 >  Dict(
->     'custom_mlp_key': Box([-1.5, -1.5, -5., -5., -3.1415927, -5., -0., -0.], [1.5, 1.5, 5., 5., 3.1415927, 5., 1., 1.], (8,), float32), 
->     'custom_cnn_key': Box(0, 255, (3, 64, 64), uint8)
+>     'custom_cnn_key': Box(0, 255, (3, 64, 64), uint8),
+>     'custom_mlp_key': Box([-2.5, -2.5, -10., -10., -6.2831855, -10., -0., -0.], [2.5, 2.5, 10., 10., 6.2831855, 10., 1., 1.], (8,), float32)
 >  )
 >```

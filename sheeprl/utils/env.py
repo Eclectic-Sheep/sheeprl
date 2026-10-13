@@ -331,3 +331,19 @@ def get_dummy_env(id: str):
     else:
         raise ValueError(f"Unrecognized dummy environment: {id}")
     return env
+
+
+def actions_dim_of(action_space: gym.Space) -> Tuple[Tuple[int, ...], bool]:
+    """The dimensions of the actions (one per discrete action) and whether they are continuous, as Python integers:
+    `torch.compile` reads the NumPy ones (of `Discrete.n`) as tensors."""
+    is_continuous = isinstance(action_space, gym.spaces.Box)
+    is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
+    actions_dim = tuple(
+        int(dim)
+        for dim in (
+            action_space.shape
+            if is_continuous
+            else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
+        )
+    )
+    return actions_dim, is_continuous

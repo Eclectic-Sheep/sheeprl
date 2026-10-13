@@ -58,15 +58,15 @@
         <td>1-3080</td>
       </tr>
       <tr>
-        <td>DOA++(w/o optimizations)<sup>1</sup></td>
+        <td>DOA++</td>
         <td>7M</td>
         <td>18d 22h</td>
-        <td>2726/3328<sup>2</sup></td>
+        <td>2726/3328<sup>1</sup></td>
         <td>N.A.</td>
         <td>1-3080</td>
       </tr>
       <tr>
-        <td>Minecraft-Nav(w/o optimizations)</td>
+        <td>Minecraft-Nav</td>
         <td>8M</td>
         <td>16d 4h</td>
         <td>27% &gt;= 70<br>14% &gt;= 100</td>
@@ -77,116 +77,53 @@
   </table>
 </div>
 
-1. For comparison: 1M in 2d 7h vs 1M in 1d 5h (before and after optimizations resp.)
-2. Best [leaderboard score in DIAMBRA](https://diambra.ai/leaderboard) (11/7/2023)
+1. Best [leaderboard score in DIAMBRA](https://diambra.ai/leaderboard) (11/7/2023)
 
 #### Benchmarks
-The training times of our implementations compared to the ones of Stable Baselines3 are shown below:
+The training times of SheepRL compared to the ones of [Stable Baselines3](https://github.com/DLR-RM/stable-baselines3) on the CPU, in seconds:
 
-<div align="center">
-  <table>
-    <thead>
-      <tr>
-        <th colspan="2"></th>
-        <th>SheepRL v0.4.0</th>
-        <th>SheepRL v0.4.9</th>
-        <th>SheepRL v0.5.2<br />(Numpy Buffers)</th>
-        <th>SheepRL v0.5.5<br />(Numpy Buffers)</th>
-        <th>StableBaselines3<sup>1</sup></th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td rowspan="2"><b>PPO</b></td>
-        <td><i>1 device</i></td>
-        <td>192.31s &plusmn; 1.11</td>
-        <td>138.3s &plusmn; 0.16</td>
-        <td>80.81s &plusmn; 0.68</td>
-        <td>81.27s &plusmn; 0.47</td>
-        <td>77.21s &plusmn; 0.36</td>
-      </tr>
-      <tr>
-        <td><i>2 devices</i></td>
-        <td>85.42s &plusmn; 2.27</td>
-        <td>59.53s &plusmn; 0.78</td>
-        <td>46.09s &plusmn; 0.59</td>
-        <td>36.88s &plusmn; 0.30</td>
-        <td>N.D.</td>
-      </tr>
-      <tr>
-        <td rowspan="2"><b>A2C</b></td>
-        <td><i>1 device</i></td>
-        <td>N.D.</td>
-        <td>N.D.</td>
-        <td>N.D.</td>
-        <td>84.76s &plusmn; 0.37</td>
-        <td>84.22s &plusmn; 0.99</td>
-      </tr>
-      <tr>
-        <td><i>2 devices</i></td>
-        <td>N.D.</td>
-        <td>N.D.</td>
-        <td>N.D.</td>
-        <td>28.95s &plusmn; 0.75</td>
-        <td>N.D.</td>
-      </tr>
-      <tr>
-        <td rowspan="2"><b>SAC</b></td>
-        <td><i>1 device</i></td>
-        <td>421.37s &plusmn; 5.27</td>
-        <td>363.74s &plusmn; 3.44</td>
-        <td>318.06s &plusmn; 4.46</td>
-        <td>320.21 &plusmn; 6.29</td>
-        <td>336.06s &plusmn; 12.26</td>
-      </tr>
-      <tr>
-        <td><i>2 devices</i></td>
-        <td>264.29s &plusmn; 1.81</td>
-        <td>238.88s &plusmn; 4.97</td>
-        <td>210.07s &plusmn; 27</td>
-        <td>225.95 &plusmn; 3.65</td>
-        <td>N.D.</td>
-      </tr>
-      <tr>
-        <td><b>Dreamer V1</b></td>
-        <td><i>1 device</i></td>
-        <td>4201.23s</td>
-        <td>N.D.</td>
-        <td>2921.38s</td>
-        <td>2207.13s</td>
-        <td>N.D.</td>
-      </tr>
-      <tr>
-        <td><b>Dreamer V2</b></td>
-        <td><i>1 device</i></td>
-        <td>1874.62s</td>
-        <td>N.D.</td>
-        <td>1148.1s</td>
-        <td>906.42s</td>
-        <td>N.D.</td>
-      </tr>
-      <tr>
-        <td><b>Dreamer V3</b></td>
-        <td><i>1 device</i></td>
-        <td>2022.99s</td>
-        <td>N.D.</td>
-        <td>1378.01s</td>
-        <td>1589.30s</td>
-        <td>N.D.</td>
-      </tr>
-    </tbody>
-  </table>
-</div>
+| Algorithm | Devices | SheepRL 1.0 | Stable Baselines3 2.2.1 |
+| --------- | ------- | ----------- | ----------------------- |
+| PPO       | 1       | 23.9 ± 0.31 | 21.7 ± 0.11             |
+| PPO       | 2       | 31.8 ± 0.24 | N.D.                    |
+| A2C       | 1       | 31.6 ± 0.51 | 27.6 ± 0.09             |
+| A2C       | 2       | 36.0 ± 0.54 | N.D.                    |
+| SAC       | 1       | 136.3 ± 0.21 | 157.2 ± 1.53           |
+| SAC       | 2       | 137.6 ± 1.45 | N.D.                   |
 
-> [!NOTE]
->
-> All experiments have been run on 4 CPUs in [Lightning Studio](https://lightning.ai/).
-> All benchmarks, but the Dreamers' ones, have been run 5 times and we have taken the mean and the std of the runs. 
-> We have disabled the test function, the logging, and the checkpoints. Moreover, the models were not registered using MLFlow.
-> 
-> Dreamers' benchmarks have been run 1 time with logging and checkpoints, without running the test function.
->
-> 1. The StableBaselines3 version is `v2.2.1`, please install the package with `pip install stable-baselines3==2.2.1`
+The training times of the Dreamers on the GPU, without and with the compiled losses (`algo.compile.enabled=True`), in seconds:
+
+| Algorithm  | Eager | Compiled |
+| ---------- | ----- | -------- |
+| DreamerV1  | 98.9  | 52.9     |
+| DreamerV2  | 86.2  | 47.2     |
+| DreamerV3  | 116.2 | 43.2     |
+
+##### The setup of the benchmarks
+
+- **Hardware**: an Intel Core i7-14700KF (the CPU experiments are pinned to 4 of its efficiency cores, up to 4.3 GHz, with `taskset -c 20-23`), 32 GB of RAM and an NVIDIA GeForce RTX 5070 (12 GB, driver 580).
+- **Software**: Python 3.11, PyTorch 2.14.1 (CUDA 13.0), Lightning 2.6.6, Gymnasium 1.3.0 and NumPy 2.4.6. Stable Baselines3 2.2.1 runs in its own environment, with Gymnasium 0.29 and NumPy 1.26.
+- **SheepRL versions**: the CPU results on 1 device were measured with SheepRL 1.0.0rc2; the CPU results on 2 devices and the Dreamer results with SheepRL 1.0.0rc1, and haven't been measured again since.
+- **Runs**: the CPU experiments run 5 times each, and the tables report the mean and the standard deviation of the runs, the first one (cold start) excluded. The Dreamers run once each; the compiled ones after a first run that fills the cache of `torch.compile`.
+- **Timing**: the wall time of the whole run for SheepRL, including the start of Hydra and Fabric (about 0.6 s); from the creation of the environments to the end of the training for Stable Baselines3.
+
+The experiments are the `exp=<algorithm>_benchmarks` configs (`sheeprl/configs/exp`), without the test, the logging, the checkpoints and the registration of the models, except the logging and the checkpoints of the Dreamers:
+
+| Config | Environment | Envs per process | Policy steps | Main settings |
+| ------ | ----------- | ---------------- | ------------ | ------------- |
+| `ppo_benchmarks` | `CartPole-v1` | 1 | 65536 | rollouts of 128 steps, minibatches of 64, 10 epochs |
+| `a2c_benchmarks` | `CartPole-v1` | 1 | 65536 | rollouts of 5 steps |
+| `sac_benchmarks` | `LunarLanderContinuous-v3` (`-v2` in Stable Baselines3) | 4 | 65536 | batches of 256, one gradient step per iteration (`run_benchmarks: True`), learning starts after 100 steps |
+| `dreamer_v1_benchmarks`, `dreamer_v2_benchmarks`, `dreamer_v3_benchmarks` | `MsPacmanNoFrameskip-v4` | 1 | 16384 | tiny models (8 dense units, a recurrent state of 8, a stochastic state of 4, 4×4 discrete in V2 and V3, CNN channel multiplier 2), a buffer of 16384 steps, replay ratio 1/16 after 1024 steps, `32-true` precision |
+
+```bash
+# On the CPU (2 devices: fabric.devices=2 fabric.strategy=ddp)
+taskset -c 20-23 sheeprl exp=ppo_benchmarks
+# On the GPU (eager: algo.compile.enabled=False)
+sheeprl exp=dreamer_v3_benchmarks fabric.accelerator=cuda algo.compile.enabled=True
+```
+
+With these small models, 2 devices on 4 cores are not faster than 1: synchronizing the gradients costs more than splitting the work saves. `benchmarks/benchmark.py` and `benchmarks/benchmark_sb3.py` time a run of SheepRL and of Stable Baselines3.
 
 ## What
 
@@ -195,7 +132,7 @@ The algorithms sheeped by sheeprl out-of-the-box are:
 
 | Algorithm                 | Recurrent          | Vector obs         | Pixel obs          | Status             |
 | ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ |
-| A2C                       | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
+| A2C                       | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | A3C                       | :x:                | :heavy_check_mark: | :x:                | :construction:     |
 | PPO                       | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
@@ -231,8 +168,12 @@ The actions supported by sheeprl agents are:
 | Plan2Explore (Dreamer V2) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | Plan2Explore (Dreamer V3) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 
+> [!NOTE]
+>
+> The Dreamers and Plan2Explore play the bounded continuous actions in [-1, 1]: with `algo.normalize_actions=True` (their default), the `sheeprl.envs.wrappers.NormalizeAction` wrapper rescales them to the bounds of the action space of the environment.
+
 The environments supported by sheeprl are:
-| Algorithm          | Installation command         | More info                                       | Status             |
+| Environment        | Installation command         | More info                                       | Status             |
 | ------------------ | ---------------------------- | ----------------------------------------------- | ------------------ |
 | Classic Control    | `pip install sheeprl`           |                                                 | :heavy_check_mark: |
 | Box2D              | `pip install sheeprl[box2d]`    | Please install first `swig` with `pip install swig` | :heavy_check_mark: |
@@ -253,6 +194,8 @@ We want to provide a framework for RL algorithms that is at the same time simple
 Moreover, in many RL repositories, the RL algorithm is tightly coupled with the environment, making it harder to extend them beyond the gym interface. We want to provide a framework that allows to easily decouple the RL algorithm from the environment, so that it can be used with any environment.
 
 ## How to use it
+
+> Upgrading from sheeprl 0.x? See [howto/migrate_to_v1.md](./howto/migrate_to_v1.md).
 
 ### Installation
 
@@ -423,21 +366,23 @@ https://github.com/Eclectic-Sheep/sheeprl/assets/7341604/46ad4acd-180d-449d-b46a
 
 What you run is the PPO algorithm with the default configuration. But you can also change the configuration by passing arguments to the script.
 
-For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `--num_envs` argument:
+For example, in the default configuration, the number of parallel environments is 4. Let's try to change it to 8 by passing the `env.num_envs` argument:
 
 ```bash
 sheeprl exp=ppo env=gym env.id=CartPole-v1 env.num_envs=8
 ```
 
-All the available arguments, with their descriptions, are listed in the `sheeprl/config` directory. You can find more information about the hierarchy of configs [here](./howto/run_experiments.md).
+All the available arguments, with their descriptions, are listed in the `sheeprl/configs` directory. You can find more information about the hierarchy of configs [here](./howto/configs.md).
 
 ### Running with Lightning Fabric
 
-To run the algorithm with Lightning Fabric, you need to specify the Fabric parameters through the CLI. For example, to run the PPO algorithm with 4 parallel environments on 2 nodes, you can run:
+To run the algorithm with Lightning Fabric, you need to specify the Fabric parameters through the CLI. For example, to run the PPO algorithm on 2 processes on the CPU, each with 4 parallel environments, you can run:
 
 ```bash
 sheeprl fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2 exp=ppo env=gym env.id=CartPole-v1
 ```
+
+Every process plays in its own environments and trains its own copy of the agent: the processes start from the same weights, and the gradients are averaged over the processes at every optimizer step.
 
 You can check the available parameters for Lightning Fabric [here](https://lightning.ai/docs/fabric/stable/api/fabric_args.html).
 
@@ -461,32 +406,85 @@ The repository is structured as follows:
   - `agent`: optional, contains the implementation of the agent.
   - `loss.py`: contains the implementation of the loss functions of the algorithm.
   - `utils.py`: contains utility functions for the algorithm.
+  - `evaluate.py`: contains the evaluation function of the algorithm, used by `sheeprl-eval`.
 - `configs`: contains the default configs of the algorithms.
+- `core`: contains the training loop shared by all the algorithms, and the interface that every algorithm implements.
 - `data`: contains the implementation of the data buffers.
 - `envs`: contains the implementation of the environment wrappers.
 - `models`: contains the implementation of some standard models (building blocks), like the multi-layer perceptron (MLP) or a simple convolutional network (NatureCNN)
 - `utils`: contains utility functions for the framework.
 
-#### Training loop
+## :gear: How SheepRL works
 
-The agent interacts with the environment and executes the training loop.
+### From the command line to the algorithm
+
+```bash
+sheeprl exp=ppo env=gym env.id=CartPole-v1 algo.total_steps=100000
+```
+
+1. [Hydra](https://hydra.cc) composes the configuration from `sheeprl/configs`: the `exp` file chooses the groups (`algo`, `env`, `buffer`, `fabric`, `metric`, `checkpoint`, ...) and overrides some of their keys, and every key can be overridden from the command line.
+2. `sheeprl.cli.run` checks the configuration, creates the [Lightning Fabric](https://lightning.ai/docs/fabric/stable/) of the run (`fabric.accelerator`, `fabric.devices`, `fabric.strategy`, `fabric.precision`), starts one process per device and seeds them.
+3. Every process calls the `main()` of the algorithm named by `algo.name`, registered with the `@register_algorithm()` decorator. `main()` creates the algorithm and hands it to the training loop shared by every algorithm, `sheeprl.core.run`; when the training ends, it tests the agent (`algo.run_test=True`) and registers its models (`model_manager.disabled=False`).
+
+### The training loop
+
+Every process has its own environments and its own copy of the agent, which interacts with the environments and executes the training loop.
 
 <p align="center">
   <img src="./assets/images/sheeprl_coupled.png">
 </p>
 
-The algorithm is implemented in the `<algorithm>.py` file.
+Every iteration of `sheeprl.core.run(fabric, cfg, algo)`:
 
-There are 2 functions inside this script:
+1. **plays**: the `Collector` (`sheeprl.core.Collector`) steps the environments `algo.steps_per_iteration` times with the actions the policy of the algorithm chooses for the current observations (random actions before `algo.learning_starts` for the off-policy algorithms), and the writer of the algorithm writes every step in the *store* of the collected data (the rollout of the on-policy algorithms, the replay buffer of the off-policy ones). The collector resets the memory of the policy (e.g. a recurrent state, `Policy.reset_state`) for the environments that start a new episode, counts the policy steps (`TrainSchedule`) and logs the episodes that have ended;
+2. **trains**: `algo.batches()` yields one batch per gradient step and `algo.train_step()` does the step, returning its metrics. The on-policy algorithms train on their rollout (epochs × minibatches); the off-policy ones start after `algo.learning_starts` policy steps (optionally with `algo.per_rank_pretrain_steps` gradient steps first) and then do `algo.replay_ratio` gradient steps per policy step (`TrainSchedule`);
+3. **logs and saves**: the metrics are aggregated on the device and read on the host once every `metric.log_every` policy steps, and a checkpoint is saved every `checkpoint.every` policy steps (`Cadence`).
 
-- `main()`: initializes all the components of the algorithm, and executes the interactions with the environment. Once enough data is collected, the training loop is executed by calling the `train()` function.
-- `train()`: executes the training loop. It samples a batch of data from the buffer, computes the loss, and updates the parameters of the agent.
+### The environments
+
+The collector steps the environments through an `Environment` (`sheeprl.core.Environment`): the `num_envs` environments of the process, with their current observations (`obs`), `step(actions)`, `random_actions()`, `reset()` and `close()`. Every step returns an `EnvStep`: the observations the actions were chosen from and the next ones, the rewards, `terminated` and `truncated`, the last observations of the episodes that have just ended (`final_obs`: an environment whose episode ends starts the next one in the same step), the environments created again after a crash (`restarted`), the episodes that have just ended (`episodes`) and the `info` of the environments, which neither the training loop nor the writers read.
+
+`GymEnvironment` implements it with the gymnasium environments created by `make_env` from the `env` configs, seeded differently on every process. Another backend only has to return the same `EnvStep`s: the algorithms, the logging and the checkpoints don't change.
+
+### The interface of an algorithm
+
+An algorithm is implemented in its `<algorithm>.py` file, as a subclass of `sheeprl.core.Algorithm` with the following methods:
+
+- `build()`: creates the training state (modules, optimizers, ...) and the store of the collected data, a `ReplayStore`: a `ReplayBuffer` and its sampler (`sheeprl.core.rollout_store` for the rollout of the on-policy algorithms, read by the `EpochSampler` of the minibatches of an update; `sheeprl.core.transition_store` for the replay buffer of the off-policy algorithms trained on single steps, `sheeprl.core.sequence_store` for the one of the algorithms trained on sequences).
+- `policy()`: returns the `Policy` that plays in the environments, sharing its weights with the trained modules: `act(obs, greedy)` returns an `Act`, the actions to play in the environments (`env_actions`) with the columns to store (e.g. the actions one-hot, their log-probabilities, the values) and anything else the writer needs (`extras`); `random(env)` returns random actions, `init_states(num_envs)` creates the memory of the policy (e.g. a recurrent state) before the first step and `reset_state(env_idxes)` forgets it for the environments that start a new episode, which reset themselves. The policy modules of the algorithms implement it (e.g. `class PPOPolicy(nn.Module, Policy)`), so it can also be compiled or exported.
+- `writer()`: returns the `Writer`, whose `write(store, step, act)` writes a step of the environments (the `EnvStep`) played with the actions `act` in the store.
+- `batches()`: prepares the training data of an iteration and yields one batch per gradient step.
+- `train_step()`: executes one gradient step on a batch and returns the metrics to log, as tensors.
+- `end_iteration()`: optional, updates what changes once per iteration (e.g. annealed coefficients).
+- `test()`: plays a test episode with the trained policy (`sheeprl.core.run_test`, the same for every algorithm), at the end of the training and to evaluate a checkpoint.
+
+Its class attributes tell the loop how to drive it: `steps_per_iteration` (e.g. the rollout length of the on-policy algorithms, 1 for the off-policy ones), `off_policy` (training on a replay buffer, with the learning starts and the replay ratio above), `random_warmup` (random actions until `algo.learning_starts`, e.g. not when finetuning a policy) and `restart_crashed_envs` (a crashed environment is created again instead of stopping the run).
+
+Every algorithm of SheepRL (A2C, PPO, PPO Recurrent, SAC, DroQ, SAC-AE, DreamerV1, DreamerV2, DreamerV3, DreamerV3.5 and the exploration and finetuning of Plan2Explore) is implemented this way: the environments, the logging, the checkpoints and the resuming of a run are the same for all of them.
+
+### Distributed training
+
+The modules are not wrapped by `DistributedDataParallel`: every process computes the gradients on its own data, and `update` (`sheeprl.core.update`) averages them over the processes before every optimizer step. The processes start from the same weights, so they stay identical. Every process samples its own replay buffer, and the processes of an on-policy algorithm do the same number of gradient steps, even with rollouts split into different numbers of minibatches.
+
+### Compiling the losses
+
+With `algo.compile.enabled=True`, the losses of the algorithm (forward and backward passes) are compiled with `torch.compile`, also with several processes. With `algo.compile.mode=reduce-overhead` (the default), the compiled losses run as CUDA graphs in the `32-true` and `bf16-mixed` precisions (the other precisions use the default mode), which removes most of the cost of launching their many small kernels. With `algo.compile.policy=True` (the default), the step of the policy that plays in the environments is compiled too; the optimizer steps are not compiled.
+
+The losses are written so that they compile into graphs that don't wait for the GPU: they don't read tensors on the host (`.item()`, an `if` on a tensor), their shapes don't depend on the data (e.g. masked sums instead of boolean indexing, and the minibatches of PPO Recurrent padded to a few sizes), and the recurrent layers are unrolled from their weights while compiling, since `torch.compile` doesn't trace `nn.LSTM` and `nn.GRU`.
+
+Compiling takes from a few seconds (PPO, SAC) to a few minutes (the Dreamers) at the start of the run. Then, on an RTX 5070 in `32-true`, a gradient step of the default experiments is from about 1.2× (PPO on Atari and SAC-AE, on pixels) and 1.4-1.9× (the Dreamers) to 2.8× (PPO on CartPole) faster. CUDA graphs reserve more memory: when a large model doesn't fit, `algo.compile.mode=null` compiles without them.
+
+### Checkpoints, resuming and evaluation
+
+The training state is a `TrainState` dataclass: each of its fields (modules, optimizers, annealed coefficients, ...) is saved in the checkpoints and restored when a run is resumed. The evaluation (`sheeprl-eval`) and the registration of the models from a checkpoint (`sheeprl-registration`) restore it in the same way, with `sheeprl.core.load_trained_state`.
+
+A resumed run starts from the iteration after the one of its checkpoint. The replay buffer of an off-policy run is saved in the checkpoints when `buffer.checkpoint=True`: a run resumed with it trains right away, without playing random actions again; without it, it first fills a new one, playing its policy for `algo.learning_starts` policy steps.
 
 ## Algorithms implementation
 
 You can check inside the folder of each algorithm the `README.md` file for the details about the implementation.
 
-All algorithms are kept as simple as possible, in a [CleanRL](https://github.com/vwxyzjn/cleanrl) fashion. But to allow for more flexibility and also more clarity, we tried to abstract away anything that is not strictly related to the training loop of the algorithm.
+All algorithms are kept as simple as possible, in a [CleanRL](https://github.com/vwxyzjn/cleanrl) fashion. But to allow for more flexibility and also more clarity, we tried to abstract away anything that is not strictly related to the algorithm: the environments, the logging, the checkpoints and the resuming of a run are handled by the shared training loop, and the `core` folder also provides the helpers for the device, the precision and the optimizer steps (`setup_module`, `autocast` and `update`).
 
 For example, we decided to create a `models` folder with already-made models that can be composed to create the model of the agent.
 
@@ -498,13 +496,21 @@ For the buffer implementation, we choose to use a wrapper around a dictionary of
 
 To enable a simple way to work with numpy memory-mapped arrays, we implemented the `sheeprl.utils.memmap.MemmapArray`, a container that handles the memory-mapped arrays.
 
-This flexibility makes it very simple to implement, with the classes `ReplayBuffer`, `SequentialReplayBuffer`, `EpisodeBuffer`, and `EnvIndependentReplayBuffer`, all the buffers needed for on-policy and off-policy algorithms.
+Every algorithm stores its steps in a single kind of storage, the `ReplayBuffer`: the steps of every environment, with a write pointer per environment (`add` with `env_idxes` writes some environments only, e.g. the first steps of the ones that ended an episode). What the training reads from it is decided by the samplers of `sheeprl.data.samplers`, which draw the steps of the samples with their own random number generator and let the buffer gather them:
+
+- `TransitionSampler`: single steps (SAC, DroQ, SAC-AE);
+- `SequenceSampler`: sequences of consecutive steps of a single environment (the Dreamers, Plan2Explore);
+- `EpisodeSampler`: sequences inside the episodes that ended, with their ends prioritized with `buffer.prioritize_ends` (DreamerV2 with `buffer.type=episode`);
+- `CuriousSequenceSampler`: sequences drawn by the priorities of [Curious Replay](https://arxiv.org/abs/2306.15934), from the number of trainings on their steps and the losses of the world model on them (DreamerV3 and DreamerV3.5 with `buffer.curious.enabled=True`);
+- `EpochSampler`: the minibatches of the epochs of an on-policy update (PPO, A2C, PPO-recurrent).
+
+The off-policy algorithms train on a `sheeprl.data.store.ReplayStore`: a storage and a sampler, whose batches go to the device of the training. The store is saved in the checkpoints with its sampler, whose generator a resumed run continues. With `buffer.prefetch` the next batches are sampled in a thread while the training uses the current ones, and with `buffer.on_device` the storage is kept in the memory of the device, where its batches are gathered (see the [configs howto](./howto/configs.md#buffer)).
 
 ### :mag: Technical details
 
 The shape of the Numpy arrays in the dictionary is `(T, B, *)`, where `T` is the number of timesteps, `B` is the number of parallel environments, and `*` is the shape of the data.
 
-For the `ReplayBuffer` to be used as a RolloutBuffer, the proper `buffer_size` must be specified. For example, for PPO, the `buffer_size` must be `[T, B]`, where `T` is the number of timesteps and `B` is the number of parallel environments.
+The on-policy algorithms (A2C, PPO and PPO Recurrent) store their rollout in a `ReplayBuffer` with `T` equal to `algo.rollout_steps` and `B` equal to `env.num_envs`, in a `ReplayStore` (`sheeprl.core.rollout_store`). For A2C and PPO, `buffer.size` must be equal to `algo.rollout_steps`.
 
 ## :bow: Contributing
 
