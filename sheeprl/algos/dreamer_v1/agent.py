@@ -1,15 +1,16 @@
 from __future__ import annotations
 
-import copy
-from typing import Any, Dict, Optional, Sequence, Tuple
+import math
+from functools import partial
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
 import numpy as np
 import torch
+import torch.nn.functional as F
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from sympy import Union
 from torch import Tensor, nn
 
 from sheeprl.algos.dreamer_v1.utils import compute_stochastic_state
@@ -17,15 +18,63 @@ from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
+from sheeprl.algos.dreamer_v2.utils import init_weights as dv2_init_weights
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
-from sheeprl.utils.fabric import get_single_device_fabric
-from sheeprl.utils.utils import init_weights
+from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
+
+# The initialization of the layers of Keras, which the official implementation uses: the uniform Glorot initializer
+# for the kernels, zero biases
+init_weights = partial(dv2_init_weights, mode="uniform")
 
 # In order to use the hydra.utils.get_class method, in this way the user can
 # specify in the configs the name of the class without having to know where
 # to go to retrieve the class
-Actor = DV2Actor
 MinedojoActor = DV2MinedojoActor
+
+
+class Actor(DV2Actor):
+    """The actor of DreamerV1: the one of DreamerV2 (`sheeprl.algos.dreamer_v2.agent.Actor`), whose continuous actions
+    come by default (`distribution.type=auto`) from a tanh-transformed normal, as in the official implementation
+    (`ActionDecoder` of https://github.com/danijar/dreamer), with the standard deviation `init_std` before the tanh
+    when the network outputs zero (the actor of DreamerV2 adds `init_std` itself to the output before the softplus)."""
+
+    def __init__(
+        self,
+        latent_state_size: int,
+        actions_dim: Sequence[int],
+        is_continuous: bool,
+        distribution_cfg: Dict[str, Any],
+        init_std: float = 5.0,
+        min_std: float = 1e-4,
+        dense_units: int = 400,
+        activation: nn.Module = nn.ELU,
+        mlp_layers: int = 4,
+        layer_norm: bool = False,
+        expl_amount: float = 0.0,
+        expl_decay: float = 0.0,
+        expl_min: float = 0.0,
+    ) -> None:
+        super().__init__(
+            latent_state_size=latent_state_size,
+            actions_dim=actions_dim,
+            is_continuous=is_continuous,
+            distribution_cfg=distribution_cfg,
+            init_std=init_std,
+            min_std=min_std,
+            dense_units=dense_units,
+            activation=activation,
+            mlp_layers=mlp_layers,
+            layer_norm=layer_norm,
+            expl_amount=expl_amount,
+            expl_decay=expl_decay,
+            expl_min=expl_min,
+        )
+        if is_continuous and distribution_cfg.get("type", "auto").lower() == "auto":
+            self.distribution = "tanh_normal"
+        if self.distribution == "tanh_normal":
+            # The inverse of the softplus of `init_std` (`raw_init_std` of the official implementation)
+            self.init_std = torch.tensor(math.log(math.expm1(init_std)))
 
 
 class RecurrentModel(nn.Module):
@@ -43,6 +92,15 @@ class RecurrentModel(nn.Module):
         super().__init__()
         self.mlp = nn.Sequential(nn.Linear(input_size, recurrent_state_size), activation())
         self.rnn = nn.GRU(recurrent_state_size, recurrent_state_size)
+        # The initialization of the `GRUCell` of Keras: the uniform Glorot initializer for the weights of the inputs,
+        # an orthogonal matrix for the ones of the recurrent state, zero biases
+        nn.init.xavier_uniform_(self.rnn.weight_ih_l0)
+        nn.init.orthogonal_(self.rnn.weight_hh_l0)
+        nn.init.zeros_(self.rnn.bias_ih_l0)
+        nn.init.zeros_(self.rnn.bias_hh_l0)
+        # The weights of the GRU, for the compiled step: `torch.compile` doesn't trace the code that reaches `nn.GRU`
+        # (a tuple: they stay the weights of the GRU, also in the state dict)
+        self._gru_weights = (self.rnn.weight_ih_l0, self.rnn.bias_ih_l0, self.rnn.weight_hh_l0, self.rnn.bias_hh_l0)
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tuple[Tensor, Tensor]:
         """
@@ -56,9 +114,26 @@ class RecurrentModel(nn.Module):
             the computed recurrent output and recurrent state.
         """
         feat = self.mlp(input)
+        if torch.compiler.is_compiling():
+            # `torch.compile` doesn't trace `nn.GRU`: the same step of the GRU, from its weights
+            recurrent_state = gru_step(feat, recurrent_state, *self._gru_weights)
+            return recurrent_state, recurrent_state
         self.rnn.flatten_parameters()
         out, recurrent_state = self.rnn(feat, recurrent_state)
         return out, recurrent_state
+
+
+def gru_step(
+    input: Tensor, hidden: Tensor, weight_ih: Tensor, bias_ih: Tensor, weight_hh: Tensor, bias_hh: Tensor
+) -> Tensor:
+    """One step of a single-layer `nn.GRU` (the recurrent state after `input`), computed from its weights: the reset
+    and update gates and the candidate state, in the order of PyTorch."""
+    input_reset, input_update, input_candidate = F.linear(input, weight_ih, bias_ih).chunk(3, -1)
+    hidden_reset, hidden_update, hidden_candidate = F.linear(hidden, weight_hh, bias_hh).chunk(3, -1)
+    reset = torch.sigmoid(input_reset + hidden_reset)
+    update = torch.sigmoid(input_update + hidden_update)
+    candidate = torch.tanh(input_candidate + reset * hidden_candidate)
+    return (1 - update) * candidate + update * hidden
 
 
 class RSSM(nn.Module):
@@ -100,6 +175,7 @@ class RSSM(nn.Module):
         recurrent_state: Tensor,
         action: Tensor,
         embedded_obs: Tensor,
+        is_first: Tensor,
     ) -> Tuple[Tensor, Tensor, Tensor, Tuple[Tensor, Tensor], Tuple[Tensor, Tensor]]:
         """
         Perform one step of the dynamic learning:
@@ -116,6 +192,8 @@ class RSSM(nn.Module):
             recurrent_state (Tensor): a tuple representing the recurrent state of the recurrent model.
             action (Tensor): the action taken by the agent.
             embedded_obs (Tensor): the embedded observations provided by the environment.
+            is_first (Tensor): if this is the first step in the episode: the step starts from the zero state, as the
+                player does at the start of an episode.
 
         Returns:
             The recurrent state (Tensor): the recurrent state of the recurrent model.
@@ -128,6 +206,9 @@ class RSSM(nn.Module):
             The prior mean and std (Tuple[Tensor, Tensor]): the predicted mean and std of
             the distribution of the prior state.
         """
+        action = (1 - is_first) * action
+        posterior = (1 - is_first) * posterior
+        recurrent_state = (1 - is_first) * recurrent_state
         recurrent_out, recurrent_state = self.recurrent_model(torch.cat((posterior, action), -1), recurrent_state)
         prior_state_mean_std, prior = self._transition(recurrent_out)
         posterior_mean_std, posterior = self._representation(recurrent_state, embedded_obs)
@@ -231,6 +312,9 @@ class PlayerDV1(nn.Module):
         device (str | torch.device): the device where the model is stored.
         actor_type (str, optional): which actor the player is using ('task' or 'exploration').
             Default to None.
+        min_std (float): the minimum standard deviation of the posterior, as in the world model
+            (`algo.world_model.min_std`).
+            Default to 0.1.
     """
 
     def __init__(
@@ -245,6 +329,7 @@ class PlayerDV1(nn.Module):
         recurrent_state_size: int,
         device: str | torch.device,
         actor_type: str | None = None,
+        min_std: float = 0.1,
     ) -> None:
         super().__init__()
         self.encoder = encoder
@@ -257,6 +342,7 @@ class PlayerDV1(nn.Module):
         self.recurrent_state_size = recurrent_state_size
         self.device = device
         self.actor_type = actor_type
+        self.min_std = min_std
 
     def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
         """Initialize the states and the actions for the ended environments.
@@ -319,7 +405,7 @@ class PlayerDV1(nn.Module):
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
         _, self.stochastic_state = compute_stochastic_state(
-            self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)),
+            self.representation_model(torch.cat((self.recurrent_state, embedded_obs), -1)), min_std=self.min_std
         )
         actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
         self.actions = torch.cat(actions, -1)
@@ -503,45 +589,36 @@ def build_agent(
     if critic_state:
         critic.load_state_dict(critic_state)
 
-    # Create the player agent
+    # Setup models with Fabric
+    world_model.encoder = setup_module(fabric, world_model.encoder)
+    world_model.observation_model = setup_module(fabric, world_model.observation_model)
+    world_model.reward_model = setup_module(fabric, world_model.reward_model)
+    world_model.rssm.recurrent_model = setup_module(fabric, world_model.rssm.recurrent_model)
+    world_model.rssm.representation_model = setup_module(fabric, world_model.rssm.representation_model)
+    world_model.rssm.transition_model = setup_module(fabric, world_model.rssm.transition_model)
+    if world_model.continue_model:
+        world_model.continue_model = setup_module(fabric, world_model.continue_model)
+    actor = setup_module(fabric, actor)
+    critic = setup_module(fabric, critic)
+
+    # The player plays with the modules of the agent, without the wrappers of the distributed training. A copy with the
+    # weights tied lost them on CUDA, where the GRU moves its weights into a new buffer at every forward
+    # (`flatten_parameters`): the player played with the initial recurrent model for the whole training
     fabric_player = get_single_device_fabric(fabric)
     player = PlayerDV1(
-        copy.deepcopy(world_model.encoder),
-        copy.deepcopy(world_model.rssm.recurrent_model),
-        copy.deepcopy(world_model.rssm.representation_model),
-        copy.deepcopy(actor),
+        fabric_player.setup_module(world_model.encoder.module),
+        fabric_player.setup_module(world_model.rssm.recurrent_model.module),
+        fabric_player.setup_module(world_model.rssm.representation_model.module),
+        fabric_player.setup_module(actor.module),
         actions_dim,
         cfg.env.num_envs,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         fabric_player.device,
+        min_std=cfg.algo.world_model.min_std,
     )
-
-    # Setup models with Fabric
-    world_model.encoder = fabric.setup_module(world_model.encoder)
-    world_model.observation_model = fabric.setup_module(world_model.observation_model)
-    world_model.reward_model = fabric.setup_module(world_model.reward_model)
-    world_model.rssm.recurrent_model = fabric.setup_module(world_model.rssm.recurrent_model)
-    world_model.rssm.representation_model = fabric.setup_module(world_model.rssm.representation_model)
-    world_model.rssm.transition_model = fabric.setup_module(world_model.rssm.transition_model)
-    if world_model.continue_model:
-        world_model.continue_model = fabric.setup_module(world_model.continue_model)
-    actor = fabric.setup_module(actor)
-    critic = fabric.setup_module(critic)
-
-    # Setup the player agent with a single-device Fabric
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.recurrent_model = fabric_player.setup_module(player.recurrent_model)
-    player.representation_model = fabric_player.setup_module(player.representation_model)
-    player.actor = fabric_player.setup_module(player.actor)
-
-    # Tie weights between the agent and the player
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.recurrent_model.parameters(), player.recurrent_model.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.representation_model.parameters(), player.representation_model.parameters()):
-        p.data = agent_p.data
-    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
-        p.data = agent_p.data
+    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # states in its attributes. Its exploration noise (`get_exploration_actions`) is added uncompiled: it changes with
+    # the policy step
+    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
     return world_model, actor, critic, player

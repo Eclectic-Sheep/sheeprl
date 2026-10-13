@@ -39,7 +39,7 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
@@ -72,7 +72,7 @@ def test(agent: "RecurrentPPOPlayer", fabric: Fabric, cfg: Dict[str, Any], log_d
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
     if cfg.metric.log_level > 0:
-        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
+        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, policy_step)
     env.close()
 
 
@@ -91,11 +91,13 @@ def log_models_from_checkpoint(
         if is_continuous
         else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
     )
-    agent = build_agent(fabric, actions_dim, is_continuous, cfg, env.observation_space, state["agent"])
+    agent, _ = build_agent(fabric, actions_dim, is_continuous, cfg, env.observation_space, state["agent"])
 
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["agent"] = mlflow.pytorch.log_model(unwrap_fabric(agent), artifact_path="agent")
+        model_info["agent"] = mlflow.pytorch.log_model(
+            unwrap_fabric(agent), name="agent", serialization_format="pickle"
+        )
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

@@ -8,9 +8,11 @@ from lightning import Fabric
 from torch import Tensor
 
 from sheeprl.algos.ppo.agent import PPOPlayer
+from sheeprl.algos.ppo.utils import log_models_from_checkpoint  # noqa: F401 (A2C trains the agent of PPO)
 from sheeprl.utils.env import make_env
 
 AGGREGATOR_KEYS = {"Rewards/rew_avg", "Game/ep_len_avg", "Loss/value_loss", "Loss/policy_loss"}
+MODELS_TO_REGISTER = {"agent"}
 
 
 def prepare_obs(
@@ -21,7 +23,7 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
@@ -48,5 +50,5 @@ def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
     if cfg.metric.log_level > 0:
-        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
+        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, policy_step)
     env.close()

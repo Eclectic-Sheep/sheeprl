@@ -99,6 +99,7 @@ def test(
     log_dir: str,
     test_name: str = "",
     greedy: bool = True,
+    policy_step: int = 0,
 ):
     """Test the model on the environment with the frozen model.
 
@@ -135,7 +136,7 @@ def test(
         cumulative_rew += reward
     fabric.print("Test - Reward:", cumulative_rew)
     if cfg.metric.log_level > 0 and len(fabric.loggers) > 0:
-        fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, 0)
+        fabric.logger.log_metrics({"Test/cumulative_reward": cumulative_rew}, policy_step)
     env.close()
 
 
@@ -157,7 +158,7 @@ def init_weights(m):
         denoms = (in_num + out_num) / 2.0
         scale = 1.0 / denoms
         std = np.sqrt(scale) / 0.87962566103423978
-        nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0, b=2.0)
+        nn.init.trunc_normal_(m.weight.data, mean=0.0, std=std, a=-2.0 * std, b=2.0 * std)
         if hasattr(m.bias, "data"):
             m.bias.data.fill_(0.0)
     elif isinstance(m, nn.LayerNorm):
@@ -203,7 +204,7 @@ def log_models_from_checkpoint(
         if is_continuous
         else (env.action_space.nvec.tolist() if is_multidiscrete else [env.action_space.n])
     )
-    world_model, actor, critic, target_critic = build_agent(
+    world_model, actor, critic, target_critic, _ = build_agent(
         fabric,
         actions_dim,
         is_continuous,
@@ -215,7 +216,6 @@ def log_models_from_checkpoint(
         state["target_critic"],
     )
     moments = Moments(
-        fabric,
         cfg.algo.actor.moments.decay,
         cfg.algo.actor.moments.max,
         cfg.algo.actor.moments.percentile.low,
@@ -226,10 +226,18 @@ def log_models_from_checkpoint(
     # Log the model, create a new run if `cfg.run_id` is None.
     model_info = {}
     with mlflow.start_run(run_id=cfg.run.id, experiment_id=cfg.experiment.id, run_name=cfg.run.name, nested=True) as _:
-        model_info["world_model"] = mlflow.pytorch.log_model(unwrap_fabric(world_model), artifact_path="world_model")
-        model_info["actor"] = mlflow.pytorch.log_model(unwrap_fabric(actor), artifact_path="actor")
-        model_info["critic"] = mlflow.pytorch.log_model(unwrap_fabric(critic), artifact_path="critic")
-        model_info["target_critic"] = mlflow.pytorch.log_model(target_critic, artifact_path="target_critic")
-        model_info["moments"] = mlflow.pytorch.log_model(moments, artifact_path="moments")
+        model_info["world_model"] = mlflow.pytorch.log_model(
+            unwrap_fabric(world_model), name="world_model", serialization_format="pickle"
+        )
+        model_info["actor"] = mlflow.pytorch.log_model(
+            unwrap_fabric(actor), name="actor", serialization_format="pickle"
+        )
+        model_info["critic"] = mlflow.pytorch.log_model(
+            unwrap_fabric(critic), name="critic", serialization_format="pickle"
+        )
+        model_info["target_critic"] = mlflow.pytorch.log_model(
+            unwrap_fabric(target_critic), name="target_critic", serialization_format="pickle"
+        )
+        model_info["moments"] = mlflow.pytorch.log_model(moments, name="moments", serialization_format="pickle")
         mlflow.log_dict(cfg.to_log, "config.json")
     return model_info

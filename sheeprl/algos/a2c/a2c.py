@@ -1,4 +1,3 @@
-import os
 import warnings
 from typing import Any, Dict
 
@@ -8,19 +7,20 @@ import numpy as np
 import torch
 from lightning.fabric import Fabric
 from torch.utils.data import BatchSampler, DistributedSampler, RandomSampler
-from torchmetrics import SumMetric
 
 from sheeprl.algos.a2c.loss import policy_loss
 from sheeprl.algos.ppo.agent import PPOAgent, build_agent
 from sheeprl.algos.ppo.loss import entropy_loss, value_loss
-from sheeprl.algos.ppo.utils import normalize_obs, prepare_obs, test
+from sheeprl.algos.ppo.utils import bootstrap_truncated, normalize_obs, prepare_obs, test
 from sheeprl.data import ReplayBuffer
-from sheeprl.utils.env import make_env
+from sheeprl.utils import fs
+from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
+from sheeprl.utils.fabric import all_reduce_gradients, autocast_cache_scope
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import gae, normalize_tensor, save_configs
+from sheeprl.utils.timer import phase_timer, timer, training_timer
+from sheeprl.utils.utils import gae_function, normalize_tensor, save_configs
 
 
 def train(
@@ -50,6 +50,7 @@ def train(
         sampler = RandomSampler(indexes)
     sampler = BatchSampler(sampler, batch_size=cfg.algo.per_rank_batch_size, drop_last=False)
 
+    params = [p for group in optimizer.param_groups for p in group["params"]]
     optimizer.zero_grad(set_to_none=True)
     if cfg.buffer.share_data:
         sampler.sampler.set_epoch(0)
@@ -61,18 +62,13 @@ def train(
     # of the sum of the actions log-probabilities gradients' multiplied by the advantages,
     # we do not do that, instead we take the overall sum (or mean, depending on the loss reduction).
     # This is achieved by accumulating the gradients and calling the backward method only at the end.
-    for i, batch_idxes in enumerate(sampler):
+    for batch_idxes in sampler:
         batch = {k: v[batch_idxes] for k, v in data.items()}
         normalized_obs = normalize_obs(
             batch, cfg.algo.cnn_keys.encoder, cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder
         )
 
-        # is_accumulating is True for every i except for the last one
-        is_accumulating = i < len(sampler) - 1
-
-        with fabric.no_backward_sync(agent.feature_extractor, enabled=is_accumulating), fabric.no_backward_sync(
-            agent.actor, enabled=is_accumulating
-        ), fabric.no_backward_sync(agent.critic, enabled=is_accumulating):
+        with autocast_cache_scope(fabric):
             _, logprobs, entropy, new_values = agent(
                 normalized_obs, torch.split(batch["actions"], agent.actions_dim, dim=-1)
             )
@@ -101,20 +97,21 @@ def train(
 
             # Total loss
             loss = pg_loss + cfg.algo.vf_coef * v_loss + cfg.algo.ent_coef * ent_loss
-            fabric.backward(loss)
-
-        if not is_accumulating:
-            if cfg.algo.max_grad_norm > 0.0:
-                fabric.clip_gradients(agent, optimizer, max_norm=cfg.algo.max_grad_norm)
-            optimizer.step()
+        fabric.backward(loss, inputs=params)
 
         # Update metrics
         if aggregator and not aggregator.disabled:
             aggregator.update("Loss/policy_loss", pg_loss.detach())
             aggregator.update("Loss/value_loss", v_loss.detach())
 
+    # One optimizer step with the gradients of all the minibatches, averaged over the processes
+    all_reduce_gradients(fabric, params)
+    if cfg.algo.max_grad_norm > 0.0:
+        fabric.clip_gradients(None, optimizer, max_norm=cfg.algo.max_grad_norm)
+    optimizer.step()
 
-@register_algorithm(decoupled=False)
+
+@register_algorithm()
 def main(fabric: Fabric, cfg: Dict[str, Any]):
     if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
@@ -125,13 +122,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         )
 
     # Initialize Fabric
+    gae = gae_function(cfg.algo.gae_method)
     rank = fabric.global_rank
     world_size = fabric.world_size
     device = fabric.device
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from)
+        state = fs.load_checkpoint(fabric, cfg.checkpoint.resume_from, weights_only=False)
 
     # Create Logger. This will create the logger only on the
     # rank-0 process
@@ -139,11 +137,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, log_root=cfg.log_root)
     fabric.print(f"Log dir: {log_dir}")
 
     # Environment setup
-    vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
+    vectorized_env = get_vector_env_cls(cfg.env.sync_env)
     envs = vectorized_env(
         [
             make_env(
@@ -207,16 +205,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
-    if cfg.buffer.size < cfg.algo.rollout_steps:
+    # The buffer holds one rollout: every row is trained on, and the returns are computed over all of them
+    if cfg.buffer.size != cfg.algo.rollout_steps:
         raise ValueError(
-            f"The size of the buffer ({cfg.buffer.size}) cannot be lower "
-            f"than the rollout steps ({cfg.algo.rollout_steps})"
+            f"The size of the buffer ({cfg.buffer.size}) must be equal "
+            f"to the rollout steps ({cfg.algo.rollout_steps})"
         )
     rb = ReplayBuffer(
         cfg.buffer.size,
         cfg.env.num_envs,
         memmap=cfg.buffer.memmap,
-        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
         obs_keys=obs_keys,
     )
 
@@ -233,6 +232,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
     policy_step = state["iter_num"] * cfg.env.num_envs * cfg.algo.rollout_steps if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
+    # The policy step since which the interaction is timed: a resumed run times only its own steps, not the ones
+    # played after the last log of the run it resumes
+    last_timed_step = policy_step
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_iter = int(cfg.env.num_envs * cfg.algo.rollout_steps * world_size)
     total_iters = cfg.algo.total_steps // policy_steps_per_iter if not cfg.dry_run else 1
@@ -265,7 +267,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Get the first environment observation and start the optimization
     step_data = {}
-    next_obs = envs.reset(seed=cfg.seed)[0]  # [N_envs, N_obs]
+    next_obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]  # [N_envs, N_obs]
     for k in obs_keys:
         if k in cfg.algo.cnn_keys.encoder:
             next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
@@ -278,40 +280,27 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
                 # Measure environment interaction time: this considers both the model forward
                 # to get the action given the observation and the time taken into the environment
-                with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+                with phase_timer("Time/env_interaction_time"):
                     # Sample an action given the observation received by the environment
                     torch_obs = prepare_obs(
                         fabric, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
                     )
                     actions, logprobs, values = player(torch_obs)
-                    if is_continuous:
-                        real_actions = torch.stack(actions, -1).cpu().numpy()
-                    else:
-                        real_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+                    # The continuous tanh-normal actions are stored before the tanh, and played after it
+                    real_actions = player.env_actions(actions).cpu().numpy()
                     actions = torch.cat(actions, -1).cpu().numpy()
 
                     # Single environment step
                     obs, rewards, terminated, truncated, info = envs.step(real_actions.reshape(envs.action_space.shape))
-                    truncated_envs = np.nonzero(truncated)[0]
-                    if len(truncated_envs) > 0:
-                        real_next_obs = {
-                            k: torch.empty(
-                                len(truncated_envs),
-                                *observation_space[k].shape,
-                                dtype=torch.float32,
-                                device=device,
-                            )
-                            for k in obs_keys
-                        }
-                        for i, truncated_env in enumerate(truncated_envs):
-                            for k, v in info["final_observation"][truncated_env].items():
-                                torch_v = torch.as_tensor(v, dtype=torch.float32, device=device)
-                                if k in cfg.algo.cnn_keys.encoder:
-                                    torch_v = torch_v.view(-1, *v.shape[-2:])
-                                    torch_v = torch_v / 255.0 - 0.5
-                                real_next_obs[k][i] = torch_v
-                        vals = player.get_values(real_next_obs).cpu().numpy()
-                        rewards[truncated_envs] += cfg.algo.gamma * vals.reshape(rewards[truncated_envs].shape)
+
+                    def final_values(env_idxes: np.ndarray) -> np.ndarray:
+                        final_obs = {k: np.stack([info["final_obs"][i][k] for i in env_idxes]) for k in obs_keys}
+                        final_obs = prepare_obs(
+                            fabric, final_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=len(env_idxes)
+                        )
+                        return player.get_values(final_obs).cpu().numpy()
+
+                    rewards = bootstrap_truncated(rewards, terminated, truncated, final_values, cfg.algo.gamma)
                     dones = np.logical_or(terminated, truncated).reshape(cfg.env.num_envs, -1).astype(np.uint8)
                     rewards = rewards.reshape(cfg.env.num_envs, -1)
 
@@ -337,16 +326,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     step_data[k] = _obs[np.newaxis]
                     next_obs[k] = _obs
 
-                if cfg.metric.log_level > 0 and "final_info" in info:
-                    for i, agent_ep_info in enumerate(info["final_info"]):
-                        if agent_ep_info is not None:
-                            ep_rew = agent_ep_info["episode"]["r"]
-                            ep_len = agent_ep_info["episode"]["l"]
-                            if aggregator and "Rewards/rew_avg" in aggregator:
-                                aggregator.update("Rewards/rew_avg", ep_rew)
-                            if aggregator and "Game/ep_len_avg" in aggregator:
-                                aggregator.update("Game/ep_len_avg", ep_len)
-                            fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
+                if cfg.metric.log_level > 0:
+                    for i, ep_rew, ep_len in get_episode_stats(info):
+                        if aggregator and "Rewards/rew_avg" in aggregator:
+                            aggregator.update("Rewards/rew_avg", ep_rew)
+                        if aggregator and "Game/ep_len_avg" in aggregator:
+                            aggregator.update("Game/ep_len_avg", ep_len)
+                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew}")
 
         # Transform the data into PyTorch Tensors
         local_data = rb.to_tensor(dtype=None, device=device, from_numpy=cfg.buffer.from_numpy)
@@ -377,8 +363,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             # Flatten the first two dimensions: [Buffer_Size, Num_Envs]
             gathered_data = {k: v.flatten(start_dim=0, end_dim=1).float() for k, v in local_data.items()}
 
-        with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
+        with training_timer(fabric.device):
             train(fabric, agent, optimizer, gathered_data, aggregator, cfg)
+        # One gradient step of every process (the gradients of the minibatches are accumulated)
         train_step += world_size
 
         # Log metrics
@@ -401,7 +388,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
                     fabric.log(
                         "Time/sps_env_interaction",
-                        ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                        ((policy_step - last_timed_step) * cfg.env.action_repeat)
                         / timer_metrics["Time/env_interaction_time"],
                         policy_step,
                     )
@@ -409,6 +396,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             # Reset counters
             last_log = policy_step
+            last_timed_step = policy_step
             last_train = train_step
 
         # Checkpoint model
@@ -425,12 +413,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
             }
-            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
+            ckpt_path = fs.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call("on_checkpoint_coupled", fabric=fabric, ckpt_path=ckpt_path, state=state)
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(player, fabric, cfg, log_dir)
+        test(player, fabric, cfg, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.ppo.utils import log_models

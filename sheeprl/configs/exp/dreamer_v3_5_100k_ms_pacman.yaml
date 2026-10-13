@@ -1,0 +1,35 @@
+# @package _global_
+
+# DreamerV3 (Nature version) on Atari 100k, as in the paper: 400K environment steps (frames) with an action repeat of 4,
+# 1 environment, a replay ratio of 128 and the 200M model
+
+defaults:
+  - dreamer_v3_5
+  - _self_
+
+# Experiment
+seed: 5
+
+# Environment
+env:
+  num_envs: 1
+  max_episode_steps: 27000
+  id: MsPacmanNoFrameskip-v4
+
+# Checkpoint
+checkpoint:
+  every: 10000
+
+# Buffer
+buffer:
+  # The whole run (the replay capacity of the paper is 5M)
+  size: 100000
+  checkpoint: True
+
+# Algorithm
+algo:
+  # The policy steps: the 400K environment steps divided by the action repeat
+  total_steps: 100000
+  learning_starts: 1024
+  # The replay ratio of 128 of the paper: 128 / (16 * 64) (the official configuration has 256)
+  replay_ratio: 0.125

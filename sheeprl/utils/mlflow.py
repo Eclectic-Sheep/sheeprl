@@ -7,7 +7,7 @@ import os
 import warnings
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Callable, Dict, Literal, Sequence, Set
+from typing import Any, Callable, Dict, Literal
 
 import gymnasium as gym
 import torch
@@ -103,9 +103,10 @@ class MlflowModelManager(AbstractModelManager):
         """
         model_version = mlflow.register_model(model_uri=model_location, name=model_name, tags=tags)
         self.fabric.print(f"Registered model {model_name} with version {model_version.version}")
-        registered_model_description = self.client.get_registered_model(model_name).description
+        registered_model_description = self.client.get_registered_model(model_name).description or ""
 
-        if model_version.version == "1":
+        # The version is a string or an integer, depending on the store
+        if str(model_version.version) == "1":
             header = "# MODEL CHANGELOG\n"
         else:
             header = ""
@@ -160,8 +161,8 @@ class MlflowModelManager(AbstractModelManager):
         self.fabric.print(f"Transitioning model {model_name} version {version} from {previous_stage} to {stage}")
         model_version = self.client.transition_model_version_stage(name=model_name, version=version, stage=stage)
         new_stage = model_version.current_stage
-        registered_model_description = self.client.get_registered_model(model_name).description
-        single_model_description = self.client.get_model_version(model_name, version).description
+        registered_model_description = self.client.get_registered_model(model_name).description or ""
+        single_model_description = self.client.get_model_version(model_name, version).description or ""
 
         new_model_description = "## **Transition:**\n"
         new_model_description += f"### Version {model_version.version} from {previous_stage} to {new_stage}\n"
@@ -202,7 +203,7 @@ class MlflowModelManager(AbstractModelManager):
         self.fabric.print(f"Deleting model {model_name} version {version}")
         self.client.delete_model_version(model_name, version)
 
-        registered_model_description = self.client.get_registered_model(model_name).description
+        registered_model_description = self.client.get_registered_model(model_name).description or ""
 
         new_model_description = "## **Deletion:**\n"
         new_model_description += f"### Version {version} from stage: {model_stage}\n"
@@ -243,26 +244,30 @@ class MlflowModelManager(AbstractModelManager):
             return None
 
         best_run: Run | None = None
-        best_run_artifacts: Sequence[str] | Set[str] | None = None
+        best_run_models: Dict[str, str] = {}
         models_path = [v["path"] for v in models_info.values()]
         for run in runs:
-            run_artifacts = [x.path for x in self.client.list_artifacts(run.info.run_id) if x.path in models_path]
+            # The models logged by the run, by the name they were logged with
+            run_models = {
+                m.name: m.model_uri
+                for m in self.client.search_logged_models(
+                    experiment_ids=[experiment_id], filter_string=f"source_run_id = '{run.info.run_id}'"
+                )
+                if m.name in models_path
+            }
 
-            if len(run_artifacts) == 0 or run.data.metrics.get(metric) is None:
+            if len(run_models) == 0 or run.data.metrics.get(metric) is None:
                 # If we don't find the given model path, skip this run
                 # If the run has not the target metric, skip this run
                 continue
 
-            if best_run is None:
+            if (
+                best_run is None
+                or (mode == "max" and run.data.metrics[metric] > best_run.data.metrics[metric])
+                or (mode == "min" and run.data.metrics[metric] < best_run.data.metrics[metric])
+            ):
                 best_run = run
-                best_run_artifacts = set(run_artifacts)
-                continue
-            if mode == "max":
-                if run.data.metrics[metric] > best_run.data.metrics[metric]:
-                    best_run = run
-            else:
-                if run.data.metrics[metric] < best_run.data.metrics[metric]:
-                    best_run = run
+                best_run_models = run_models
 
         if best_run is None:
             self.fabric.print(f"No runs found for experiment {experiment_name} with the given metric")
@@ -270,10 +275,12 @@ class MlflowModelManager(AbstractModelManager):
 
         models_version = {}
         for k, v in models_info.items():
-            if v["path"] in best_run_artifacts:
-                best_model_uri = f"runs:/{best_run.info.run_id}/{v['path']}"
+            if v["path"] in best_run_models:
                 models_version[k] = self.register_model(
-                    model_location=best_model_uri, model_name=v["name"], tags=v["tags"], description=v["description"]
+                    model_location=best_run_models[v["path"]],
+                    model_name=v["name"],
+                    tags=v["tags"],
+                    description=v["description"],
                 )
 
         return models_version
@@ -286,12 +293,12 @@ class MlflowModelManager(AbstractModelManager):
             version (int): The version of the model.
             output_path (str): The path to save the model to.
         """
-        artifact_uri = self.client.get_model_version_download_uri(model_name, version)
-        self.fabric.print(f"Downloading model {model_name} version {version} from {artifact_uri} to {output_path}")
+        self.fabric.print(f"Downloading model {model_name} version {version} to {output_path}")
         if not os.path.exists(output_path):
             self.fabric.print(f"Creating output path {output_path}")
             os.makedirs(output_path)
-        mlflow.artifacts.download_artifacts(artifact_uri=artifact_uri, dst_path=output_path)
+        # The files of the model in `output_path`: the weights are in `data/model.pth`
+        mlflow.artifacts.download_artifacts(artifact_uri=f"models:/{model_name}/{version}", dst_path=output_path)
 
     @staticmethod
     def _generate_description(description: str | None = None) -> str:
@@ -377,7 +384,7 @@ def register_model_from_checkpoint(
     # Register the models specified in the configs
     for k, cfg_model in cfg.model_manager.models.items():
         model_manager.register_model(
-            models_info[k]._model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
+            models_info[k].model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
         )
 
 
@@ -423,5 +430,5 @@ def register_model(
         )
     for k, cfg_model in cfg_model_manager.models.items():
         model_manager.register_model(
-            models_info[k]._model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
+            models_info[k].model_uri, cfg_model["model_name"], cfg_model["description"], cfg_model["tags"]
         )

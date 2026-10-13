@@ -9,8 +9,17 @@ import copy
 from typing import Any, Dict, Optional, SupportsFloat, Tuple
 
 import gymnasium as gym
-import minerl
 import numpy as np
+
+# MineRL 0.4.4 uses the `np.float`, `np.int` and `np.bool` aliases, which have been removed from NumPy
+if not hasattr(np, "float"):
+    np.float = np.float32
+if not hasattr(np, "int"):
+    np.int = np.int64
+if not hasattr(np, "bool"):
+    np.bool = bool
+
+import minerl  # noqa: E402
 from minerl.herobraine.hero import mc
 
 from sheeprl.envs.minerl_envs.navigate import CustomNavigate
@@ -45,7 +54,7 @@ ITEM_ID_TO_NAME = dict(enumerate(mc.ALL_ITEMS))
 ITEM_NAME_TO_ID = dict(zip(mc.ALL_ITEMS, range(N_ALL_ITEMS)))
 
 
-class MineRLWrapper(gym.Wrapper):
+class MineRLWrapper(gym.Env):
     """Wrapper for the MineRL environments.
 
     Args:
@@ -95,7 +104,7 @@ class MineRLWrapper(gym.Wrapper):
             kwargs.pop("extreme", None)
 
         env = CUSTOM_ENVS[id.lower()](break_speed=break_speed_multiplier, **kwargs).make()
-        super().__init__(env)
+        self.env = env
 
         # Creation a mapping between the discrete action space and the MineRL action space.
         # The mapping will have the following form:
@@ -320,3 +329,6 @@ class MineRLWrapper(gym.Wrapper):
 
     def render(self, mode: Optional[str] = "rgb_array"):
         return self.env.render(self.render_mode)
+
+    def close(self) -> None:
+        self.env.close()

@@ -1,5 +1,0 @@
-defaults:
-  - sac
-  - _self_
-
-name: sac_decoupled

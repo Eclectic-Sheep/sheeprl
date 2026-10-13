@@ -1,6 +1,6 @@
 _target_: lightning.fabric.loggers.TensorBoardLogger
 name: ${run_name}
-root_dir: logs/runs/${root_dir}
+root_dir: ${log_root}/${root_dir}
 version: null
 default_hp_metric: True
 prefix: ""

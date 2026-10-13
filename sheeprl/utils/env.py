@@ -1,6 +1,9 @@
 import os
+import shutil
+import tempfile
 import warnings
-from typing import Any, Callable, Dict, Optional
+from functools import partial
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
 
 import cv2
 import gymnasium as gym
@@ -13,14 +16,81 @@ from sheeprl.envs.wrappers import (
     FrameStack,
     GrayscaleRenderWrapper,
     MaskVelocityWrapper,
+    NormalizeAction,
     RewardAsObservationWrapper,
 )
-from sheeprl.utils.imports import _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE, _IS_DMC_AVAILABLE
+from sheeprl.utils import fs
+from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE
 
+if _IS_ATARI_AVAILABLE:
+    import ale_py
+
+    # Since gymnasium 1.0 the Atari environments are registered by `ale-py`
+    gym.register_envs(ale_py)
 if _IS_DIAMBRA_ARENA_AVAILABLE and _IS_DIAMBRA_AVAILABLE:
     from sheeprl.envs.diambra import DiambraWrapper
-if _IS_DMC_AVAILABLE:
-    pass
+
+
+def get_vector_env_cls(sync_env: bool) -> Callable[[Sequence[Callable[[], gym.Env]]], gym.vector.VectorEnv]:
+    """Return the vectorized environment class (`SyncVectorEnv` or `AsyncVectorEnv`) configured
+    with the same-step autoreset mode: when an episode ends, the sub-environment is reset in the same step,
+    the returned observation is the first one of the new episode and the last observation and info
+    of the finished episode are stored in `info["final_obs"]` and `info["final_info"]` respectively.
+
+    Args:
+        sync_env (bool): whether to use the `SyncVectorEnv` (True) or the `AsyncVectorEnv` (False).
+
+    Returns:
+        The callable that creates the vectorized environment given the list of environment thunks.
+    """
+    vector_env_cls = gym.vector.SyncVectorEnv if sync_env else gym.vector.AsyncVectorEnv
+    return partial(vector_env_cls, autoreset_mode=gym.vector.AutoresetMode.SAME_STEP)
+
+
+def get_episode_stats(info: Dict[str, Any]) -> List[Tuple[int, float, int]]:
+    """Return the statistics of the episodes ended in the last step of a vectorized environment, as recorded
+    by the `gymnasium.wrappers.RecordEpisodeStatistics` wrapper in `info["final_info"]`.
+
+    Args:
+        info (Dict[str, Any]): the info returned by the `step` method of a vectorized environment
+            created with `get_vector_env_cls`.
+
+    Returns:
+        The list of (environment index, episode return, episode length) of the ended episodes.
+    """
+    final_info = info.get("final_info", {})
+    if "episode" not in final_info:
+        return []
+    episode = final_info["episode"]
+    return [(int(i), float(episode["r"][i]), int(episode["l"][i])) for i in np.flatnonzero(final_info["_episode"])]
+
+
+def _is_wrapped_by(env: gym.Env, wrapper_cls: Type[gym.Wrapper]) -> bool:
+    while isinstance(env, gym.Wrapper):
+        if isinstance(env, wrapper_cls):
+            return True
+        env = env.env
+    return False
+
+
+class UploadedRecordVideo(gym.wrappers.RecordVideo):
+    """`RecordVideo` for a run logged on a remote filesystem (`log_root`): the videos are written in a local temporary
+    directory, then copied to `remote_folder` and removed, at the end of every recording."""
+
+    def __init__(self, env: gym.Env, remote_folder: str, **kwargs: Any) -> None:
+        super().__init__(env, tempfile.mkdtemp(prefix="sheeprl_videos_"), disable_logger=True, **kwargs)
+        self.remote_folder = remote_folder
+
+    def stop_recording(self) -> None:
+        super().stop_recording()
+        for name in os.listdir(self.video_folder):
+            local_path = os.path.join(self.video_folder, name)
+            fs.upload(local_path, fs.join(self.remote_folder, name))
+            os.remove(local_path)
+
+    def close(self) -> None:
+        super().close()
+        shutil.rmtree(self.video_folder, ignore_errors=True)
 
 
 def make_env(
@@ -51,11 +121,6 @@ def make_env(
     """
 
     def thunk() -> gym.Env:
-        try:
-            env_spec = gym.spec(cfg.env.id).entry_point
-        except Exception:
-            env_spec = ""
-
         if "diambra" in cfg.env.wrapper._target_ and not cfg.env.sync_env:
             if cfg.env.wrapper.diambra_settings.pop("splash_screen", True):
                 warnings.warn(
@@ -72,10 +137,16 @@ def make_env(
             instantiate_kwargs["rank"] = rank + vector_env_idx
         env = hydra.utils.instantiate(cfg.env.wrapper, **instantiate_kwargs, _convert_="all")
 
-        # action repeat
+        # The bounded continuous actions exposed as [-1, 1], the range of the actor (the Dreamers). Read with a
+        # default: the configurations saved before the option don't have it, and their checkpoints play as trained
+        if cfg.algo.get("normalize_actions", False) and isinstance(env.action_space, gym.spaces.Box):
+            env = NormalizeAction(env)
+
+        # action repeat: the Atari environments repeat the action through the `frame_skip`
+        # argument of the `AtariPreprocessing` wrapper
         if (
             cfg.env.action_repeat > 1
-            and "atari" not in env_spec
+            and not _is_wrapped_by(env, gym.wrappers.AtariPreprocessing)
             and (not (_IS_DIAMBRA_ARENA_AVAILABLE and _IS_DIAMBRA_AVAILABLE) or not isinstance(env, DiambraWrapper))
         ):
             env = ActionRepeat(env, cfg.env.action_repeat)
@@ -107,11 +178,16 @@ def make_env(
                         f"is allowed in {cfg.env.id}, "
                         f"only the first one is kept: {cfg.algo.cnn_keys.encoder[0]}"
                     )
+                cnn_key = cfg.algo.cnn_keys.encoder[0]
                 if encoder_mlp_keys_length > 0:
-                    gym.wrappers.pixel_observation.STATE_KEY = cfg.algo.mlp_keys.encoder[0]
-                env = gym.wrappers.PixelObservationWrapper(
-                    env, pixels_only=encoder_mlp_keys_length == 0, pixel_keys=(cfg.algo.cnn_keys.encoder[0],)
-                )
+                    env = gym.wrappers.AddRenderObservation(
+                        env, render_only=False, render_key=cnn_key, obs_key=cfg.algo.mlp_keys.encoder[0]
+                    )
+                else:
+                    env = gym.wrappers.AddRenderObservation(env, render_only=True)
+                    env = gym.wrappers.TransformObservation(
+                        env, lambda obs: {cnn_key: obs}, gym.spaces.Dict({cnn_key: env.observation_space})
+                    )
             else:
                 if encoder_mlp_keys_length > 1:
                     warnings.warn(
@@ -120,8 +196,9 @@ def make_env(
                         f"only the first one is kept: {cfg.algo.mlp_keys.encoder[0]}"
                     )
                 mlp_key = cfg.algo.mlp_keys.encoder[0]
-                env = gym.wrappers.TransformObservation(env, lambda obs: {mlp_key: obs})
-                env.observation_space = gym.spaces.Dict({mlp_key: env.observation_space})
+                env = gym.wrappers.TransformObservation(
+                    env, lambda obs: {mlp_key: obs}, gym.spaces.Dict({mlp_key: env.observation_space})
+                )
         elif isinstance(env.observation_space, gym.spaces.Box) and 2 <= len(env.observation_space.shape) <= 3:
             # Pixel only observation
             if encoder_cnn_keys_length > 1:
@@ -136,8 +213,9 @@ def make_env(
                     "Please set at least one cnn key in the config file: `algo.cnn_keys.encoder=[your_cnn_key]`"
                 )
             cnn_key = cfg.algo.cnn_keys.encoder[0]
-            env = gym.wrappers.TransformObservation(env, lambda obs: {cnn_key: obs})
-            env.observation_space = gym.spaces.Dict({cnn_key: env.observation_space})
+            env = gym.wrappers.TransformObservation(
+                env, lambda obs: {cnn_key: obs}, gym.spaces.Dict({cnn_key: env.observation_space})
+            )
 
         if (
             len(
@@ -195,11 +273,16 @@ def make_env(
 
             return obs
 
-        env = gym.wrappers.TransformObservation(env, transform_obs)
-        for k in cnn_keys:
-            env.observation_space[k] = gym.spaces.Box(
-                0, 255, (1 if cfg.env.grayscale else 3, cfg.env.screen_size, cfg.env.screen_size), np.uint8
-            )
+        transformed_cnn_space = gym.spaces.Box(
+            0, 255, (1 if cfg.env.grayscale else 3, cfg.env.screen_size, cfg.env.screen_size), np.uint8
+        )
+        env = gym.wrappers.TransformObservation(
+            env,
+            transform_obs,
+            gym.spaces.Dict(
+                {k: transformed_cnn_space if k in cnn_keys else v for k, v in env.observation_space.spaces.items()}
+            ),
+        )
 
         if cnn_keys is not None and len(cnn_keys) > 0 and cfg.env.frame_stack > 1:
             if cfg.env.frame_stack_dilation <= 0:
@@ -222,10 +305,11 @@ def make_env(
         if cfg.env.capture_video and rank == 0 and vector_env_idx == 0 and run_name is not None:
             if cfg.env.grayscale:
                 env = GrayscaleRenderWrapper(env)
-            env = gym.experimental.wrappers.RecordVideoV0(
-                env, os.path.join(run_name, prefix + "_videos" if prefix else "videos"), disable_logger=True
-            )
-            env.metadata["render_fps"] = env.frames_per_sec
+            video_folder = fs.join(run_name, prefix + "_videos" if prefix else "videos")
+            if fs.is_url(video_folder):
+                env = UploadedRecordVideo(env, video_folder)
+            else:
+                env = gym.wrappers.RecordVideo(env, video_folder, disable_logger=True)
         return env
 
     return thunk

@@ -8,7 +8,6 @@ defaults:
 
 # Experiment
 seed: 5
-total_steps: 5000000
 
 # Environment
 env:
@@ -30,6 +29,7 @@ buffer:
 
 # Algorithm
 algo:
+  total_steps: 5000000
   learning_starts: 65536
   replay_ratio: 0.125
   cnn_keys:

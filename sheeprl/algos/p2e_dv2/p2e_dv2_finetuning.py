@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import copy
-import os
-import pathlib
 import warnings
 from typing import Any, Dict
 
@@ -11,19 +9,19 @@ import hydra
 import numpy as np
 import torch
 from lightning.fabric import Fabric
-from torchmetrics import SumMetric
 
 from sheeprl.algos.dreamer_v2.dreamer_v2 import train
-from sheeprl.algos.dreamer_v2.utils import prepare_obs, test
+from sheeprl.algos.dreamer_v2.utils import build_buffer, build_optimizer, prepare_obs, sample_batches, test
 from sheeprl.algos.p2e_dv2.agent import build_agent
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, SequentialReplayBuffer
-from sheeprl.utils.env import make_env
+from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.utils import fs
+from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import Ratio, save_configs, unwrap_fabric
+from sheeprl.utils.timer import phase_timer, timer, training_timer
+from sheeprl.utils.utils import off_policy_schedule, save_configs, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -38,14 +36,14 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     rank = fabric.global_rank
     world_size = fabric.world_size
 
-    ckpt_path = pathlib.Path(cfg.checkpoint.exploration_ckpt_path)
+    ckpt_path = cfg.checkpoint.exploration_ckpt_path
     resume_from_checkpoint = cfg.checkpoint.resume_from is not None
 
     # Finetuning that was interrupted for some reason
     if resume_from_checkpoint:
-        state = fabric.load(pathlib.Path(cfg.checkpoint.resume_from))
+        state = fs.load_checkpoint(fabric, cfg.checkpoint.resume_from, weights_only=False)
     else:
-        state = fabric.load(ckpt_path)
+        state = fs.load_checkpoint(fabric, ckpt_path, weights_only=False)
 
     # All the models must be equal to the ones of the exploration phase
     cfg.algo.gamma = exploration_cfg.algo.gamma
@@ -63,6 +61,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     cfg.algo.critic = exploration_cfg.algo.critic
     # Rewards must be clipped in the same way as during exploration
     cfg.env.clip_rewards = exploration_cfg.env.clip_rewards
+    # And the actions normalized in the same way (an exploration saved before the option didn't normalize them)
+    cfg.algo.normalize_actions = exploration_cfg.algo.get("normalize_actions", False)
     # If the buffer is the same of the exploration, then we have to mantain the same number
     # of environments:
     #   - With less environments, you will replay too old experiences after a certain number of steps.
@@ -83,11 +83,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, log_root=cfg.log_root)
     fabric.print(f"Log dir: {log_dir}")
 
     # Environment setup
-    vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
+    vectorized_env = get_vector_env_cls(cfg.env.sync_env)
     envs = vectorized_env(
         [
             make_env(
@@ -150,15 +150,9 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     )
 
     # Optimizers
-    world_optimizer = hydra.utils.instantiate(
-        cfg.algo.world_model.optimizer, params=world_model.parameters(), _convert_="all"
-    )
-    actor_task_optimizer = hydra.utils.instantiate(
-        cfg.algo.actor.optimizer, params=actor_task.parameters(), _convert_="all"
-    )
-    critic_task_optimizer = hydra.utils.instantiate(
-        cfg.algo.critic.optimizer, params=critic_task.parameters(), _convert_="all"
-    )
+    world_optimizer = build_optimizer(cfg.algo.world_model.optimizer, world_model.parameters())
+    actor_task_optimizer = build_optimizer(cfg.algo.actor.optimizer, actor_task.parameters())
+    critic_task_optimizer = build_optimizer(cfg.algo.critic.optimizer, critic_task.parameters())
     world_optimizer.load_state_dict(state["world_optimizer"])
     actor_task_optimizer.load_state_dict(state["actor_task_optimizer"])
     critic_task_optimizer.load_state_dict(state["critic_task_optimizer"])
@@ -175,30 +169,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
         aggregator: MetricAggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(device)
 
     # Local data
-    buffer_size = cfg.buffer.size // int(cfg.env.num_envs * world_size) if not cfg.dry_run else 4
-    buffer_type = cfg.buffer.type.lower()
-    if buffer_type == "sequential":
-        rb = EnvIndependentReplayBuffer(
-            buffer_size,
-            n_envs=cfg.env.num_envs,
-            obs_keys=obs_keys,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-            buffer_cls=SequentialReplayBuffer,
-        )
-    elif buffer_type == "episode":
-        rb = EpisodeBuffer(
-            buffer_size,
-            minimum_episode_length=1 if cfg.dry_run else cfg.algo.per_rank_sequence_length,
-            n_envs=cfg.env.num_envs,
-            obs_keys=obs_keys,
-            prioritize_ends=cfg.buffer.prioritize_ends,
-            memmap=cfg.buffer.memmap,
-            memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
-        )
-    else:
-        raise ValueError(f"Unrecognized buffer type: must be one of `sequential` or `episode`, received: {buffer_type}")
-    if resume_from_checkpoint or (cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint):
+    rb = build_buffer(fabric, cfg, log_dir, dry_run_size=4)
+    # The buffer of the checkpoint the run resumes from, or of the exploration (a resumed run whose buffer isn't in
+    # its checkpoint fills a new one)
+    if (resume_from_checkpoint and cfg.buffer.checkpoint) or (
+        not resume_from_checkpoint and cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint
+    ):
         if isinstance(state["rb"], list) and world_size == len(state["rb"]):
             rb = state["rb"][fabric.global_rank]
         elif isinstance(state["rb"], (EnvIndependentReplayBuffer, EpisodeBuffer)):
@@ -219,20 +195,18 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     )
     policy_step = state["iter_num"] * cfg.env.num_envs if resume_from_checkpoint else 0
     last_log = state["last_log"] if resume_from_checkpoint else 0
+    # The policy step since which the interaction is timed: a resumed run times only its own steps, not the ones
+    # played after the last log of the run it resumes
+    last_timed_step = policy_step
     last_checkpoint = state["last_checkpoint"] if resume_from_checkpoint else 0
     policy_steps_per_iter = int(cfg.env.num_envs * world_size)
     total_iters = cfg.algo.total_steps // policy_steps_per_iter if not cfg.dry_run else 1
-    learning_starts = cfg.algo.learning_starts // policy_steps_per_iter if not cfg.dry_run else 0
-    prefill_steps = learning_starts - int(learning_starts > 0)
     if resume_from_checkpoint:
         cfg.algo.per_rank_batch_size = state["batch_size"] // world_size
-        learning_starts += start_iter
-        prefill_steps += start_iter
-
-    # Create Ratio class
-    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
-    if cfg.checkpoint.resume_from:
-        ratio.load_state_dict(state["ratio"])
+    # Training from `train_starts` (the finetuning plays no random actions)
+    _, train_starts, pretrain_steps, total_iters, ratio = off_policy_schedule(
+        cfg, state, start_iter, total_iters, policy_steps_per_iter, fabric.world_size
+    )
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
@@ -252,7 +226,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
     # Get the first environment observation and start the optimization
     step_data = {}
-    obs = envs.reset(seed=cfg.seed)[0]
+    obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]
     for k in obs_keys:
         step_data[k] = obs[k][np.newaxis]
     step_data["terminated"] = np.zeros((1, cfg.env.num_envs, 1))
@@ -266,14 +240,16 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     rb.add(step_data, validate_args=cfg.buffer.validate_args)
     player.init_states()
 
-    cumulative_per_rank_gradient_steps = 0
+    # The gradient steps of every process from the start of the run, also in the run it resumes (the older
+    # checkpoints don't have them)
+    cumulative_per_rank_gradient_steps = state.get("per_rank_gradient_steps", 0) if resume_from_checkpoint else 0
     for iter_num in range(start_iter, total_iters + 1):
         policy_step += policy_steps_per_iter
 
         with torch.inference_mode():
             # Measure environment interaction time: this considers both the model forward
             # to get the action given the observation and the time taken into the environment
-            with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+            with phase_timer("Time/env_interaction_time"):
                 torch_obs = prepare_obs(fabric, obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs)
                 mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
                 if len(mask) == 0:
@@ -292,23 +268,20 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                     real_actions.reshape(envs.action_space.shape)
                 )
                 dones = np.logical_or(terminated, truncated).astype(np.uint8)
-                if cfg.dry_run and buffer_type == "episode":
+                if cfg.dry_run and isinstance(rb, EpisodeBuffer):
                     dones = np.ones_like(dones)
 
-            if cfg.metric.log_level > 0 and "final_info" in infos:
-                for i, agent_ep_info in enumerate(infos["final_info"]):
-                    if agent_ep_info is not None:
-                        ep_rew = agent_ep_info["episode"]["r"]
-                        ep_len = agent_ep_info["episode"]["l"]
-                        if aggregator and not aggregator.disabled:
-                            aggregator.update("Rewards/rew_avg", ep_rew)
-                            aggregator.update("Game/ep_len_avg", ep_len)
-                        fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
+            if cfg.metric.log_level > 0:
+                for i, ep_rew, ep_len in get_episode_stats(infos):
+                    if aggregator and not aggregator.disabled:
+                        aggregator.update("Rewards/rew_avg", ep_rew)
+                        aggregator.update("Game/ep_len_avg", ep_len)
+                    fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew}")
 
             # Save the real next observation
             real_next_obs = copy.deepcopy(next_obs)
-            if "final_observation" in infos:
-                for idx, final_obs in enumerate(infos["final_observation"]):
+            if "final_obs" in infos:
+                for idx, final_obs in enumerate(infos["final_obs"]):
                     if final_obs is not None:
                         for k, v in final_obs.items():
                             real_next_obs[k][idx] = v
@@ -320,7 +293,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
             obs = next_obs
 
             step_data["terminated"] = terminated.reshape((1, cfg.env.num_envs, -1))
-            step_data["terminated"] = terminated.reshape((1, cfg.env.num_envs, -1))
+            step_data["truncated"] = truncated.reshape((1, cfg.env.num_envs, -1))
             step_data["actions"] = actions.reshape((1, cfg.env.num_envs, -1))
             step_data["rewards"] = clip_rewards_fn(rewards).reshape((1, cfg.env.num_envs, -1))
             rb.add(step_data, validate_args=cfg.buffer.validate_args)
@@ -341,38 +314,34 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 # Reset dones so that `is_first` is updated
                 for d in dones_idxes:
                     step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
-                    step_data["terminated"][0, d] = np.zeros_like(step_data["terminated"][0, d])
+                    step_data["truncated"][0, d] = np.zeros_like(step_data["truncated"][0, d])
                 # Reset internal agent states
                 player.init_states(dones_idxes)
 
         # Train the agent
-        if iter_num >= learning_starts:
-            ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
+        if iter_num >= train_starts:
+            ratio_steps = policy_step - (train_starts - 1) * policy_steps_per_iter
             per_rank_gradient_steps = ratio(ratio_steps / world_size)
+            if iter_num == train_starts:
+                # The pretraining on the filled buffer (the `pretrain` of DreamerV1 and DreamerV2)
+                per_rank_gradient_steps += pretrain_steps
             if per_rank_gradient_steps > 0:
                 if player.actor_type != "task":
                     player.actor_type = "task"
                     player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
                     for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
                         p.data = agent_p.data
-                local_data = rb.sample_tensors(
-                    batch_size=cfg.algo.per_rank_batch_size,
-                    sequence_length=cfg.algo.per_rank_sequence_length,
-                    n_samples=per_rank_gradient_steps,
-                    dtype=None,
-                    device=fabric.device,
-                    from_numpy=cfg.buffer.from_numpy,
-                )
+                # Sampled a few batches at a time
+                batches = sample_batches(fabric, cfg, rb, per_rank_gradient_steps)
                 # Start training
-                with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-                    for i in range(per_rank_gradient_steps):
+                with training_timer(fabric.device):
+                    for batch in batches:
                         if (
                             cumulative_per_rank_gradient_steps % cfg.algo.critic.per_rank_target_network_update_freq
                             == 0
                         ):
                             for cp, tcp in zip(critic_task.module.parameters(), target_critic_task.parameters()):
                                 tcp.data.copy_(cp.data)
-                        batch = {k: v[i].float() for k, v in local_data.items()}
                         train(
                             fabric,
                             world_model,
@@ -388,7 +357,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                             actions_dim=actions_dim,
                         )
                         cumulative_per_rank_gradient_steps += 1
-                    train_step += world_size
+                    # The gradient steps of all the processes
+                    train_step += world_size * per_rank_gradient_steps
 
         # Log metrics
         if cfg.metric.log_level > 0 and (policy_step - last_log >= cfg.metric.log_every or iter_num == total_iters):
@@ -415,7 +385,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
                     fabric.log(
                         "Time/sps_env_interaction",
-                        ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                        ((policy_step - last_timed_step) * cfg.env.action_repeat)
                         / timer_metrics["Time/env_interaction_time"],
                         policy_step,
                     )
@@ -423,6 +393,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
 
             # Reset counters
             last_log = policy_step
+            last_timed_step = policy_step
             last_train = train_step
 
         # Checkpoint Model
@@ -439,6 +410,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
                 "actor_task_optimizer": actor_task_optimizer.state_dict(),
                 "critic_task_optimizer": critic_task_optimizer.state_dict(),
                 "ratio": ratio.state_dict(),
+                "per_rank_gradient_steps": cumulative_per_rank_gradient_steps,
                 "iter_num": iter_num * world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * world_size,
                 "actor_exploration": actor_exploration.state_dict(),
@@ -459,7 +431,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     if fabric.is_global_zero and cfg.algo.run_test:
         player.actor_type = "task"
         player.actor = fabric_player.setup_module(unwrap_fabric(actor_task))
-        test(player, fabric, cfg, log_dir, "few-shot")
+        test(player, fabric, cfg, log_dir, "few-shot", policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.dreamer_v1.utils import log_models

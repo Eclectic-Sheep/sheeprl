@@ -13,6 +13,8 @@ algo:
 # Environmment
 env:
   frame_stack: 3
+  # The images of the official implementation (the size must be even)
+  screen_size: 84
 
 metric:
   aggregator:

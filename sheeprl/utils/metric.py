@@ -8,6 +8,7 @@ import torch
 from lightning import Fabric
 from torch import Tensor
 from torchmetrics import Metric
+from torchmetrics.aggregation import BaseAggregator
 
 
 class MetricAggregatorException(Exception):
@@ -16,6 +17,10 @@ class MetricAggregatorException(Exception):
 
 class MetricAggregator:
     """A metric aggregator class to aggregate metrics to be tracked.
+
+    The aggregation metrics (e.g. `torchmetrics.MeanMetric`) keep the NaN values, which they would otherwise drop with
+    a warning: a NaN loss is logged as NaN. A metric that got no value since the last reset is not logged.
+
     Args:
         metrics (Optional[Dict[str, Metric]]): Dict of metrics to aggregate.
     """
@@ -26,6 +31,8 @@ class MetricAggregator:
         self.metrics: Dict[str, Metric] = {}
         if metrics is not None:
             self.metrics = metrics
+            for metric in self.metrics.values():
+                keep_nan(metric)
         self._raise_on_missing = raise_on_missing
 
     def __iter__(self):
@@ -43,7 +50,7 @@ class MetricAggregator:
         """
         if not self.disabled:
             if name not in self.metrics:
-                self.metrics.setdefault(name, metric)
+                self.metrics.setdefault(name, keep_nan(metric))
             else:
                 if self._raise_on_missing:
                     raise MetricAggregatorException(f"Metric {name} already exists")
@@ -135,12 +142,22 @@ class MetricAggregator:
                             )
                         reduced_metrics[k] = reduced
 
+                    # A metric without values is NaN: not logged. Every metric is computed anyway, since with
+                    # `sync_on_compute` the computation is a collective operation of all the processes
                     is_tensor = torch.is_tensor(reduced_metrics[k])
-                    if (is_tensor and torch.isnan(reduced_metrics[k]).any()) or (
+                    is_nan = (is_tensor and torch.isnan(reduced_metrics[k]).any()) or (
                         not is_tensor and isnan(reduced_metrics[k])
-                    ):
+                    )
+                    if is_nan and v.update_count == 0:
                         reduced_metrics.pop(k, None)
         return reduced_metrics
+
+
+def keep_nan(metric: Metric) -> Metric:
+    """Make an aggregation metric keep the NaN values (`nan_strategy="disable"`), and return it."""
+    if isinstance(metric, BaseAggregator):
+        metric.nan_strategy = "disable"
+    return metric
 
 
 class RankIndependentMetricAggregator:

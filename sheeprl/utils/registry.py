@@ -5,14 +5,14 @@ from typing import Any, Callable, Dict, List
 
 # Mapping of tasks with their relative algorithms.
 # A new task can be added as:
-# tasks[module] = [..., {"name": algorithm, "entrypoint": entrypoint, "decoupled": decoupled}]
+# tasks[module] = [..., {"name": algorithm, "entrypoint": entrypoint}]
 # where `module` and `algorithm` are respectively taken from sheeprl/algos/{module}/{algorithm}.py,
 # while `entrypoint` is the decorated function
 algorithm_registry: Dict[str, List[Dict[str, Any]]] = {}
 evaluation_registry: Dict[str, List[Dict[str, Any]]] = {}
 
 
-def _register_algorithm(fn: Callable[..., Any], decoupled: bool = False) -> Callable[..., Any]:
+def _register_algorithm(fn: Callable[..., Any]) -> Callable[..., Any]:
     # lookup containing module
     if fn.__module__ == "__main__":
         return fn
@@ -22,9 +22,9 @@ def _register_algorithm(fn: Callable[..., Any], decoupled: bool = False) -> Call
     module = ".".join(module_split[:-1])
     registered_algos = algorithm_registry.get(module, None)
     if registered_algos is None:
-        algorithm_registry[module] = [{"name": algorithm, "entrypoint": entrypoint, "decoupled": decoupled}]
+        algorithm_registry[module] = [{"name": algorithm, "entrypoint": entrypoint}]
     else:
-        algorithm_registry[module].append({"name": algorithm, "entrypoint": entrypoint, "decoupled": decoupled})
+        algorithm_registry[module].append({"name": algorithm, "entrypoint": entrypoint})
 
     # add the decorated function to __all__ in algorithm
     mod = sys.modules[fn.__module__]
@@ -94,9 +94,9 @@ def _register_evaluation(fn: Callable[..., Any], algorithms: str | List[str]) ->
     return fn
 
 
-def register_algorithm(decoupled: bool = False):
+def register_algorithm():
     def inner_decorator(fn):
-        return _register_algorithm(fn, decoupled=decoupled)
+        return _register_algorithm(fn)
 
     return inner_decorator
 

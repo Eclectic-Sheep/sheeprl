@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from lightning import Fabric
 
-from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.buffers import ReplayBuffer, SequentialReplayBuffer
 from sheeprl.utils.memmap import MemmapArray
 
 
@@ -152,6 +152,19 @@ def test_replay_buffer_sample():
     assert s["next_a"].shape == tuple([2, 4, 1])
 
 
+@pytest.mark.parametrize("buffer_cls", [ReplayBuffer, SequentialReplayBuffer])
+def test_replay_buffer_sample_seed(buffer_cls):
+    data = {"a": np.arange(40, dtype=np.float32).reshape(20, 2, 1)}
+    kwargs = {"sequence_length": 3} if buffer_cls is SequentialReplayBuffer else {}
+    samples = []
+    for seed in (42, 42, 0):
+        rb = buffer_cls(20, 2, obs_keys=("a",), seed=seed)
+        rb.add(data)
+        samples.append(rb.sample(8, n_samples=2, **kwargs)["a"])
+    np.testing.assert_array_equal(samples[0], samples[1])
+    assert not np.array_equal(samples[0], samples[2])
+
+
 def test_replay_buffer_sample_one_sample_next_obs_error():
     buf_size = 5
     n_envs = 1
@@ -179,7 +192,7 @@ def test_replay_buffer_get_sample_empty_error():
     n_envs = 1
     rb = ReplayBuffer(buf_size, n_envs)
     with pytest.raises(RuntimeError, match="The buffer has not been initialized"):
-        rb._get_samples(np.zeros((1,)), sample_next_obs=True)
+        rb._get_samples(np.zeros((1,), dtype=np.intp), np.zeros((1,), dtype=np.intp), 1, 1, sample_next_obs=True)
 
 
 def test_replay_buffer_sample_next_obs_not_full():
@@ -202,6 +215,20 @@ def test_replay_buffer_sample_next_obs_full():
     s = rb.sample(10, sample_next_obs=True)
     assert s["observations"].shape == tuple([1, 10, 1])
     assert td1["observations"][-1] not in s["observations"]
+
+
+@pytest.mark.parametrize("sample_next_obs", [False, True])
+@pytest.mark.parametrize("pos", [0, 1, 4, 9])
+def test_replay_buffer_sample_full_support(sample_next_obs, pos):
+    # When the buffer is full every row can be sampled, except the last inserted one when its
+    # next observation is needed, since the row following it is the oldest one in the buffer
+    buf_size = 10
+    rb = ReplayBuffer(buf_size, 1, obs_keys=("idx",))
+    rb.add({"idx": np.arange(buf_size + pos).reshape(-1, 1, 1) % buf_size})
+    assert rb.full and rb._pos == pos
+    sampled = set(rb.sample(2000, sample_next_obs=sample_next_obs)["idx"].ravel().tolist())
+    expected = set(range(buf_size)) - ({(pos - 1) % buf_size} if sample_next_obs else set())
+    assert sampled == expected
 
 
 def test_replay_buffer_sample_full():
@@ -268,7 +295,7 @@ def test_memmap_to_file_replay_buffer():
     fabric = Fabric(devices=1, accelerator="cpu")
     ckpt_file = os.path.join(root_dir, "checkpoint", "ckpt.ckpt")
     fabric.save(ckpt_file, {"rb": rb})
-    ckpt = fabric.load(ckpt_file)
+    ckpt = fabric.load(ckpt_file, weights_only=False)
     assert (ckpt["rb"]["observations"][:10] == rb["observations"][:10]).all()
     del rb
     del ckpt
@@ -447,3 +474,33 @@ def test_setitem_error():
         rb["wrong_buffer_size"] = np.zeros((buf_size + 3, n_envs, 1))
         rb["wrong_n_envs"] = np.zeros((buf_size, n_envs - 1, 1))
         rb["wrong_dims"] = np.zeros((10,))
+
+
+@pytest.mark.parametrize("buffer_cls", [ReplayBuffer, SequentialReplayBuffer])
+@pytest.mark.parametrize("size", [1, 2, 5])
+@pytest.mark.parametrize("first", [0, 1, 2, 5, 6])
+@pytest.mark.parametrize("extra", [1, 3, 6])
+def test_an_add_of_more_steps_than_the_buffer_keeps_the_last_ones(buffer_cls, size, first, extra):
+    # The last `size` steps are kept in the rows they would take if added one at a time: an add of more steps than the
+    # buffer into a buffer with data crashed
+    rb = buffer_cls(size, 2)
+    value = lambda start, n: (np.arange(start, start + n).reshape(-1, 1, 1) * 10 + np.arange(2).reshape(1, 2, 1))
+    if first:
+        rb.add({"a": value(0, first)})
+    rb.add({"a": value(first, size + extra)})
+    total = first + size + extra
+    assert rb.full and rb._pos == total % size and rb._added == total
+    for step in range(total - size, total):
+        np.testing.assert_array_equal(rb["a"][step % size, :, 0], [step * 10, step * 10 + 1])
+
+
+def test_a_failed_add_leaves_the_buffer_as_it_was():
+    # With `validate_args`, the key 'b' not in the buffer fails the add before the key 'a' is written in the oldest row
+    rb = ReplayBuffer(3, 1)
+    rb.add({"a": np.arange(3).reshape(-1, 1, 1)})
+    with pytest.raises(KeyError, match="The buffer has no key 'b'"):
+        rb.add({"a": np.full((1, 1, 1), 99), "b": np.zeros((1, 1, 1))}, validate_args=True)
+    with pytest.raises(ValueError, match="cannot be written in rows of shape"):
+        rb.add({"a": np.full((2, 1, 2), 99)}, validate_args=True)
+    np.testing.assert_array_equal(rb["a"][:, 0, 0], [0, 1, 2])
+    assert rb._pos == 0 and rb._added == 3

@@ -53,7 +53,7 @@ ALL_TASKS_SPECS = copy.deepcopy(minedojo.tasks.ALL_TASKS_SPECS)
 # 7: destroy
 
 
-class MineDojoWrapper(gym.Wrapper):
+class MineDojoWrapper(gym.Env):
     def __init__(
         self,
         id: str,
@@ -89,7 +89,7 @@ class MineDojoWrapper(gym.Wrapper):
             break_speed_multiplier=self._break_speed_multiplier,
             **kwargs,
         )
-        super().__init__(env)
+        self.env = env
         self._inventory = {}
         self._inventory_names = None
         self._inventory_max = np.zeros(N_ALL_ITEMS)
@@ -305,3 +305,6 @@ class MineDojoWrapper(gym.Wrapper):
             else:
                 return self.env.unwrapped._prev_obs["rgb"]
         return None
+
+    def close(self) -> None:
+        self.env.close()

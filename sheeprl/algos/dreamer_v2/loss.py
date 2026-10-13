@@ -74,8 +74,8 @@ def reconstruction_loss(
         loss_rhs = torch.maximum(rhs, free_nats)
     else:
         free_nats = torch.full_like(lhs, kl_free_nats)
-        loss_lhs = torch.maximum(lhs, kl_free_nats).mean()
-        loss_rhs = torch.maximum(rhs, kl_free_nats).mean()
+        loss_lhs = torch.maximum(lhs, free_nats).mean()
+        loss_rhs = torch.maximum(rhs, free_nats).mean()
     kl_loss = kl_balancing_alpha * loss_lhs + (1 - kl_balancing_alpha) * loss_rhs
     if pc is not None and continue_targets is not None:
         continue_loss = discount_scale_factor * -pc.log_prob(continue_targets).mean()

@@ -29,5 +29,3 @@ this loss is used to update the temperature parameter of the entropy in the poli
 
 ## Agent
 For SAC, we decided to create an agent class, which is implemented in the `agent.py` file. This was made to make it easier for the user to interact with the numerous models that the SAC's algorithm uses: a policy network, two critic network, two target critic network, and the temperature parameter of the entropy.
-
-Moreover, in the decoupled version of the algorithm, this allows for only sharing the actor to the players.

@@ -2,3 +2,7 @@ every: 100
 resume_from: null
 save_last: True
 keep_last: 5
+# How the checkpoints save the memory-mapped buffers: `reference` saves the paths of their files (a resume needs them, on
+# the same node), `copy` also their data (much larger checkpoints), which a resume writes again where the files are missing
+# (e.g. on another node, without a shared filesystem)
+memmap_buffer: reference

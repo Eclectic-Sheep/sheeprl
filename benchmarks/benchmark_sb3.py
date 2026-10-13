@@ -27,13 +27,13 @@ if __name__ == "__main__":
 #     print(sb3.common.evaluation.evaluate_policy(model.policy, env))
 
 
-# Stable Baselines3 SAC - LunarLanderContinuous-v2
+# Stable Baselines3 SAC - LunarLanderContinuous-v3
 # Decomment below to run SAC benchmarks
 
 # if __name__ == "__main__":
 #     with timer("run_time", SumMetric, sync_on_compute=False):
 #         env = sb3.common.vec_env.DummyVecEnv(
-#             [lambda: gym.make("LunarLanderContinuous-v2", render_mode="rgb_array") for _ in range(4)]
+#             [lambda: gym.make("LunarLanderContinuous-v3", render_mode="rgb_array") for _ in range(4)]
 #         )
 #         model = SAC("MlpPolicy", env, verbose=0, device="cpu")
 #         model.learn(total_timesteps=1024 * 64, log_interval=None)

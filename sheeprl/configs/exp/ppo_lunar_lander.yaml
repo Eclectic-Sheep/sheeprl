@@ -1,0 +1,37 @@
+# @package _global_
+
+# PPO on LunarLander from its state vector, with the recipe of RL Baselines3 Zoo
+# (https://github.com/DLR-RM/rl-baselines3-zoo) on 4 environments and separate actor and critic networks:
+# solved (average reward above 200) in about 700k steps.
+defaults:
+  - ppo
+  - _self_
+
+# Env
+env:
+  id: LunarLander-v3
+  num_envs: 4
+
+# Algorithm
+algo:
+  total_steps: 1_000_000
+  rollout_steps: 1024
+  per_rank_batch_size: 64
+  update_epochs: 4
+  gamma: 0.999
+  gae_lambda: 0.98
+  ent_coef: 0.01
+  normalize_advantages: True
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  mlp_keys:
+    encoder: [state]
+  cnn_keys:
+    encoder: []
+
+  # No shared encoder: the actor and the critic have their own networks
+  encoder:
+    mlp_layers: 0
+
+  optimizer:
+    lr: 3e-4

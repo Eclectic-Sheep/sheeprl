@@ -5,7 +5,9 @@ First, we should install the Atari environments with:
 pip install .[atari]
 ```
 
-For more information: https://gymnasium.farama.org/environments/atari/ 
+The Atari environments are provided by the [Arcade Learning Environment](https://ale.farama.org/) (`ale-py`), which already ships the game ROMs and registers the environments in Gymnasium (e.g. `ALE/Pong-v5` or `PongNoFrameskip-v4`).
+
+For more information: https://ale.farama.org/getting-started/
 
 ## Train your agent
 
@@ -18,7 +20,6 @@ The list of selectable algorithms is given below:
 * `p2e_dv2`
 * `p2e_dv3`
 * `ppo`
-* `ppo_decoupled`
 * `sac_ae`
 
 Once you have chosen the algorithm you want to train, you can start the train, for instance, of the ppo agent by running:

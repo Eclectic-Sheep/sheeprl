@@ -2,8 +2,26 @@ from typing import Dict, Optional, Tuple
 
 import torch
 from torch import Tensor
-from torch.distributions import Distribution
+from torch.distributions import Distribution, Independent, Normal
 from torch.distributions.kl import kl_divergence
+
+
+def state_kl(p: Distribution, q: Distribution) -> Tensor:
+    """The KL divergence `KL(p || q)` of `torch.distributions.kl_divergence`, with the one of two diagonal normals (the
+    states of DreamerV1) written out with the same operations: `torch.compile` doesn't trace the dispatch of
+    `kl_divergence` on the types of the distributions."""
+    if (
+        isinstance(p, Independent)
+        and isinstance(q, Independent)
+        and isinstance(p.base_dist, Normal)
+        and isinstance(q.base_dist, Normal)
+        and p.reinterpreted_batch_ndims == q.reinterpreted_batch_ndims
+    ):
+        var_ratio = (p.base_dist.scale / q.base_dist.scale).pow(2)
+        t1 = ((p.base_dist.loc - q.base_dist.loc) / q.base_dist.scale).pow(2)
+        result = 0.5 * (var_ratio + t1 - 1 - var_ratio.log())
+        return result.reshape(result.shape[: result.dim() - p.reinterpreted_batch_ndims] + (-1,)).sum(-1)
+    return kl_divergence(p, q)
 
 
 def critic_loss(qv: Distribution, lambda_values: Tensor, discount: Tensor) -> Tensor:
@@ -66,10 +84,10 @@ def reconstruction_loss(
             Default to 3.0.
         kl_regularizer (float): scale factor of the KL divergence.
             Default to 1.0.
-        qc (Bernoulli, optional): the predicted Bernoulli distribution of the terminal steps.
-            0s for the entries that are relative to a terminal step, 1s otherwise.
+        qc (Bernoulli, optional): the predicted Bernoulli distribution of the continuation of the episodes.
             Default to None.
-        continue_targets (Tensor, optional): 1s for the entries that are relative to a terminal step, 0s otherwise.
+        continue_targets (Tensor, optional): the discount (gamma) for the steps that don't end the episode, 0 for the
+            terminal ones.
             Default to None.
         continue_scale_factor (float): the scale factor for the continue loss.
             Default to 10.
@@ -84,11 +102,11 @@ def reconstruction_loss(
     """
     observation_loss = -sum([qo[k].log_prob(observations[k]).mean() for k in qo.keys()])
     reward_loss = -qr.log_prob(rewards).mean()
-    kl = kl_divergence(posteriors_dist, priors_dist).mean()
+    kl = state_kl(posteriors_dist, priors_dist).mean()
     free_nats = torch.full_like(kl, kl_free_nats)
     state_loss = torch.max(kl, free_nats)
     if qc is not None and continue_targets is not None:
-        continue_loss = continue_scale_factor * qc.log_prob(continue_targets)
+        continue_loss = continue_scale_factor * -qc.log_prob(continue_targets).mean()
     else:
         continue_loss = torch.zeros_like(reward_loss)
     reconstruction_loss = kl_regularizer * state_loss + observation_loss + reward_loss + continue_loss

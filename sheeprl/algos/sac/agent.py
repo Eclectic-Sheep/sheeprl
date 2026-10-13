@@ -11,7 +11,8 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from sheeprl.models.models import MLP
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -182,11 +183,7 @@ class SACAgent(nn.Module):
     def critics(self, critics: Sequence[Union[SACCritic, _FabricModule]]) -> None:
         self._qfs = nn.ModuleList(critics)
 
-        # Create target critic unwrapping the DDP module from the critics to prevent
-        # `RuntimeError: DDP Pickling/Unpickling are only supported when using DDP with the default process group.
-        # That is, when you have called init_process_group and have not passed process_group
-        # argument to DDP constructor`.
-        # This happens when we're using the decoupled version of SAC for example
+        # The target critics are copies of the critics without their wrappers (Fabric, DDP)
         qfs_unwrapped_modules = []
         for critic in critics:
             if hasattr(critic, "module"):
@@ -257,14 +254,19 @@ class SACAgent(nn.Module):
         # Get q-values for the next observations and actions, estimated by the target q-functions
         next_state_actions, next_state_log_pi = self.get_actions_and_log_probs(next_obs)
         qf_next_target = self.get_target_q_values(next_obs, next_state_actions)
-        min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - self.alpha * next_state_log_pi
+        # The temperature as a tensor: no synchronization with the device, and no break of a compiled graph
+        alpha = self._log_alpha.exp()
+        min_qf_next_target = torch.min(qf_next_target, dim=-1, keepdim=True)[0] - alpha * next_state_log_pi
         next_qf_value = rewards + (1 - dones) * gamma * min_qf_next_target
         return next_qf_value
 
     @torch.no_grad()
     def qfs_target_ema(self) -> None:
-        for param, target_param in zip(self.qfs_unwrapped.parameters(), self.qfs_target.parameters()):
-            target_param.data.copy_(self._tau * param.data + (1 - self._tau) * target_param.data)
+        # `tau * critic + (1 - tau) * target` for all the weights at once, with the same roundings
+        targets = list(self.qfs_target.parameters())
+        updates = torch._foreach_mul(list(self.qfs_unwrapped.parameters()), self._tau)
+        torch._foreach_mul_(targets, 1 - self._tau)
+        torch._foreach_add_(targets, updates)
 
 
 class SACPlayer(nn.Module):
@@ -349,9 +351,13 @@ def build_agent(
         action_high=action_space.high,
     )
 
-    # Setup training agent
-    agent.actor = fabric.setup_module(agent.actor)
-    agent.critics = [fabric.setup_module(critic) for critic in agent.critics]
+    # Setup training agent. Setting the critics makes the target critics copies of them: the ones of the checkpoint
+    # are kept
+    qfs_target = agent.qfs_target
+    agent.actor = setup_module(fabric, agent.actor)
+    agent.critics = [setup_module(fabric, critic) for critic in agent.critics]
+    if agent_state:
+        agent.qfs_target = qfs_target
 
     # Wrap the target q-functions with a single-device fabric. This let the target q-functions
     # to be on the same device as the agent and to run with the same precision
@@ -368,4 +374,6 @@ def build_agent(
     # Tie weights between the agent and the player
     for agent_p, player_p in zip(agent.actor.parameters(), player.parameters()):
         player_p.data = agent_p.data
+    # The step of the player, compiled with `algo.compile` (`compiled_player`)
+    player.forward = compiled_player(player.forward, fabric, cfg)
     return agent, player

@@ -3,6 +3,18 @@ import torch.nn.functional as F
 from torch import Tensor
 
 
+def reduce_loss(loss: Tensor, reduction: str = "mean") -> Tensor:
+    reduction = reduction.lower()
+    if reduction == "none":
+        return loss
+    elif reduction == "mean":
+        return loss.mean()
+    elif reduction == "sum":
+        return loss.sum()
+    else:
+        raise ValueError(f"Unrecognized reduction: {reduction}")
+
+
 def policy_loss(
     new_logprobs: Tensor,
     logprobs: Tensor,
@@ -31,15 +43,7 @@ def policy_loss(
     pg_loss1 = advantages * ratio
     pg_loss2 = advantages * torch.clamp(ratio, 1 - clip_coef, 1 + clip_coef)
     pg_loss = -torch.min(pg_loss1, pg_loss2)
-    reduction = reduction.lower()
-    if reduction == "none":
-        return pg_loss
-    elif reduction == "mean":
-        return pg_loss.mean()
-    elif reduction == "sum":
-        return pg_loss.sum()
-    else:
-        raise ValueError(f"Unrecognized reduction: {reduction}")
+    return reduce_loss(pg_loss, reduction)
 
 
 def value_loss(
@@ -50,26 +54,16 @@ def value_loss(
     clip_vloss: bool,
     reduction: str = "mean",
 ) -> Tensor:
+    """The squared error of the values from the returns, without a factor ½ (as in Stable-Baselines3: `algo.vf_coef`
+    weighs this scale). With `clip_vloss`, the larger of the errors of the new values and of the new values clipped
+    to `clip_coef` around the old ones."""
     if not clip_vloss:
-        values_pred = new_values
-        return F.mse_loss(values_pred, returns, reduction=reduction)
-    else:
-        v_loss_unclipped = (new_values - returns) ** 2
-        v_clipped = old_values + torch.clamp(new_values - old_values, -clip_coef, clip_coef)
-        v_loss_clipped = (v_clipped - returns) ** 2
-        v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-        v_loss = 0.5 * v_loss_max.mean()
-        return v_loss
+        return F.mse_loss(new_values, returns, reduction=reduction)
+    v_loss_unclipped = (new_values - returns) ** 2
+    v_clipped = old_values + torch.clamp(new_values - old_values, -clip_coef, clip_coef)
+    v_loss_clipped = (v_clipped - returns) ** 2
+    return reduce_loss(torch.max(v_loss_unclipped, v_loss_clipped), reduction)
 
 
 def entropy_loss(entropy: Tensor, reduction: str = "mean") -> Tensor:
-    ent_loss = -entropy
-    reduction = reduction.lower()
-    if reduction == "none":
-        return ent_loss
-    elif reduction == "mean":
-        return ent_loss.mean()
-    elif reduction == "sum":
-        return ent_loss.sum()
-    else:
-        raise ValueError(f"Unrecognized reduction: {reduction}")
+    return reduce_loss(-entropy, reduction)

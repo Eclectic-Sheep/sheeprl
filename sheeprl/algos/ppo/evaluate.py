@@ -18,7 +18,7 @@ def evaluate_ppo(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, log_root=cfg.log_root)
     fabric.print(f"Log dir: {log_dir}")
 
     env = make_env(
@@ -52,9 +52,3 @@ def evaluate_ppo(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
     _, agent = build_agent(fabric, actions_dim, is_continuous, cfg, observation_space, state["agent"])
     del _
     test(agent, fabric, cfg, log_dir)
-
-
-# This is just for showcase
-@register_evaluation(algorithms="ppo_decoupled")
-def evaluate_ppo_decoupled(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
-    evaluate_ppo(fabric, cfg, state)

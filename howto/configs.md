@@ -28,11 +28,9 @@ sheeprl/configs
 │   ├── p2e_dv1.yaml
 │   ├── p2e_dv2.yaml
 │   ├── p2e_dv3.yaml
-│   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
 │   ├── ppo.yaml
 │   ├── sac_ae.yaml
-│   ├── sac_decoupled.yaml
 │   └── sac.yaml
 ├── buffer
 │   └── default.yaml
@@ -89,13 +87,11 @@ sheeprl/configs
 │   ├── p2e_dv3_finetuning.yaml
 │   ├── p2e_dv3_fntn_L_doapp_64px_gray_combo_discrete_5Mstps.yaml
 │   ├── ppo_benchmarks.yaml
-│   ├── ppo_decoupled.yaml
 │   ├── ppo_recurrent.yaml
 │   ├── ppo_super_mario_bros.yaml
 │   ├── ppo.yaml
 │   ├── sac_ae.yaml
 │   ├── sac_benchmarks.yaml
-│   ├── sac_decoupled.yaml
 │   └── sac.yaml
 ├── fabric
 │   ├── ddp-cpu.yaml
@@ -338,7 +334,7 @@ actor:
 
   # Actor optimizer
   optimizer:
-    lr: 8e-5
+    lr: 3e-5
     eps: 1e-5
     weight_decay: 0
 
@@ -355,7 +351,7 @@ critic:
 
   # Critic optimizer
   optimizer:
-    lr: 8e-5
+    lr: 3e-5
     eps: 1e-5
     weight_decay: 0
 
@@ -402,7 +398,7 @@ mlp_keys:
 
 The environment configs can be found under the `sheeprl/configs/env` folders. SheepRL comes with default wrappers for the following environments:
 
-* [Atari](https://gymnasium.farama.org/environments/atari/)
+* [Atari](https://ale.farama.org/environments/)
 * [Diambra](https://docs.diambra.ai/)
 * [Deepmind Control Suite (DMC)](https://github.com/deepmind/dm_control/)
 * [Gymnasium](https://www.gymlibrary.dev/)

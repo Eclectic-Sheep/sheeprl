@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import copy
-import os
 import warnings
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 import gymnasium as gym
 import hydra
@@ -11,21 +10,45 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from lightning.fabric import Fabric
+from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data.sampler import BatchSampler
-from torchmetrics import SumMetric
 
 from sheeprl.algos.droq.agent import DROQAgent, build_agent
 from sheeprl.algos.sac.loss import entropy_loss, policy_loss
 from sheeprl.algos.sac.utils import prepare_obs, test
 from sheeprl.data.buffers import ReplayBuffer
-from sheeprl.utils.env import make_env
+from sheeprl.utils import fs
+from sheeprl.utils.compile import compiled, mark_gradient_step
+from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
+from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.timer import timer
-from sheeprl.utils.utils import Ratio, save_configs
+from sheeprl.utils.timer import phase_timer, timer, training_timer
+from sheeprl.utils.utils import off_policy_schedule, save_configs
+
+
+def next_target_fn(
+    agent: DROQAgent, next_observations: Tensor, rewards: Tensor, terminated: Tensor, gamma: float
+) -> Tensor:
+    """The targets of the critics, from the target critics on the next observations (Line 7 - Algorithm 2)."""
+    return agent.get_next_target_q_values(next_observations, rewards, terminated, gamma)
+
+
+def critic_loss_fn(agent: DROQAgent, observations: Tensor, actions: Tensor, targets: Tensor, critic_idx: int) -> Tensor:
+    """The loss of the critic `critic_idx` (Line 8 - Algorithm 2)."""
+    return F.mse_loss(agent.get_ith_q_value(observations, actions, critic_idx), targets)
+
+
+def actor_loss_fn(agent: DROQAgent, observations: Tensor) -> Tuple[Tensor, Tensor]:
+    """The loss of the actor, on the mean of the critics, and the log-probabilities of its actions, for the loss of the
+    temperature (Line 10 - Algorithm 2)."""
+    actions, logprobs = agent.get_actions_and_log_probs(observations)
+    qf_values = agent.get_q_values(observations, actions)
+    mean_qf_values = torch.mean(qf_values, dim=-1, keepdim=True)
+    return policy_loss(agent.log_alpha.exp().detach(), logprobs, mean_qf_values), logprobs.detach()
 
 
 def train(
@@ -40,11 +63,13 @@ def train(
     per_rank_gradient_steps: int,
 ):
     # Sample a minibatch in a distributed way: Line 5 - Algorithm 2
-    # We sample one time to reduce the communications between processes
+    # We sample one time to reduce the communications between processes. The new transitions of the online queue
+    # (`buffer.online`) go to the critic: the batch of the actor is sampled uniformly
     sample = rb.sample_tensors(
         per_rank_gradient_steps * cfg.algo.per_rank_batch_size,
         sample_next_obs=cfg.buffer.sample_next_obs,
         from_numpy=cfg.buffer.from_numpy,
+        online=cfg.buffer.online,
     )
     critic_data: Dict[str, torch.Tensor] = fabric.all_gather(sample)  # [World, G*B]
     for k, v in critic_data.items():
@@ -73,7 +98,7 @@ def train(
     sample = rb.sample_tensors(cfg.algo.per_rank_batch_size, from_numpy=cfg.buffer.from_numpy)
     actor_data = fabric.all_gather(sample)
     for k, v in actor_data.items():
-        actor_data[k] = v.float()  # [G*B*World]
+        actor_data[k] = v.float()  # [B*World]
         if fabric.world_size > 1:
             actor_data[k] = actor_data[k].flatten(start_dim=0, end_dim=2)
         else:
@@ -87,13 +112,17 @@ def train(
             seed=cfg.seed,
             drop_last=False,
         )
-        actor_data = {k: actor_data[k][next(iter(actor_sampler))] for k in actor_data.keys()}
+        # The sampler yields the B indices assigned to this rank
+        actor_idxes = list(actor_sampler)
+        actor_data = {k: actor_data[k][actor_idxes] for k in actor_data.keys()}
 
-    with timer("Time/train_time", SumMetric, sync_on_compute=cfg.metric.sync_on_compute):
-        # Update the soft-critic
+    with training_timer(fabric.device):
+        # Update the soft-critic (the losses are compiled when `algo.compile.enabled` is set)
         for batch_idxes in critic_sampler:
+            mark_gradient_step(fabric, cfg)
             critic_batch_data = {k: critic_data[k][batch_idxes] for k in critic_data.keys()}
-            next_target_qf_value = agent.get_next_target_q_values(
+            next_target_qf_value = compiled(next_target_fn, fabric, cfg)(
+                agent,
                 critic_batch_data["next_observations"],
                 critic_batch_data["rewards"],
                 critic_batch_data["terminated"],
@@ -101,15 +130,15 @@ def train(
             )
             for qf_value_idx in range(agent.num_critics):
                 # Line 8 - Algorithm 2
-                qf_loss = F.mse_loss(
-                    agent.get_ith_q_value(
-                        critic_batch_data["observations"], critic_batch_data["actions"], qf_value_idx
-                    ),
-                    next_target_qf_value,
-                )
-                qf_optimizer.zero_grad(set_to_none=True)
-                fabric.backward(qf_loss)
-                qf_optimizer.step()
+                with autocast_cache_scope(fabric):
+                    qf_loss = compiled(critic_loss_fn, fabric, cfg)(
+                        agent,
+                        critic_batch_data["observations"],
+                        critic_batch_data["actions"],
+                        next_target_qf_value,
+                        qf_value_idx,
+                    )
+                update(fabric, qf_loss, qf_optimizer, params=agent.qfs[qf_value_idx].parameters())
                 if aggregator and not aggregator.disabled:
                     aggregator.update("Loss/value_loss", qf_loss)
 
@@ -117,20 +146,14 @@ def train(
                 agent.qfs_target_ema(critic_idx=qf_value_idx)
 
         # Update the actor
-        actions, logprobs = agent.get_actions_and_log_probs(actor_data["observations"])
-        qf_values = agent.get_q_values(actor_data["observations"], actions)
-        min_qf_values = torch.mean(qf_values, dim=-1, keepdim=True)
-        actor_loss = policy_loss(agent.alpha, logprobs, min_qf_values)
-        actor_optimizer.zero_grad(set_to_none=True)
-        fabric.backward(actor_loss)
-        actor_optimizer.step()
+        mark_gradient_step(fabric, cfg)
+        with autocast_cache_scope(fabric):
+            actor_loss, logprobs = compiled(actor_loss_fn, fabric, cfg)(agent, actor_data["observations"])
+        update(fabric, actor_loss, actor_optimizer)
 
         # Update the entropy value
-        alpha_loss = entropy_loss(agent.log_alpha, logprobs.detach(), agent.target_entropy)
-        alpha_optimizer.zero_grad(set_to_none=True)
-        fabric.backward(alpha_loss)
-        agent.log_alpha.grad = fabric.all_reduce(agent.log_alpha.grad)
-        alpha_optimizer.step()
+        alpha_loss = entropy_loss(agent.log_alpha, logprobs, agent.target_entropy)
+        update(fabric, alpha_loss, alpha_optimizer)
 
         if aggregator and not aggregator.disabled:
             aggregator.update("Loss/policy_loss", actor_loss)
@@ -153,7 +176,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     # Resume from checkpoint
     if cfg.checkpoint.resume_from:
-        state = fabric.load(cfg.checkpoint.resume_from)
+        state = fs.load_checkpoint(fabric, cfg.checkpoint.resume_from, weights_only=False)
 
     if len(cfg.algo.cnn_keys.encoder) > 0:
         warnings.warn("DroQ algorithm cannot allow to use images as observations, the CNN keys will be ignored")
@@ -165,11 +188,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]
         fabric.logger.log_hyperparams(cfg)
-    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name)
+    log_dir = get_log_dir(fabric, cfg.root_dir, cfg.run_name, log_root=cfg.log_root)
     fabric.print(f"Log dir: {log_dir}")
 
     # Environment setup
-    vectorized_env = gym.vector.SyncVectorEnv if cfg.env.sync_env else gym.vector.AsyncVectorEnv
+    vectorized_env = get_vector_env_cls(cfg.env.sync_env)
     envs = vectorized_env(
         [
             make_env(
@@ -183,6 +206,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
             for i in range(cfg.env.num_envs)
         ]
     )
+    # Seed the random actions played before the training starts
+    envs.action_space.seed(cfg.seed + rank)
     action_space = envs.single_action_space
     observation_space = envs.single_observation_space
     if not isinstance(action_space, gym.spaces.Box):
@@ -234,7 +259,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         cfg.env.num_envs,
         device=device,
         memmap=cfg.buffer.memmap,
-        memmap_dir=os.path.join(log_dir, "memmap_buffer", f"rank_{fabric.global_rank}"),
+        memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
+        seed=cfg.seed + rank,
     )
     if cfg.checkpoint.resume_from and cfg.buffer.checkpoint:
         if isinstance(state["rb"], list) and fabric.world_size == len(state["rb"]):
@@ -257,20 +283,23 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     )
     policy_step = state["iter_num"] * cfg.env.num_envs if cfg.checkpoint.resume_from else 0
     last_log = state["last_log"] if cfg.checkpoint.resume_from else 0
+    # The policy step since which the interaction is timed: a resumed run times only its own steps, not the ones
+    # played after the last log of the run it resumes
+    last_timed_step = policy_step
     last_checkpoint = state["last_checkpoint"] if cfg.checkpoint.resume_from else 0
     policy_steps_per_iter = int(cfg.env.num_envs * fabric.world_size)
     total_iters = int(cfg.algo.total_steps // policy_steps_per_iter) if not cfg.dry_run else 1
-    learning_starts = cfg.algo.learning_starts // policy_steps_per_iter if not cfg.dry_run else 0
-    prefill_steps = learning_starts - int(learning_starts > 0)
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
-        learning_starts += start_iter
-        prefill_steps += start_iter
-
-    # Create Ratio class
-    ratio = Ratio(cfg.algo.replay_ratio, pretrain_steps=cfg.algo.per_rank_pretrain_steps)
-    if cfg.checkpoint.resume_from:
-        ratio.load_state_dict(state["ratio"])
+    # Random actions in the iterations up to `learning_starts`, training from `train_starts`
+    learning_starts, train_starts, pretrain_steps, total_iters, ratio = off_policy_schedule(
+        cfg,
+        state if cfg.checkpoint.resume_from else None,
+        start_iter,
+        total_iters,
+        policy_steps_per_iter,
+        fabric.world_size,
+    )
 
     # Warning for log and checkpoint every
     if cfg.metric.log_level > 0 and cfg.metric.log_every % policy_steps_per_iter != 0:
@@ -290,16 +319,18 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     step_data = {}
     # Get the first environment observation and start the optimization
-    obs = envs.reset(seed=cfg.seed)[0]
+    obs = envs.reset(seed=cfg.seed + rank * cfg.env.num_envs)[0]
 
     per_rank_gradient_steps = 0
-    cumulative_per_rank_gradient_steps = 0
+    # The gradient steps of every process from the start of the run, also in the run it resumes (the older
+    # checkpoints don't have them)
+    cumulative_per_rank_gradient_steps = state.get("per_rank_gradient_steps", 0) if cfg.checkpoint.resume_from else 0
     for iter_num in range(start_iter, total_iters + 1):
         policy_step += policy_steps_per_iter
 
         # Measure environment interaction time: this considers both the model forward
         # to get the action given the observation and the time taken into the environment
-        with timer("Time/env_interaction_time", SumMetric, sync_on_compute=False):
+        with phase_timer("Time/env_interaction_time"):
             if iter_num <= learning_starts:
                 actions = envs.action_space.sample()
             else:
@@ -310,20 +341,17 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     actions = actions.cpu().numpy()
             next_obs, rewards, terminated, truncated, infos = envs.step(actions.reshape(envs.action_space.shape))
 
-        if cfg.metric.log_level > 0 and "final_info" in infos:
-            for i, agent_ep_info in enumerate(infos["final_info"]):
-                if agent_ep_info is not None:
-                    ep_rew = agent_ep_info["episode"]["r"]
-                    ep_len = agent_ep_info["episode"]["l"]
-                    if aggregator and not aggregator.disabled:
-                        aggregator.update("Rewards/rew_avg", ep_rew)
-                        aggregator.update("Game/ep_len_avg", ep_len)
-                    fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew[-1]}")
+        if cfg.metric.log_level > 0:
+            for i, ep_rew, ep_len in get_episode_stats(infos):
+                if aggregator and not aggregator.disabled:
+                    aggregator.update("Rewards/rew_avg", ep_rew)
+                    aggregator.update("Game/ep_len_avg", ep_len)
+                fabric.print(f"Rank-0: policy_step={policy_step}, reward_env_{i}={ep_rew}")
 
         # Save the real next observation
         real_next_obs = copy.deepcopy(next_obs)
-        if "final_observation" in infos:
-            for idx, final_obs in enumerate(infos["final_observation"]):
+        if "final_obs" in infos:
+            for idx, final_obs in enumerate(infos["final_obs"]):
                 if final_obs is not None:
                     for k, v in final_obs.items():
                         real_next_obs[k][idx] = v
@@ -346,9 +374,12 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         obs = next_obs
 
         # Train the agent
-        if iter_num >= learning_starts:
-            ratio_steps = policy_step - prefill_steps * policy_steps_per_iter
+        if iter_num >= train_starts:
+            ratio_steps = policy_step - (train_starts - 1) * policy_steps_per_iter
             per_rank_gradient_steps = ratio(ratio_steps / world_size)
+            if iter_num == train_starts:
+                # The pretraining on the filled buffer (the `pretrain` of DreamerV1 and DreamerV2)
+                per_rank_gradient_steps += pretrain_steps
             if per_rank_gradient_steps > 0:
                 train(
                     fabric,
@@ -361,7 +392,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                     cfg,
                     per_rank_gradient_steps,
                 )
-                train_step += world_size
+                # The gradient steps of all the processes
+                train_step += world_size * per_rank_gradient_steps
                 cumulative_per_rank_gradient_steps += per_rank_gradient_steps
 
         # Log metrics
@@ -389,7 +421,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 if "Time/env_interaction_time" in timer_metrics and timer_metrics["Time/env_interaction_time"] > 0:
                     fabric.log(
                         "Time/sps_env_interaction",
-                        ((policy_step - last_log) / world_size * cfg.env.action_repeat)
+                        ((policy_step - last_timed_step) * cfg.env.action_repeat)
                         / timer_metrics["Time/env_interaction_time"],
                         policy_step,
                     )
@@ -397,6 +429,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
             # Reset counters
             last_log = policy_step
+            last_timed_step = policy_step
             last_train = train_step
 
         # Checkpoint model
@@ -410,12 +443,13 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
                 "actor_optimizer": actor_optimizer.state_dict(),
                 "alpha_optimizer": alpha_optimizer.state_dict(),
                 "ratio": ratio.state_dict(),
+                "per_rank_gradient_steps": cumulative_per_rank_gradient_steps,
                 "iter_num": iter_num * fabric.world_size,
                 "batch_size": cfg.algo.per_rank_batch_size * fabric.world_size,
                 "last_log": last_log,
                 "last_checkpoint": last_checkpoint,
             }
-            ckpt_path = os.path.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
+            ckpt_path = fs.join(log_dir, f"checkpoint/ckpt_{policy_step}_{fabric.global_rank}.ckpt")
             fabric.call(
                 "on_checkpoint_coupled",
                 fabric=fabric,
@@ -426,7 +460,7 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(player, fabric, cfg, log_dir)
+        test(player, fabric, cfg, log_dir, policy_step=policy_step)
 
     if not cfg.model_manager.disabled and fabric.is_global_zero:
         from sheeprl.algos.sac.utils import log_models

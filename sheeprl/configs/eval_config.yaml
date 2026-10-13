@@ -22,3 +22,6 @@ num_threads: 1
 disable_grads: True
 checkpoint_path: ???
 float32_matmul_precision: "high"
+
+# Where the runs are logged (see `config.yaml`)
+log_root: logs/runs

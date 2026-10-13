@@ -17,14 +17,18 @@ from torch.distributions import (
     Normal,
     OneHotCategorical,
     OneHotCategoricalStraightThrough,
-    TanhTransform,
     TransformedDistribution,
 )
 
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
-from sheeprl.utils.distribution import TruncatedNormal
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.compile import compiled_player
+from sheeprl.utils.distribution import SafeTanhTransform, TruncatedNormal
+
+# The epsilon of the LayerNorms: the one of the `LayerNormalization` of Keras, which the official implementation uses
+# (https://github.com/danijar/dreamerv2), also inside its GRU
+LAYER_NORM_EPS = 1e-3
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
 
 
@@ -67,7 +71,9 @@ class CNNEncoder(nn.Module):
                 activation=activation,
                 norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
                 norm_args=(
-                    [{"normalized_shape": (2**i) * channels_multiplier} for i in range(4)] if layer_norm else None
+                    [{"normalized_shape": (2**i) * channels_multiplier, "eps": LAYER_NORM_EPS} for i in range(4)]
+                    if layer_norm
+                    else None
                 ),
             ),
             nn.Flatten(-3, -1),
@@ -117,7 +123,11 @@ class MLPEncoder(nn.Module):
             [dense_units] * mlp_layers,
             activation=activation,
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+            norm_args=(
+                [{"normalized_shape": dense_units, "eps": LAYER_NORM_EPS} for _ in range(mlp_layers)]
+                if layer_norm
+                else None
+            ),
         )
         self.output_dim = dense_units
 
@@ -163,23 +173,25 @@ class CNNDecoder(nn.Module):
         self.cnn_encoder_output_dim = cnn_encoder_output_dim
         self.image_size = image_size
         self.output_dim = (sum(output_channels), *image_size)
+        # The hidden layers, each one followed by an activation (and a LayerNorm), then the output layer
+        hidden_channels = [4 * channels_multiplier, 2 * channels_multiplier, channels_multiplier]
+        n_hidden = len(hidden_channels)
         self.model = nn.Sequential(
             nn.Linear(latent_state_size, cnn_encoder_output_dim),
             nn.Unflatten(1, (cnn_encoder_output_dim, 1, 1)),
             DeCNN(
                 input_channels=cnn_encoder_output_dim,
-                hidden_channels=(torch.tensor([4, 2, 1]) * channels_multiplier).tolist() + [self.output_dim[0]],
+                hidden_channels=hidden_channels + [self.output_dim[0]],
                 layer_args=[
                     {"kernel_size": 5, "stride": 2},
                     {"kernel_size": 5, "stride": 2},
                     {"kernel_size": 6, "stride": 2},
                     {"kernel_size": 6, "stride": 2},
                 ],
-                activation=[activation, activation, activation, None],
-                norm_layer=[LayerNormChannelLast for _ in range(3)] + [None] if layer_norm else None,
+                activation=[activation] * n_hidden + [None],
+                norm_layer=[LayerNormChannelLast] * n_hidden + [None] if layer_norm else None,
                 norm_args=(
-                    [{"normalized_shape": (2 ** (4 - i - 2)) * channels_multiplier} for i in range(self.output_dim[0])]
-                    + [None]
+                    [{"normalized_shape": c, "eps": LAYER_NORM_EPS} for c in hidden_channels] + [None]
                     if layer_norm
                     else None
                 ),
@@ -234,7 +246,11 @@ class MLPDecoder(nn.Module):
             [dense_units] * mlp_layers,
             activation=activation,
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+            norm_args=(
+                [{"normalized_shape": dense_units, "eps": LAYER_NORM_EPS} for _ in range(mlp_layers)]
+                if layer_norm
+                else None
+            ),
         )
         self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
 
@@ -276,10 +292,15 @@ class RecurrentModel(nn.Module):
             hidden_sizes=[dense_units],
             activation=activation,
             norm_layer=[nn.LayerNorm] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units}] if layer_norm else None,
+            norm_args=[{"normalized_shape": dense_units, "eps": LAYER_NORM_EPS}] if layer_norm else None,
         )
         self.rnn = LayerNormGRUCell(
-            dense_units, recurrent_state_size, bias=True, batch_first=False, layer_norm_cls=nn.LayerNorm
+            dense_units,
+            recurrent_state_size,
+            bias=True,
+            batch_first=False,
+            layer_norm_cls=nn.LayerNorm,
+            layer_norm_kw={"eps": LAYER_NORM_EPS},
         )
 
     def forward(self, input: Tensor, recurrent_state: Tensor) -> Tensor:
@@ -481,7 +502,11 @@ class Actor(nn.Module):
             activation=activation,
             flatten_dim=None,
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-            norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
+            norm_args=(
+                [{"normalized_shape": dense_units, "eps": LAYER_NORM_EPS} for _ in range(mlp_layers)]
+                if layer_norm
+                else None
+            ),
         )
         if is_continuous:
             self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, sum(actions_dim) * 2)])
@@ -499,7 +524,8 @@ class Actor(nn.Module):
     def _get_expl_amount(self, step: int) -> Tensor:
         amount = self._expl_amount
         if self._expl_decay:
-            amount *= 0.5 ** float(step) / self._expl_decay
+            # Halved every `expl_decay` steps
+            amount *= 0.5 ** (float(step) / self._expl_decay)
         return max(amount, self._expl_min)
 
     def forward(
@@ -528,8 +554,10 @@ class Actor(nn.Module):
                 mean = 5 * torch.tanh(mean / 5)
                 std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
-                actions_dist = Independent(TransformedDistribution(actions_dist, TanhTransform()), 1)
+                actions_dist = Independent(TransformedDistribution(actions_dist, SafeTanhTransform()), 1)
             elif self.distribution == "normal":
+                # The std is the output of the network: made positive as the one of `tanh_normal`
+                std = F.softplus(std + self.init_std) + self.min_std
                 actions_dist = Normal(mean, std)
                 actions_dist = Independent(actions_dist, 1)
             elif self.distribution == "trunc_normal":
@@ -539,9 +567,10 @@ class Actor(nn.Module):
             if not greedy:
                 actions = actions_dist.rsample()
             else:
+                # The most likely of 100 samples, for every state
                 sample = actions_dist.sample((100,))
-                log_prob = actions_dist.log_prob(sample)
-                actions = sample[log_prob.argmax(0)].view(1, 1, -1)
+                best = actions_dist.log_prob(sample).argmax(0, keepdim=True)
+                actions = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
             actions = [actions]
             actions_dist = [actions_dist]
         else:
@@ -568,9 +597,9 @@ class Actor(nn.Module):
             expl_actions = []
             for act in actions:
                 sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(act.device)
-                expl_actions.append(
-                    torch.where(torch.rand(act.shape[:1], device=act.device) < expl_amount, sample, act)
-                )
+                # A random action with probability `expl_amount`, drawn for every environment
+                explore = torch.rand(*act.shape[:-1], 1, device=act.device) < expl_amount
+                expl_actions.append(torch.where(explore, sample, act))
         return tuple(expl_actions)
 
 
@@ -642,7 +671,7 @@ class MinedojoActor(Actor):
                             if sampled_action == 15:  # Craft action
                                 logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
                 elif i == 2:
-                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
+                    mask["mask_destroy"] = mask["mask_destroy"].expand_as(logits)
                     mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
                     for t in range(functional_action.shape[0]):
                         for b in range(functional_action.shape[1]):
@@ -663,6 +692,7 @@ class MinedojoActor(Actor):
     def add_exploration_noise(
         self, actions: Sequence[Tensor], step: int = 0, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
+        expl_amount = self._get_expl_amount(step)
         expl_actions = []
         functional_action = actions[0].argmax(dim=-1)
         for i, act in enumerate(actions):
@@ -679,7 +709,7 @@ class MinedojoActor(Actor):
                             if sampled_action == 15:  # Craft action
                                 logits[t, b][torch.logical_not(mask["mask_craft_smelt"][t, b])] = -torch.inf
                 elif i == 2:
-                    mask["mask_destroy"][t, b] = mask["mask_destroy"].expand_as(logits)
+                    mask["mask_destroy"] = mask["mask_destroy"].expand_as(logits)
                     mask["mask_equip_place"] = mask["mask_equip_place"].expand_as(logits)
                     for t in range(functional_action.shape[0]):
                         for b in range(functional_action.shape[1]):
@@ -688,17 +718,18 @@ class MinedojoActor(Actor):
                                 logits[t, b][torch.logical_not(mask["mask_equip_place"][t, b])] = -torch.inf
                             elif sampled_action == 18:  # Destroy action
                                 logits[t, b][torch.logical_not(mask["mask_destroy"][t, b])] = -torch.inf
-            sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(act.device)
-            expl_amount = self._get_expl_amount(step)
-            # If the action[0] was changed, and now it is critical, then we force to change also the other 2 actions
-            # to satisfy the constraints of the environment
-            if (
-                i in {1, 2}
-                and actions[0].argmax() != expl_actions[0].argmax()
-                and expl_actions[0].argmax().item() in {15, 16, 17, 18}
-            ):
-                expl_amount = 2
-            expl_actions.append(torch.where(torch.rand(act.shape[:1], device=self.device) < expl_amount, sample, act))
+            sample = OneHotCategorical(logits=logits).sample()
+            # A random action with probability `expl_amount`, drawn for every environment
+            explore = torch.rand(*act.shape[:-1], 1, device=act.device) < expl_amount
+            if i in {1, 2}:
+                # The environments whose functional action was changed into one that takes arguments (craft, equip,
+                # place, destroy) also change its arguments, to satisfy the constraints of the environment
+                changed = actions[0].argmax(dim=-1) != expl_actions[0].argmax(dim=-1)
+                with_arguments = torch.isin(
+                    expl_actions[0].argmax(dim=-1), torch.tensor([15, 16, 17, 18], device=act.device)
+                )
+                explore = explore | (changed & with_arguments).unsqueeze(-1)
+            expl_actions.append(torch.where(explore, sample, act))
             if mask is not None and i == 0:
                 functional_action = expl_actions[0].argmax(dim=-1)
         return tuple(expl_actions)
@@ -915,7 +946,7 @@ def build_agent(
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.representation_model.layer_norm else None,
         norm_args=(
-            [{"normalized_shape": world_model_cfg.representation_model.hidden_size}]
+            [{"normalized_shape": world_model_cfg.representation_model.hidden_size, "eps": LAYER_NORM_EPS}]
             if world_model_cfg.representation_model.layer_norm
             else None
         ),
@@ -928,7 +959,7 @@ def build_agent(
         flatten_dim=None,
         norm_layer=[nn.LayerNorm] if world_model_cfg.transition_model.layer_norm else None,
         norm_args=(
-            [{"normalized_shape": world_model_cfg.transition_model.hidden_size}]
+            [{"normalized_shape": world_model_cfg.transition_model.hidden_size, "eps": LAYER_NORM_EPS}]
             if world_model_cfg.transition_model.layer_norm
             else None
         ),
@@ -981,7 +1012,7 @@ def build_agent(
         ),
         norm_args=(
             [
-                {"normalized_shape": world_model_cfg.reward_model.dense_units}
+                {"normalized_shape": world_model_cfg.reward_model.dense_units, "eps": LAYER_NORM_EPS}
                 for _ in range(world_model_cfg.reward_model.mlp_layers)
             ]
             if world_model_cfg.reward_model.layer_norm
@@ -1002,7 +1033,7 @@ def build_agent(
             ),
             norm_args=(
                 [
-                    {"normalized_shape": world_model_cfg.discount_model.dense_units}
+                    {"normalized_shape": world_model_cfg.discount_model.dense_units, "eps": LAYER_NORM_EPS}
                     for _ in range(world_model_cfg.discount_model.mlp_layers)
                 ]
                 if world_model_cfg.discount_model.layer_norm
@@ -1037,7 +1068,7 @@ def build_agent(
         flatten_dim=None,
         norm_layer=[nn.LayerNorm for _ in range(critic_cfg.mlp_layers)] if critic_cfg.layer_norm else None,
         norm_args=(
-            [{"normalized_shape": critic_cfg.dense_units} for _ in range(critic_cfg.mlp_layers)]
+            [{"normalized_shape": critic_cfg.dense_units, "eps": LAYER_NORM_EPS} for _ in range(critic_cfg.mlp_layers)]
             if critic_cfg.layer_norm
             else None
         ),
@@ -1069,16 +1100,16 @@ def build_agent(
     )
 
     # Setup models with Fabric
-    world_model.encoder = fabric.setup_module(world_model.encoder)
-    world_model.observation_model = fabric.setup_module(world_model.observation_model)
-    world_model.reward_model = fabric.setup_module(world_model.reward_model)
-    world_model.rssm.recurrent_model = fabric.setup_module(world_model.rssm.recurrent_model)
-    world_model.rssm.representation_model = fabric.setup_module(world_model.rssm.representation_model)
-    world_model.rssm.transition_model = fabric.setup_module(world_model.rssm.transition_model)
+    world_model.encoder = setup_module(fabric, world_model.encoder)
+    world_model.observation_model = setup_module(fabric, world_model.observation_model)
+    world_model.reward_model = setup_module(fabric, world_model.reward_model)
+    world_model.rssm.recurrent_model = setup_module(fabric, world_model.rssm.recurrent_model)
+    world_model.rssm.representation_model = setup_module(fabric, world_model.rssm.representation_model)
+    world_model.rssm.transition_model = setup_module(fabric, world_model.rssm.transition_model)
     if world_model.continue_model:
-        world_model.continue_model = fabric.setup_module(world_model.continue_model)
-    actor = fabric.setup_module(actor)
-    critic = fabric.setup_module(critic)
+        world_model.continue_model = setup_module(fabric, world_model.continue_model)
+    actor = setup_module(fabric, actor)
+    critic = setup_module(fabric, critic)
 
     # Setup target critic with a SingleDeviceStrategy
     target_critic = copy.deepcopy(critic.module)
@@ -1101,4 +1132,7 @@ def build_agent(
         p.data = agent_p.data
     for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
         p.data = agent_p.data
+    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # states in its attributes
+    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
     return world_model, actor, critic, target_critic, player

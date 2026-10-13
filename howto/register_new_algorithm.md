@@ -30,7 +30,7 @@ from lightning.fabric.wrappers import _FabricModule
 import torch
 from torch import Tensor
 
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 
 class SOTAAgent(torch.nn.Module):
@@ -70,8 +70,8 @@ def build_agent(
     # Setup player agent
     player = copy.deepcopy(agent)
 
-    # Setup the agent with Fabric
-    agent = fabric.setup_model(agent)
+    # Setup the agent on the device of the process, in the precision of Fabric
+    agent = setup_module(fabric, agent)
 
     # Setup the player agent with a single-device Fabric
     fabric_player = get_single_device_fabric(fabric)
@@ -83,9 +83,11 @@ def build_agent(
     return agent, player
 ```
 
+`setup_module` (from `sheeprl.utils.fabric`) sets up the agent like `fabric.setup_module`, but without the `DistributedDataParallel` wrapper: with several processes, the weights of rank 0 are copied to the others, and the gradients are averaged over the processes by `update` (see [the training function](#algorithm-implementation)).
+
 The player agent is wrapped with a **single-device Fabric**, in this way we maintain the same precision and device of the main Fabric object, but with the player agent being able to interct with the environment skipping possible distributed synchronization points.  
 
-If the agent is composed of multiple models, each one with its own forward method, it is advisable to wrap each one of them with the main Fabric object; the same happens for the player agent, where each of the models has to be consequently wrapped with the single-device Fabric obejct. Here we have the example of the **PPOAgent**:
+If the agent is composed of multiple models, each one with its own forward method, it is advisable to set up each one of them with `setup_module`; the same happens for the player agent, where each of the models has to be consequently wrapped with the single-device Fabric obejct. Here we have the example of the **PPOAgent**:
 
 ```python
 from __future__ import annotations
@@ -103,7 +105,7 @@ from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
-from sheeprl.utils.fabric import get_single_device_fabric
+from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 
 
 class CNNEncoder(nn.Module):
@@ -368,9 +370,9 @@ def build_agent(
     player = PPOPlayer(copy.deepcopy(agent.feature_extractor), copy.deepcopy(agent.actor), copy.deepcopy(agent.critic))
 
     # Setup training agent
-    agent.feature_extractor = fabric.setup_module(agent.feature_extractor)
-    agent.critic = fabric.setup_module(agent.critic)
-    agent.actor = fabric.setup_module(agent.actor)
+    agent.feature_extractor = setup_module(fabric, agent.feature_extractor)
+    agent.critic = setup_module(fabric, agent.critic)
+    agent.actor = setup_module(fabric, agent.actor)
 
     # Setup player agent
     fabric_player = get_single_device_fabric(fabric)
@@ -424,6 +426,7 @@ from sheeprl.data import ReplayBuffer
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.env import make_env
+from sheeprl.utils.fabric import update
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
 from sheeprl.utils.logger import get_logger, get_log_dir
 from sheeprl.utils.timer import timer
@@ -442,9 +445,9 @@ def train(
     l2 = loss2(...)
     loss = 0.5 * (l1 + l2)
 
-    optimizer.zero_grad(set_to_none=True)
-    fabric.backward(loss)
-    optimizer.step()
+    # The backward pass, the gradients averaged over the processes, clipped to `max_grad_norm` and the step of the
+    # optimizer
+    update(fabric, loss, optimizer, cfg.algo.max_grad_norm)
 
     # Update metrics
     if aggregator and not aggregator.disabled:
@@ -452,7 +455,7 @@ def train(
         aggregator.update("Loss/loss2", l2.detach())
 
 
-@register_algorithm(decoupled=False)
+@register_algorithm()
 def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
     rank = fabric.global_rank
     world_size = fabric.world_size
@@ -697,7 +700,7 @@ def sota_main(fabric: Fabric, cfg: Dict[str, Any]):
 
     envs.close()
     if fabric.is_global_zero and cfg.algo.run_test:
-        test(agent.module, fabric, cfg, log_dir)
+        test(agent.module, fabric, cfg, log_dir, policy_step=policy_step)
 
     # Optional part in case you want to give the possibility to register your models with MLFlow
     if not cfg.model_manager.disabled and fabric.is_global_zero:
@@ -744,7 +747,7 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(agent: SOTAAgentPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str):
+def test(agent: SOTAAgentPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
@@ -770,7 +773,7 @@ def test(agent: SOTAAgentPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: s
             done = True
     fabric.print("Test - Reward:", cumulative_rew)
     if cfg.metric.log_level > 0:
-        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, 0)
+        fabric.log_dict({"Test/cumulative_reward": cumulative_rew}, policy_step)
     env.close()
 
 
@@ -799,7 +802,7 @@ def log_models(
                 warnings.warn(f"Model {k} not found in models_to_log, skipping.", category=UserWarning)
                 continue
             unwrapped_models[k] = unwrap_fabric(models_to_log[k])
-            model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], artifact_path=k)
+            model_info[k] = mlflow.pytorch.log_model(unwrapped_models[k], name=k, serialization_format="pickle")
         mlflow.log_dict(cfg, "config.json")
     return model_info
 ```
@@ -995,10 +998,8 @@ from sheeprl.algos.p2e_dv1 import p2e_dv1 as p2e_dv1
 from sheeprl.algos.p2e_dv2 import p2e_dv2 as p2e_dv2
 from sheeprl.algos.p2e_dv3 import p2e_dv3 as p2e_dv3
 from sheeprl.algos.ppo import ppo as ppo
-from sheeprl.algos.ppo import ppo_decoupled as ppo_decoupled
 from sheeprl.algos.ppo_recurrent import ppo_recurrent as ppo_recurrent
 from sheeprl.algos.sac import sac as sac
-from sheeprl.algos.sac import sac_decoupled as sac_decoupled
 from sheeprl.algos.sac_ae import sac_ae as sac_ae
 +from sheeprl.algos.sota import sota as sota
 
@@ -1012,23 +1013,21 @@ __version__ = "0.4.3"
 Then if you run `python sheeprl/available_agents.py` you should see that `sota` appears in the list of all the available agents:
 
 ```bash
-SheepRL Agents                             
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┓
-┃ Module                      ┃ Algorithm     ┃ Entrypoint ┃ Decoupled ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
-│ sheeprl.algos.dreamer_v1    │ dreamer_v1    │ main       │ False     │
-│ sheeprl.algos.dreamer_v2    │ dreamer_v2    │ main       │ False     │
-│ sheeprl.algos.dreamer_v3    │ dreamer_v3    │ main       │ False     │
-│ sheeprl.algos.sac           │ sac           │ main       │ False     │
-│ sheeprl.algos.sac           │ sac_decoupled │ main       │ True      │
-│ sheeprl.algos.droq          │ droq          │ main       │ False     │
-│ sheeprl.algos.p2e_dv1       │ p2e_dv1       │ main       │ False     │
-│ sheeprl.algos.p2e_dv2       │ p2e_dv2       │ main       │ False     │
-│ sheeprl.algos.p2e_dv3       │ p2e_dv3       │ main       │ False     │
-│ sheeprl.algos.ppo           │ ppo           │ main       │ False     │
-│ sheeprl.algos.ppo           │ ppo_decoupled │ main       │ True      │
-│ sheeprl.algos.ppo_recurrent │ ppo_recurrent │ main       │ False     │
-│ sheeprl.algos.sac_ae        │ sac_ae        │ main       │ False     │
-│ sheeprl.algos.sota          │ sota          │ sota_main  │ False     │
-└─────────────────────────────┴───────────────┴────────────┴───────────┘
+SheepRL Agents
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ Module                      ┃ Algorithm     ┃ Entrypoint ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ sheeprl.algos.dreamer_v1    │ dreamer_v1    │ main       │
+│ sheeprl.algos.dreamer_v2    │ dreamer_v2    │ main       │
+│ sheeprl.algos.dreamer_v3    │ dreamer_v3    │ main       │
+│ sheeprl.algos.sac           │ sac           │ main       │
+│ sheeprl.algos.droq          │ droq          │ main       │
+│ sheeprl.algos.p2e_dv1       │ p2e_dv1       │ main       │
+│ sheeprl.algos.p2e_dv2       │ p2e_dv2       │ main       │
+│ sheeprl.algos.p2e_dv3       │ p2e_dv3       │ main       │
+│ sheeprl.algos.ppo           │ ppo           │ main       │
+│ sheeprl.algos.ppo_recurrent │ ppo_recurrent │ main       │
+│ sheeprl.algos.sac_ae        │ sac_ae        │ main       │
+│ sheeprl.algos.sota          │ sota          │ sota_main  │
+└─────────────────────────────┴───────────────┴────────────┘
 ```

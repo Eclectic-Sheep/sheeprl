@@ -205,3 +205,42 @@ def test_memmap_mode(mode):
             assert (mt2.array == 2.5).all()
         del mt2
     shutil.rmtree("./test_memmap_mode")
+
+
+@pytest.mark.parametrize("copied", [False, True])
+def test_a_memory_mapped_array_pickled_with_its_data_writes_its_missing_file_again(tmp_path, copied):
+    # Without a shared filesystem, the files of the checkpoint of a memory-mapped buffer are missing on another node
+    import pickle
+
+    from sheeprl.utils.memmap import copied_on_pickle
+
+    path = tmp_path / "run" / "a.memmap"
+    path.parent.mkdir()
+    array = MemmapArray(filename=path, dtype=np.float32, shape=(4, 2))
+    array[:] = np.arange(8, dtype=np.float32).reshape(4, 2)
+    with copied_on_pickle(copied):
+        saved = pickle.dumps(array)
+    del array
+    os.remove(path)
+    os.rmdir(path.parent)
+    loaded = pickle.loads(saved)
+    if copied:
+        np.testing.assert_array_equal(loaded.array, np.arange(8).reshape(4, 2))
+        assert path.is_file() and "_data" not in loaded.__dict__
+    else:
+        with pytest.raises(FileNotFoundError):
+            loaded.array
+
+
+def test_a_memory_mapped_array_pickled_with_its_data_uses_its_existing_file(tmp_path):
+    # The run that saved the checkpoint can still be writing in the file: the loaded array doesn't overwrite it
+    import pickle
+
+    from sheeprl.utils.memmap import copied_on_pickle
+
+    array = MemmapArray(filename=tmp_path / "a.memmap", dtype=np.float32, shape=(3,))
+    array[:] = 1
+    with copied_on_pickle():
+        saved = pickle.dumps(array)
+    array[:] = 2
+    np.testing.assert_array_equal(pickle.loads(saved).array, [2, 2, 2])

@@ -5,11 +5,9 @@ from __future__ import annotations
 import os
 import tempfile
 import warnings
-from io import TextIOWrapper
+from contextlib import contextmanager
 from pathlib import Path
-from sys import getrefcount
-from tempfile import _TemporaryFileWrapper
-from typing import Any, Tuple
+from typing import Any, Iterator, Tuple
 
 import numpy as np
 from numpy.typing import DTypeLike
@@ -17,6 +15,24 @@ from numpy.typing import DTypeLike
 
 def is_shared(array: np.ndarray) -> bool:
     return isinstance(array, np.ndarray) and hasattr(array, "_mmap")
+
+
+# Whether the memory-mapped arrays are pickled with their data (`copied_on_pickle`)
+_COPIED_ON_PICKLE = False
+
+
+@contextmanager
+def copied_on_pickle(enabled: bool = True) -> Iterator[None]:
+    """The memory-mapped arrays pickled in this context carry their data, not only the path of their file: unpickled
+    where the file is missing (e.g. on another node, without a shared filesystem), they write it again from their data
+    when they are first used. Where the file exists, they use it, as the arrays pickled outside this context (the run
+    that pickled them can still be writing in it)."""
+    global _COPIED_ON_PICKLE
+    previous, _COPIED_ON_PICKLE = _COPIED_ON_PICKLE, enabled
+    try:
+        yield
+    finally:
+        _COPIED_ON_PICKLE = previous
 
 
 class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
@@ -44,10 +60,12 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
                 then a temporary file will be opened.
                 Defaults to None.
         """
+        # No file object is kept open: `np.memmap` opens (and closes) the file by itself
         if filename is None:
             fd, path = tempfile.mkstemp(".memmap")
+            os.close(fd)
             self._filename = Path(path).resolve()
-            self._file = _TemporaryFileWrapper(open(fd, mode="r+"), path, delete=False)
+            self._is_temp = True
         else:
             path = Path(filename).resolve()
             if os.path.exists(path):
@@ -59,8 +77,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch(exist_ok=True)
             self._filename = path
-            self._file = open(path, mode="r+")
-        os.close(self._file.fileno())
+            self._is_temp = False
         self._dtype = dtype
         self._shape = shape
         self._mode = mode
@@ -80,11 +97,6 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
     def filename(self) -> Path:
         """Return the filename of the memory-mapped array."""
         return self._filename
-
-    @property
-    def file(self) -> TextIOWrapper:
-        """Return the file object of the memory-mapped array."""
-        return self._file
 
     @property
     def dtype(self) -> DTypeLike:
@@ -116,6 +128,16 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         """Return the memory-mapped array."""
         if not os.path.isfile(self._filename):
             self._array = None
+            data = self.__dict__.pop("_data", None)
+            if data is not None:
+                # Unpickled with its data (`copied_on_pickle`) where its file is missing: the file is written again
+                os.makedirs(os.path.dirname(self._filename), exist_ok=True)
+                restored = np.memmap(filename=self._filename, dtype=self._dtype, shape=self._shape, mode="w+")
+                restored[:] = data
+                restored.flush()
+                del restored
+        # The data of an array unpickled where its file exists is not used: the file is
+        self.__dict__.pop("_data", None)
         if self._array is None:
             self._array = np.memmap(
                 filename=self._filename,
@@ -143,10 +165,7 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
             raise ValueError(f"The value to be set must be an instance of 'np.memmap' or 'np.ndarray', got '{type(v)}'")
         if is_shared(v):
             self.__del__()
-            tmpfile = _TemporaryFileWrapper(None, v.filename, delete=True)
-            tmpfile.name = v.filename
-            tmpfile._closer.name = v.filename
-            self._file = tmpfile
+            self._is_temp = False
             self._filename = v.filename
             self._shape = v.shape
             self._dtype = v.dtype
@@ -217,14 +236,13 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         the file will be closed. If the memory-mapped array is mapped to a temporary file then the file is
         removed.
         """
-        if self._array is not None and self._has_ownership and getrefcount(self._file) <= 2:
+        if self.__dict__.get("_array") is not None and self._has_ownership:
             self._array.flush()
             self._array._mmap.close()
             del self._array._mmap
             self._array = None
-            if isinstance(self._file, _TemporaryFileWrapper) and os.path.isfile(self._filename):
+            if self._is_temp and os.path.isfile(self._filename):
                 os.unlink(self._filename)
-            del self._file
 
     def __array__(self) -> np.memmap:
         return self.array
@@ -242,19 +260,19 @@ class MemmapArray(np.lib.mixins.NDArrayOperatorsMixin):
         # all our instance attributes. Always use the dict.copy()
         # method to avoid modifying the original state.
         state = self.__dict__.copy()
-        # Remove the unpicklable entries.
-        state["_file"] = None
+        # Remove the unpicklable entries. The unpickled array never owns the file
         state["_array"] = None
         state["_has_ownership"] = False
+        state.pop("_data", None)
+        if _COPIED_ON_PICKLE:
+            state["_data"] = np.array(self.array)
         return state
 
     def __setstate__(self, state):
-        filename = state["_filename"]
-        if state["_file"] is None:
-            tmpfile = _TemporaryFileWrapper(None, filename, delete=True)
-            tmpfile.name = filename
-            tmpfile._closer.name = filename
-            state["_file"] = tmpfile
+        # Backward compatibility with the arrays pickled by sheeprl<=0.5.7,
+        # which also stored the (unpicklable) file object
+        state.pop("_file", None)
+        state.setdefault("_is_temp", False)
         self.__dict__.update(state)
 
     def __getitem__(self, idx: Any) -> np.ndarray:
