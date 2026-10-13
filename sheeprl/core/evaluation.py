@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Dict
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -12,6 +12,7 @@ from torch import nn
 
 from sheeprl.core.algorithm import Algorithm, TrainState
 from sheeprl.core.loop import load_trained_state
+from sheeprl.envs.normalization import ObsNormalizer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.utils import unwrap_fabric
@@ -31,10 +32,12 @@ def run_test(
     policy_step: int = 0,
     greedy: bool = True,
     test_name: str = "",
+    obs_normalizer: Optional[ObsNormalizer] = None,
 ) -> float:
     """Play one episode of a test environment with `policy` and log its return (`Test/cumulative_reward`) at
     `policy_step`: the test of every algorithm (`Algorithm.test`). With `greedy`, the policy plays its most likely
-    actions. A dry run plays one step. Returns the return of the episode."""
+    actions. With `obs_normalizer`, the observations are normalized with its statistics, which don't change. A dry run
+    plays one step. Returns the return of the episode."""
     env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name else ""), vector_env_idx=0)()
     training = isinstance(policy, nn.Module) and policy.training
     if isinstance(policy, nn.Module):
@@ -45,7 +48,10 @@ def run_test(
     cumulative_rew = 0
     while not done:
         # The policy plays one environment: its observations are a row
-        act = policy.act({k: v[np.newaxis] for k, v in obs.items()}, greedy=greedy)
+        obs = {k: v[np.newaxis] for k, v in obs.items()}
+        if obs_normalizer is not None:
+            obs = obs_normalizer.normalize(obs)
+        act = policy.act(obs, greedy=greedy)
         obs, reward, terminated, truncated, _ = env.step(act.env_actions.reshape(env.action_space.shape))
         done = terminated or truncated or cfg.dry_run
         cumulative_rew += reward

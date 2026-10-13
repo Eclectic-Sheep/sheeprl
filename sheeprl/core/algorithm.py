@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
-from typing import TYPE_CHECKING, Any, Dict, Iterator, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional, Tuple
 
 import gymnasium as gym
 import torch
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from sheeprl.core.collector import Policy, Writer
     from sheeprl.core.schedule import TrainSchedule
     from sheeprl.data.store import ReplayStore
+    from sheeprl.envs.normalization import ObsNormalizer
 
 
 @dataclasses.dataclass
@@ -107,6 +108,9 @@ class Algorithm:
     # Whether a crashed environment is created again instead of stopping the run (`GymEnvironment`): the writer must
     # then handle `EnvStep.restarted`, which marks the first observation of the new environment
     restart_crashed_envs: bool = False
+    # The normalization of the observations the policy is trained with (`env.normalization.obs`), set by the training
+    # loop and by `load_trained_state`: the test episode normalizes its observations with it, frozen
+    obs_normalizer: Optional[ObsNormalizer] = None
 
     def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
         self.fabric = fabric
@@ -131,7 +135,15 @@ class Algorithm:
         # Imported here: the evaluation imports the algorithms
         from sheeprl.core.evaluation import run_test
 
-        run_test(self.policy(state), self.fabric, self.cfg, log_dir, policy_step=policy_step, greedy=self.greedy_test)
+        run_test(
+            self.policy(state),
+            self.fabric,
+            self.cfg,
+            log_dir,
+            policy_step=policy_step,
+            greedy=self.greedy_test,
+            obs_normalizer=self.obs_normalizer,
+        )
 
     def policy(self, state: TrainState) -> Policy:
         """The policy that plays in the environments: it shares its weights with the trained modules of `state`."""

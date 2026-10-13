@@ -474,6 +474,15 @@ screen_size: 64
 action_repeat: 1
 grayscale: False
 clip_rewards: False
+# On-policy algorithms only (`sheeprl/envs/normalization.py`): standardize the vector observations
+# (`algo.mlp_keys.encoder`) with their running mean and std, and divide the rewards by the running std of the
+# discounted return (with `algo.gamma`), then clip them. The statistics are saved in the checkpoints
+normalization:
+  obs: False
+  rewards: False
+  clip_obs: 10.0
+  clip_rewards: 10.0
+  epsilon: 1e-8
 capture_video: True
 frame_stack_dilation: 1
 actions_as_observation:
@@ -488,6 +497,10 @@ wrapper: ???
 > [!NOTE]
 > 
 > The actions as observations wrapper is used for adding the last `n` actions to the observations. For more information, check the corresponding [howto file](./actions_as_observation.md).
+
+> [!NOTE]
+>
+> The `normalization` of the observations and of the rewards is the `VecNormalize` of Stable-Baselines3, for the on-policy algorithms (PPO, A2C, recurrent PPO): an off-policy algorithm raises an error, since its replay buffer would keep values normalized with statistics that change during the training. Every process updates the statistics at every step with the observations and the rewards of its environments, and at the end of the rollout of every iteration the processes merge them: from then on they are the same in every process, until the next rollout. They are saved in the checkpoints, and the test episode and `sheeprl-eval` normalize the observations with them, frozen. The logged episode returns are the ones of the environments. The models registered in MLflow don't include the normalization: their inputs must be normalized with the statistics in the checkpoint (`checkpoint["env"]["obs_normalizer"]`).
 
 Every custom environment must then "inherit" from this default config, override the particular parameters, and define the `wrapper` field, which is the one that will be directly instantiated at runtime. The `wrapper` field must define all the specific parameters to be passed to the `_target_` function when the wrapper will be instantiated. Take for example the `atari.yaml` config:
 

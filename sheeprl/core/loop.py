@@ -18,6 +18,7 @@ from sheeprl.core.collector import Collector
 from sheeprl.core.environment import GymEnvironment
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.data.store import load_replay_buffer
+from sheeprl.envs.normalization import ObsNormalizer
 from sheeprl.utils import fs
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
@@ -51,13 +52,23 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
     if not MetricAggregator.disabled:
         aggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(fabric.device)
 
+    normalization = cfg.env.get("normalization") or {}
+    if algo.off_policy and (normalization.get("obs") or normalization.get("rewards")):
+        raise ValueError(
+            "`env.normalization` is supported only by on-policy algorithms: the replay buffer of an off-policy "
+            "algorithm would keep observations and rewards normalized with statistics that change during the training"
+        )
     schedule = TrainSchedule(cfg, fabric.world_size, algo.steps_per_iteration, checkpoint, algo.off_policy)
     env = GymEnvironment.from_config(fabric, cfg, log_dir, restart_on_exception=algo.restart_crashed_envs)
+    # The test plays with the normalization of the observations of the training
+    algo.obs_normalizer = env.obs_normalizer
     state, store = algo.build(env.observation_space, env.action_space, schedule, log_dir)
     # The replay buffer of the off-policy algorithms is saved in the checkpoints
     save_buffer = algo.off_policy and cfg.buffer.checkpoint
     if checkpoint is not None:
         state.load_state_dict(checkpoint)
+        # A checkpoint saved before the environments had a state has none
+        env.load_state_dict(checkpoint.get("env", {}))
         if save_buffer:
             store = load_replay_buffer(fabric, checkpoint["rb"], store)
     if fabric.is_global_zero:
@@ -71,6 +82,9 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
         # Play: the time includes the forward pass of the policy
         with torch.inference_mode(), phase_timer("Time/env_interaction_time"):
             collector.collect(algo.steps_per_iteration)
+        # The processes merge what their environments learned in the rollout (e.g. the statistics of the
+        # normalization). Not timed with the interaction: a process waits there for the rollouts of the others
+        env.sync(fabric)
 
         # Train: `n_steps` is None for on-policy algorithms (they decide it from the rollout), and is 0 for
         # off-policy algorithms before `algo.learning_starts`
@@ -86,7 +100,7 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
         if cfg.metric.log_level > 0 and info:
             fabric.log_dict(info, schedule.policy_step)
         cadence.log(schedule.policy_step, iteration, schedule)
-        cadence.checkpoint(state, schedule, schedule.policy_step, iteration, store if save_buffer else None)
+        cadence.checkpoint(state, schedule, schedule.policy_step, iteration, store if save_buffer else None, env=env)
 
     # Every process returns once all of them have trained: the process of rank 0 doesn't go on (to test the agent, or
     # to end the run and remove its files) while the others still train (and write in their files)
@@ -106,7 +120,8 @@ def load_trained_state(
     """The training state of `algo`, restored from `checkpoint`: the trained models, e.g. to evaluate or register them.
 
     The state is built by `algo.build`, as for training. The store of the collected data is not needed: it is built in
-    a temporary directory and discarded.
+    a temporary directory and discarded. The normalization of the observations the policy was trained with
+    (`env.normalization.obs`) is restored in `algo.obs_normalizer`, for the test.
     """
     with warnings.catch_warnings():
         # The warnings of the schedule are about the logging and checkpoint intervals of a training
@@ -124,4 +139,7 @@ def load_trained_state(
     finally:
         algo.cfg = training_cfg
     state.load_state_dict(checkpoint)
+    algo.obs_normalizer = ObsNormalizer.from_config(cfg, observation_space)
+    if algo.obs_normalizer is not None:
+        algo.obs_normalizer.load_state_dict(checkpoint["env"]["obs_normalizer"])
     return state

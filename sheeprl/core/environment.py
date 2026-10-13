@@ -11,6 +11,7 @@ import gymnasium as gym
 import numpy as np
 from lightning import Fabric
 
+from sheeprl.envs.normalization import ObsNormalizer, RewardNormalizer
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 
@@ -81,18 +82,44 @@ class Environment(Protocol):
     def close(self) -> None:
         """Close the environments."""
 
+    def state_dict(self) -> Dict[str, Any]:
+        """What the checkpoints save of the environments to resume them (e.g. the statistics of the normalization):
+        nothing by default."""
+        return {}
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Restore what `state_dict` saved, before the first reset."""
+
+    def sync(self, fabric: Fabric) -> None:
+        """Make what the environments of the processes learn the same in every process (e.g. the statistics of the
+        normalization), at the end of the rollout of every iteration: nothing by default."""
+
 
 class GymEnvironment(Environment):
     """The `Environment` of a gymnasium vectorized environment with same-step autoreset (`get_vector_env_cls`),
     created by `from_config`: it seeds the resets with `seed` and translates the `info` of gymnasium into the fields of
-    `EnvStep`. The ended episodes are read from the statistics of `RecordEpisodeStatistics`."""
+    `EnvStep`. The ended episodes are read from the statistics of `RecordEpisodeStatistics`.
 
-    def __init__(self, envs: gym.vector.VectorEnv, seed: Optional[int] = None) -> None:
+    With `obs_normalizer` and `reward_normalizer` (`env.normalization`), the observations of the steps (`obs`,
+    `next_obs` and `final_obs`) and their rewards are normalized with running statistics, updated at every step with
+    the ones of the environments and merged with the ones of the other processes by `sync`. The ended episodes
+    (`episodes`) keep the rewards of the environments.
+    """
+
+    def __init__(
+        self,
+        envs: gym.vector.VectorEnv,
+        seed: Optional[int] = None,
+        obs_normalizer: Optional[ObsNormalizer] = None,
+        reward_normalizer: Optional[RewardNormalizer] = None,
+    ) -> None:
         self.envs = envs
         self.seed = seed
         self.num_envs = envs.num_envs
         self.observation_space = envs.single_observation_space
         self.action_space = envs.single_action_space
+        self.obs_normalizer = obs_normalizer
+        self.reward_normalizer = reward_normalizer
         self.obs: Dict[str, np.ndarray] = {}
 
     @classmethod
@@ -124,11 +151,20 @@ class GymEnvironment(Environment):
         envs = get_vector_env_cls(cfg.env.sync_env)(env_fns)
         # Seed the random actions (e.g. those played before the training starts)
         envs.action_space.seed(cfg.seed + rank)
-        return cls(envs, seed=first_seed)
+        return cls(
+            envs,
+            seed=first_seed,
+            obs_normalizer=ObsNormalizer.from_config(cfg, envs.single_observation_space),
+            reward_normalizer=RewardNormalizer.from_config(cfg, num_envs),
+        )
 
     def reset(self) -> Dict[str, np.ndarray]:
         """Reset every environment with its own seed and return the first observations."""
-        self.obs = self.envs.reset(seed=self.seed)[0]
+        obs = self.envs.reset(seed=self.seed)[0]
+        if self.obs_normalizer is not None:
+            self.obs_normalizer.update(obs)
+            obs = self.obs_normalizer.normalize(obs)
+        self.obs = obs
         return self.obs
 
     def random_actions(self) -> np.ndarray:
@@ -138,15 +174,25 @@ class GymEnvironment(Environment):
     def step(self, actions: np.ndarray) -> EnvStep:
         """Play `actions` (one row per environment) and return what happened."""
         next_obs, rewards, terminated, truncated, info = self.envs.step(actions.reshape(self.envs.action_space.shape))
-        # The same-step autoreset, `RestartOnException` and `RecordEpisodeStatistics` report them in `info`
+        # The same-step autoreset and `RestartOnException` report them in `info`
+        final_obs = info.get("final_obs", [None] * self.num_envs)
+        restarted = info.get("restart_on_exception", np.zeros(self.num_envs, dtype=bool))
+        if self.obs_normalizer is not None:
+            # The last observations of the ended episodes are normalized, but not added to the statistics
+            self.obs_normalizer.update(next_obs)
+            next_obs = self.obs_normalizer.normalize(next_obs)
+            final_obs = [None if obs is None else self.obs_normalizer.normalize(obs) for obs in final_obs]
+        if self.reward_normalizer is not None:
+            rewards = self.reward_normalizer(rewards, terminated | truncated | restarted)
         step = EnvStep(
             self.obs,
             next_obs,
             rewards,
             terminated,
             truncated,
-            final_obs=info.get("final_obs", [None] * self.num_envs),
-            restarted=info.get("restart_on_exception", np.zeros(self.num_envs, dtype=bool)),
+            final_obs=final_obs,
+            restarted=restarted,
+            # The statistics of `RecordEpisodeStatistics`, with the rewards of the environments
             episodes=tuple(Episode(*episode) for episode in get_episode_stats(info)),
             info=info,
         )
@@ -155,3 +201,25 @@ class GymEnvironment(Environment):
 
     def close(self) -> None:
         self.envs.close()
+
+    def state_dict(self) -> Dict[str, Any]:
+        """The statistics of the normalization of the observations and of the rewards, if they are normalized."""
+        state = {}
+        if self.obs_normalizer is not None:
+            state["obs_normalizer"] = self.obs_normalizer.state_dict()
+        if self.reward_normalizer is not None:
+            state["reward_normalizer"] = self.reward_normalizer.state_dict()
+        return state
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        if self.obs_normalizer is not None:
+            self.obs_normalizer.load_state_dict(state["obs_normalizer"])
+        if self.reward_normalizer is not None:
+            self.reward_normalizer.load_state_dict(state["reward_normalizer"])
+
+    def sync(self, fabric: Fabric) -> None:
+        """Merge the statistics of the normalization of all the processes: then they are the same in every process."""
+        if self.obs_normalizer is not None:
+            self.obs_normalizer.sync(fabric)
+        if self.reward_normalizer is not None:
+            self.reward_normalizer.sync(fabric)

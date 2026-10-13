@@ -8,7 +8,7 @@ from lightning import Fabric
 from torch import Tensor
 
 from sheeprl.core.algorithm import TrainState
-from sheeprl.core.environment import Episode
+from sheeprl.core.environment import Environment, Episode
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.utils import fs
 from sheeprl.utils.metric import MetricAggregator
@@ -109,11 +109,13 @@ class Cadence:
         policy_step: int,
         iteration: int,
         replay_buffer: Optional[Any] = None,
+        env: Optional[Environment] = None,
     ) -> None:
         """Save the training state and the counters needed to resume the run, if it's time to.
 
         `replay_buffer`, if given, is saved too: with several processes, the buffers of all of them, in the
-        checkpoint of rank 0.
+        checkpoint of rank 0. So is the state of `env` (`Environment.state_dict`), if given: the one of rank 0, the
+        same as the others' once synced (`Environment.sync`).
         """
         cfg = self.cfg
         every = cfg.checkpoint.every > 0 and policy_step - self.last_checkpoint >= cfg.checkpoint.every
@@ -132,6 +134,8 @@ class Cadence:
         }
         if schedule.ratio is not None:
             ckpt["ratio"] = schedule.ratio.state_dict()
+        if env is not None:
+            ckpt["env"] = env.state_dict()
         ckpt_path = fs.join(self.log_dir, f"checkpoint/ckpt_{policy_step}_{self.fabric.global_rank}.ckpt")
         self.fabric.call(
             "on_checkpoint_coupled",
