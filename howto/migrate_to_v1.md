@@ -43,6 +43,8 @@ The data is collected by `sheeprl.core.Collector`, the same for every algorithm:
 
 The modules are not wrapped in `DistributedDataParallel`: `sheeprl.core.update` averages the gradients of the weights of every optimizer step over the processes.
 
+The helpers that prepare the observations for the agents are in `sheeprl.utils.obs`: `prepare_obs` replaces the `prepare_obs` of every algorithm, and `scale_images` replaces the `normalize_obs` of PPO (`sheeprl.algos.ppo.utils`), which only scaled the images.
+
 ### Replay buffers
 
 | 0.x | 1.0 |

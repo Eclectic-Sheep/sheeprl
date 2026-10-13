@@ -501,6 +501,17 @@ wrapper: ???
 > [!NOTE]
 >
 > The `normalization` of the observations and of the rewards is the `VecNormalize` of Stable-Baselines3, for the on-policy algorithms (PPO, A2C, recurrent PPO): an off-policy algorithm raises an error, since its replay buffer would keep values normalized with statistics that change during the training. Every process updates the statistics at every step with the observations and the rewards of its environments, and at the end of the rollout of every iteration the processes merge them: from then on they are the same in every process, until the next rollout. They are saved in the checkpoints, and the test episode and `sheeprl-eval` normalize the observations with them, frozen. The logged episode returns are the ones of the environments. The models registered in MLflow don't include the normalization: their inputs must be normalized with the statistics in the checkpoint (`checkpoint["env"]["obs_normalizer"]`).
+>
+> The other normalizations of SheepRL live where they act, and are configured by the algorithms:
+>
+> | What | Where | Option |
+> |---|---|---|
+> | the bounded actions, exposed as [-1, 1] | `NormalizeAction` (`sheeprl/envs/wrappers.py`) | `algo.normalize_actions` |
+> | the images, scaled to [-0.5, 0.5] | `prepare_obs`, `scale_images` (`sheeprl/utils/obs.py`) | always |
+> | the vector observations of DreamerV3 and DreamerV3.5, squashed by the symlog | `symlog` (`sheeprl/utils/utils.py`) | always (DreamerV3.5: `algo.world_model.encoder.symlog_inputs`) |
+> | the advantages of the on-policy algorithms | `normalize_tensor` (`sheeprl/utils/utils.py`) | `algo.normalize_advantages` |
+> | the returns of DreamerV3 and DreamerV3.5, by their percentiles | `Moments` (`sheeprl/algos/dreamer_v3/utils.py`) | `algo.actor.moments` |
+> | the layers of the networks | `LayerNorm`, `LayerNormChannelLast`, `LayerNormGRUCell` (`sheeprl/models/models.py`), `RMSNorm` (`sheeprl/algos/dreamer_v3_5/agent.py`) | per algorithm (e.g. `algo.layer_norm`) |
 
 Every custom environment must then "inherit" from this default config, override the particular parameters, and define the `wrapper` field, which is the one that will be directly instantiated at runtime. The `wrapper` field must define all the specific parameters to be passed to the `_target_` function when the wrapper will be instantiated. Take for example the `atari.yaml` config:
 

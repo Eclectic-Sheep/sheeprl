@@ -6,6 +6,20 @@ The statistics are those of the environments of all the processes: `sheeprl.core
 them at every step with the observations and the rewards of its environments, and merges them with the ones of the
 other processes at the end of the rollout of every iteration (`sync`). The checkpoints save them, and the test plays
 with the ones of the observations, frozen.
+
+The other normalizations live where they act:
+
+- the actions: `NormalizeAction` (`sheeprl/envs/wrappers.py`, `algo.normalize_actions`) exposes the bounded actions
+  as [-1, 1];
+- the images: `prepare_obs` and `scale_images` (`sheeprl/utils/obs.py`) scale them to [-0.5, 0.5] as the agents read
+  them;
+- the vector observations of DreamerV3 and DreamerV3.5: the symlog of their encoders (`symlog`,
+  `sheeprl/utils/utils.py`);
+- the advantages of the on-policy algorithms: `normalize_tensor` (`sheeprl/utils/utils.py`,
+  `algo.normalize_advantages`);
+- the returns of DreamerV3 and DreamerV3.5: `Moments` (`sheeprl/algos/dreamer_v3/utils.py`), from their percentiles;
+- the layers of the networks: `LayerNorm`, `LayerNormChannelLast` and `LayerNormGRUCell` (`sheeprl/models/models.py`),
+  `RMSNorm` (`sheeprl/algos/dreamer_v3_5/agent.py`).
 """
 
 from __future__ import annotations
@@ -20,21 +34,21 @@ if TYPE_CHECKING:
     from lightning import Fabric
 
 
-class Moments(NamedTuple):
+class SampleMoments(NamedTuple):
     """The mean, the variance and the number of a set of samples."""
 
     mean: np.ndarray
     var: np.ndarray
     count: float
 
-    def merge(self, other: Moments) -> Moments:
+    def merge(self, other: SampleMoments) -> SampleMoments:
         """The moments of the union of the two sets of samples
         (https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm)."""
         count = self.count + other.count
         delta = other.mean - self.mean
         mean = self.mean + delta * other.count / count
         m2 = self.var * self.count + other.var * other.count + delta**2 * self.count * other.count / count
-        return Moments(mean, m2 / count, count)
+        return SampleMoments(mean, m2 / count, count)
 
 
 class RunningMeanStd:
@@ -48,10 +62,10 @@ class RunningMeanStd:
     """
 
     def __init__(self, shape: Tuple[int, ...] = (), epsilon: float = 1e-4) -> None:
-        self.moments = Moments(np.zeros(shape), np.ones(shape), epsilon)
+        self.moments = SampleMoments(np.zeros(shape), np.ones(shape), epsilon)
         # The statistics at the last `sync`, the same in every process, and the ones of the batches added since
         self.synced = self.moments
-        self.added = Moments(np.zeros(shape), np.zeros(shape), 0)
+        self.added = SampleMoments(np.zeros(shape), np.zeros(shape), 0)
 
     @property
     def mean(self) -> np.ndarray:
@@ -68,7 +82,7 @@ class RunningMeanStd:
     def update(self, x: np.ndarray) -> None:
         """Add the batch `x`, one row per sample."""
         x = np.asarray(x, dtype=np.float64)
-        batch = Moments(x.mean(axis=0), x.var(axis=0), x.shape[0])
+        batch = SampleMoments(x.mean(axis=0), x.var(axis=0), x.shape[0])
         self.moments = self.moments.merge(batch)
         self.added = self.added.merge(batch)
 
@@ -83,18 +97,19 @@ class RunningMeanStd:
         gathered = fabric.all_gather(torch.as_tensor(added, device=fabric.device)).cpu().numpy()
         moments = self.synced
         for row in gathered:
-            moments = moments.merge(Moments(row[:size].reshape(shape), row[size:-1].reshape(shape), float(row[-1])))
+            mean, var, count = row[:size].reshape(shape), row[size:-1].reshape(shape), float(row[-1])
+            moments = moments.merge(SampleMoments(mean, var, count))
         self.moments = self.synced = moments
-        self.added = Moments(np.zeros(shape), np.zeros(shape), 0)
+        self.added = SampleMoments(np.zeros(shape), np.zeros(shape), 0)
 
     def state_dict(self) -> Dict[str, Any]:
         return {"mean": self.mean.copy(), "var": self.var.copy(), "count": self.count}
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
-        self.moments = self.synced = Moments(
+        self.moments = self.synced = SampleMoments(
             np.array(state["mean"], dtype=np.float64), np.array(state["var"], dtype=np.float64), state["count"]
         )
-        self.added = Moments(np.zeros_like(self.mean), np.zeros_like(self.mean), 0)
+        self.added = SampleMoments(np.zeros_like(self.mean), np.zeros_like(self.mean), 0)
 
 
 class ObsNormalizer:

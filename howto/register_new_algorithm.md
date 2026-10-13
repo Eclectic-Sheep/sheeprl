@@ -198,7 +198,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
 from sheeprl.algos.sota.agent import build_agent
 from sheeprl.algos.sota.loss import policy_loss, value_loss
-from sheeprl.utils.obs import normalize_obs, prepare_obs
+from sheeprl.utils.obs import prepare_obs, scale_images
 from sheeprl.core import (
     Act,
     Algorithm,
@@ -316,7 +316,7 @@ class SOTA(Algorithm):
 
     def train_step(self, state: SOTAState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo
-        obs = normalize_obs(batch, cfg.cnn_keys.encoder, cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)
+        obs = scale_images(batch, cfg.cnn_keys.encoder, cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)
         with autocast(self.fabric):
             actions = torch.split(batch["actions"], state.agent.actions_dim, dim=-1)
             _, logprobs, _, values = state.agent(obs, actions)
@@ -355,7 +355,7 @@ An off-policy algorithm sets `off_policy = True` and returns a replay buffer as 
 - the replay buffer is saved in the checkpoints when `buffer.checkpoint=True`. A run resumed with its buffer doesn't play random actions again; one resumed without it fills a new buffer with its policy for `algo.learning_starts` policy steps first.
 
 ### Utils
-The observations are moved to the device by `prepare_obs` and the images of the batches are normalized by `normalize_obs` (`sheeprl/utils/obs.py`); the test episode at the end of the training is the one of every algorithm (`Algorithm.test`). The `log_models` function imported above is defined in the `sheeprl.algos.sota.utils` module, here the one of PPO (`sheeprl/algos/ppo/utils.py`): it registers the models with MLflow at the end of the training.
+The observations are moved to the device by `prepare_obs` and the images of the batches are scaled by `scale_images` (`sheeprl/utils/obs.py`); the test episode at the end of the training is the one of every algorithm (`Algorithm.test`). The `log_models` function imported above is defined in the `sheeprl.algos.sota.utils` module, here the one of PPO (`sheeprl/algos/ppo/utils.py`): it registers the models with MLflow at the end of the training.
 
 ```python
 from __future__ import annotations

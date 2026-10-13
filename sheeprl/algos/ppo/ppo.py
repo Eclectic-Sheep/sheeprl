@@ -33,7 +33,7 @@ from sheeprl.core import (
 )
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.env import actions_dim_of
-from sheeprl.utils.obs import images_as_channels, normalize_obs, prepare_obs
+from sheeprl.utils.obs import images_as_channels, prepare_obs, scale_images
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae_function, normalize_tensor
 
@@ -232,7 +232,7 @@ class PPO(Algorithm):
         cfg = self.cfg.algo
         # The loss is compiled when `algo.compile.enabled` is set
         mark_gradient_step(self.fabric, self.cfg)
-        obs = normalize_obs(batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder)
+        obs = scale_images(batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder)
         with autocast(self.fabric):
             loss, pg_loss, v_loss, ent_loss = compiled(ppo_loss, self.fabric, self.cfg)(
                 state.agent,

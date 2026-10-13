@@ -59,7 +59,7 @@ from torch.optim import Optimizer
 
 from my_awesome_algo.agent import build_agent
 from my_awesome_algo.loss import policy_loss, value_loss
-from sheeprl.utils.obs import normalize_obs, prepare_obs
+from sheeprl.utils.obs import prepare_obs, scale_images
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
 from sheeprl.core import (
     Act,
@@ -178,7 +178,7 @@ class ExtSOTA(Algorithm):
 
     def train_step(self, state: ExtSOTAState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo
-        obs = normalize_obs(batch, cfg.cnn_keys.encoder, cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)
+        obs = scale_images(batch, cfg.cnn_keys.encoder, cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)
         with autocast(self.fabric):
             actions = torch.split(batch["actions"], state.agent.actions_dim, dim=-1)
             _, logprobs, _, values = state.agent(obs, actions)

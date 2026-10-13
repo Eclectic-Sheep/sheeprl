@@ -42,7 +42,7 @@ def prepare_obs(
     return torch_obs
 
 
-def normalize_obs(
+def scale_images(
     obs: Dict[str, np.ndarray | Tensor], cnn_keys: Sequence[str], obs_keys: Sequence[str]
 ) -> Dict[str, np.ndarray | Tensor]:
     """The observations `obs_keys` of `obs` with the images `cnn_keys` scaled to `[-0.5, 0.5]` (e.g. the ones of a

@@ -30,7 +30,7 @@ from sheeprl.core import (
 )
 from sheeprl.utils.compile import compiled
 from sheeprl.utils.env import actions_dim_of
-from sheeprl.utils.obs import normalize_obs, prepare_obs
+from sheeprl.utils.obs import prepare_obs, scale_images
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import gae_function, normalize_tensor
 
@@ -176,7 +176,7 @@ class A2C(Algorithm):
         state.optimizer.zero_grad(set_to_none=True)
         policy_losses, value_losses = [], []
         for batch in minibatches:
-            obs = normalize_obs(batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder)
+            obs = scale_images(batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder)
             # Compiled with `algo.compile.enabled`, without CUDA graphs: the gradients are accumulated
             with autocast(self.fabric):
                 loss, pg_loss, v_loss = compiled(a2c_loss, self.fabric, self.cfg, cuda_graphs=False)(
