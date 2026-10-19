@@ -10,9 +10,8 @@ from torch import nn
 
 from sheeprl.algos.dreamer_v1.agent import Actor as DV1Actor
 from sheeprl.algos.dreamer_v1.agent import MinedojoActor as DV1MinedojoActor
-from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel
+from sheeprl.algos.dreamer_v1.agent import PlayerDV1, WorldModel, init_weights
 from sheeprl.algos.dreamer_v1.agent import build_agent as dv1_build_agent
-from sheeprl.algos.dreamer_v1.agent import init_weights
 from sheeprl.models.models import MLP
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.utils import unwrap_fabric
