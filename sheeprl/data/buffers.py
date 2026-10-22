@@ -92,6 +92,9 @@ class ReplayBuffer:
         self._added = 0
         self._online_origin = 0
         self._online_next: np.ndarray | None = None
+        # Sparse next observations, indexed by row and environment: truncated steps and the latest step (which a
+        # checkpoint can truncate). Ordinary transitions still use the observation in the following row.
+        self._next_obs: Dict[int, Dict[int, Dict[str, np.ndarray]]] = {}
 
     @property
     def buffer(self) -> Dict[str, np.ndarray]:
@@ -151,12 +154,30 @@ class ReplayBuffer:
         return buf
 
     @typing.overload
-    def add(self, data: "ReplayBuffer", validate_args: bool = False) -> None: ...
+    def add(
+        self,
+        data: "ReplayBuffer",
+        validate_args: bool = False,
+        *,
+        next_obs: Optional[Dict[str, np.ndarray]] = None,
+    ) -> None: ...
 
     @typing.overload
-    def add(self, data: Dict[str, np.ndarray], validate_args: bool = False) -> None: ...
+    def add(
+        self,
+        data: Dict[str, np.ndarray],
+        validate_args: bool = False,
+        *,
+        next_obs: Optional[Dict[str, np.ndarray]] = None,
+    ) -> None: ...
 
-    def add(self, data: "ReplayBuffer" | Dict[str, np.ndarray], validate_args: bool = False) -> None:
+    def add(
+        self,
+        data: "ReplayBuffer" | Dict[str, np.ndarray],
+        validate_args: bool = False,
+        *,
+        next_obs: Optional[Dict[str, np.ndarray]] = None,
+    ) -> None:
         """Add data to the replay buffer. If the replay buffer is full, then the oldest data is overwritten.
         If data is a dictionary, then the keys must be strings and the values must be numpy arrays of shape
         [sequence_length, n_envs, ...].
@@ -164,6 +185,10 @@ class ReplayBuffer:
         Args:
             data (ReplayBuffer | Dict[str, np.ndarray]): the data to add to the replay buffer.
             validate_args (bool, optional): whether to validate the arguments. Defaults to False.
+            next_obs (Optional[Dict[str, np.ndarray]]): the actual next observations, keyed by `obs_keys`, of shape
+                [sequence_length, n_envs, ...]. With `sample_next_obs=True`, pass them on every add: only truncated
+                steps and the latest step are copied, so that autoresets and checkpoint resumes do not replace their
+                next observations with reset observations. Defaults to None (adjacent-row sampling without overrides).
 
         Raises:
             ValueError: if the data is not a dictionary containing numpy arrays.
@@ -171,11 +196,19 @@ class ReplayBuffer:
             RuntimeError: if the data does not have at least 2 dimensions.
             RuntimeError: if the data is not congruent in the first 2 dimensions.
         """
+        source_next_obs = None
         if isinstance(data, ReplayBuffer):
+            data._apply_checkpoint_truncation()
+            source_next_obs = data._next_obs.copy()
             data = data.buffer
         self._check_add(data, validate_args)
-        self._apply_checkpoint_truncation()
         data_len = next(iter(data.values())).shape[0]
+        if validate_args and next_obs is not None:
+            for k in self._obs_keys:
+                shape = (data_len, self.n_envs, *data[k].shape[2:])
+                if next_obs[k].shape != shape:
+                    raise ValueError(f"The next observations of '{k}' must have shape {shape}, got {next_obs[k].shape}")
+        self._apply_checkpoint_truncation()
         next_pos = (self._pos + data_len) % self._buffer_size
         if data_len > self._buffer_size:
             # Only the last `buffer_size` steps are kept, in the rows they would take if added one at a time: the step
@@ -185,6 +218,21 @@ class ReplayBuffer:
         else:
             data_to_store = data
             idxes = (self._pos + np.arange(data_len)) % self._buffer_size
+        # The previous latest step needs an override only if it really ended at a truncation (including one inserted
+        # by a loaded checkpoint). Remove the entries of overwritten rows, also when an add wraps more than once.
+        last_row = (self._pos - 1) % self._buffer_size
+        if data_len > 0 and last_row in self._next_obs:
+            truncated = self.buffer.get("truncated")
+            self._next_obs[last_row] = {
+                env: obs
+                for env, obs in self._next_obs[last_row].items()
+                if truncated is not None and np.any(truncated[last_row, env])
+            }
+            if not self._next_obs[last_row]:
+                del self._next_obs[last_row]
+        if self._next_obs:
+            for row in idxes:
+                self._next_obs.pop(int(row), None)
         if self._memmap and self.empty:
             for k, v in data_to_store.items():
                 self.buffer[k] = MemmapArray(
@@ -201,6 +249,22 @@ class ReplayBuffer:
         else:
             for k, v in data_to_store.items():
                 self.buffer[k][idxes] = data_to_store[k]
+        if source_next_obs is not None and next_obs is None:
+            offset = data_len - len(idxes)
+            for row, envs in source_next_obs.items():
+                if row >= offset:
+                    self._next_obs[int(idxes[row - offset])] = {
+                        env: {k: v.copy() for k, v in obs.items()} for env, obs in envs.items()
+                    }
+        if next_obs is not None and len(idxes) > 0:
+            keep = np.zeros((len(idxes), self.n_envs), dtype=bool)
+            if "truncated" in data_to_store:
+                keep |= data_to_store["truncated"].reshape(len(idxes), -1).astype(bool)
+            keep[-1] = True
+            for step, env in zip(*np.nonzero(keep)):
+                self._next_obs.setdefault(int(idxes[step]), {})[int(env)] = {
+                    k: next_obs[k][-len(idxes) + step, env].copy() for k in self._obs_keys
+                }
         if self._pos + data_len >= self._buffer_size:
             self._full = True
         self._pos = next_pos
@@ -389,7 +453,18 @@ class ReplayBuffer:
         state.setdefault("_added", state["_pos"] + (state["_buffer_size"] if state["_full"] else 0))
         # The online queue isn't checkpointed: it restarts empty, with the steps added after the loading
         state["_online_origin"], state["_online_next"] = state["_added"], None
+        # Older checkpoints did not retain boundary observations; they cannot be recovered retroactively.
+        state.setdefault("_next_obs", {})
         self.__dict__.update(state)
+
+    def _replace_next_obs(self, key: str, values: np.ndarray, rows: np.ndarray, envs: np.ndarray) -> None:
+        """Replace adjacent-row observations at truncations with their saved true next observations, in place."""
+        if not self._next_obs or "truncated" not in self.buffer:
+            return
+        for i in np.flatnonzero(self.buffer["truncated"][rows, envs].reshape(-1)):
+            obs = self._next_obs.get(int(rows[i]), {}).get(int(envs[i]))
+            if obs is not None and key in obs:
+                values[i] = obs[key]
 
     def _get_samples(
         self,
@@ -416,6 +491,7 @@ class ReplayBuffer:
                 samples[k] = samples[k].copy()
             if k in self._obs_keys and sample_next_obs:
                 samples[f"next_{k}"] = np.take(np.reshape(v, (-1, *v.shape[2:])), flattened_next_idxes, axis=0)
+                self._replace_next_obs(k, samples[f"next_{k}"], batch_idxes, env_idxes)
                 if clone:
                     samples[f"next_{k}"] = samples[f"next_{k}"].copy()
         return {k: v.reshape(n_samples, batch_size, *v.shape[1:]) for k, v in samples.items()}
@@ -647,6 +723,8 @@ class SequentialReplayBuffer(ReplayBuffer):
                 samples[k] = samples[k].copy()
             if sample_next_obs:
                 flattened_next_v = v[(flattened_batch_idxes + 1) % self._buffer_size, env_idxes]
+                if k in self._obs_keys:
+                    self._replace_next_obs(k, flattened_next_v, flattened_batch_idxes, env_idxes)
                 batched_next_v = np.reshape(
                     flattened_next_v, (n_samples, batch_size, sequence_length) + flattened_next_v.shape[1:]
                 )
