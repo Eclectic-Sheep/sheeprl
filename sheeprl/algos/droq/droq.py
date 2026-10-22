@@ -368,7 +368,11 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         step_data["terminated"] = terminated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
-        rb.add(step_data, validate_args=cfg.buffer.validate_args)
+        rb.add(
+            step_data,
+            validate_args=cfg.buffer.validate_args,
+            next_obs={"observations": real_next_obs[np.newaxis]} if cfg.buffer.sample_next_obs else None,
+        )
 
         # next_obs becomes the new obs
         obs = next_obs
