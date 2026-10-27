@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import Dict, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
@@ -590,14 +590,15 @@ class RSSM(nn.Module):
 class Actor(nn.Module):
     """The actor: `mlp_layers` blocks of `mlp` and a linear head (initialized with `outscale`).
 
-    The discrete actions come from categorical distributions (one per action, `unimix` of uniform mixed in). The
-    continuous actions come from a normal distribution with mean `tanh(mean)` and standard deviation
-    `(max_std - min_std) * sigmoid(std + 2) + min_std` (`bounded_normal` of DreamerV3); the samples are not clipped.
+    One head per action, so the actions may mix continuous and discrete ones. A discrete action comes from a
+    categorical distribution (`unimix` of uniform mixed in). A continuous action comes from a normal distribution with
+    mean `tanh(mean)` and standard deviation `(max_std - min_std) * sigmoid(std + 2) + min_std` (`bounded_normal` of
+    DreamerV3); the samples are not clipped.
 
     Args:
         latent_state_size: the size of the latent state.
-        actions_dim: the size of every discrete action, or of the continuous actions.
-        is_continuous: whether the actions are continuous.
+        actions_dim: the size of every action: its choices if discrete, its dimensions if continuous.
+        continuous: whether every action is continuous.
         dense_units: the units of the blocks. Default: 1024.
         mlp_layers: the number of blocks. Default: 3.
         min_std: the smallest standard deviation. Default: 0.1.
@@ -612,7 +613,7 @@ class Actor(nn.Module):
         self,
         latent_state_size: int,
         actions_dim: Sequence[int],
-        is_continuous: bool,
+        continuous: Sequence[bool],
         dense_units: int = 1024,
         mlp_layers: int = 3,
         min_std: float = 0.1,
@@ -625,27 +626,35 @@ class Actor(nn.Module):
         super().__init__()
         self.model = mlp(latent_state_size, dense_units, mlp_layers, activation, eps)
         units = dense_units if mlp_layers > 0 else latent_state_size
-        if is_continuous:
-            self.mlp_heads = nn.ModuleList([Linear(units, 2 * int(np.sum(actions_dim)), outscale=outscale)])
-        else:
-            self.mlp_heads = nn.ModuleList([Linear(units, int(dim), outscale=outscale) for dim in actions_dim])
+        self.continuous = tuple(bool(c) for c in continuous)
+        if len(self.continuous) != len(actions_dim):
+            raise ValueError(f"One kind per action: got {len(self.continuous)} for the actions {list(actions_dim)}")
+        # One layer per action: the means and the stds of a continuous one, the logits of a categorical one
+        self.mlp_heads = nn.ModuleList(
+            [
+                Linear(units, 2 * int(dim) if c else int(dim), outscale=outscale)
+                for dim, c in zip(actions_dim, continuous)
+            ]
+        )
         self.actions_dim = actions_dim
-        self.is_continuous = is_continuous
+        # Whether all the actions are continuous
+        self.is_continuous = all(self.continuous)
         self.min_std = min_std
         self.max_std = max_std
         self.unimix = unimix
 
     def distributions(self, state: Tensor) -> Tuple[Distribution, ...]:
-        """The distributions of the actions in `state`: one normal over all the continuous actions, or one categorical
-        per discrete action. Called from `forward` (`with_actions=False`), they are computed in the precision of the
+        """The distributions of the actions in `state`, one per action: a normal for a continuous one, a categorical
+        for a discrete one. Called from `forward` (`with_actions=False`), they are computed in the precision of the
         run."""
         x = self.model(state)
-        if self.is_continuous:
-            mean, std = torch.chunk(self.mlp_heads[0](x).float(), 2, -1)
-            std = (self.max_std - self.min_std) * torch.sigmoid(std + 2.0) + self.min_std
-            return (Independent(Normal(torch.tanh(mean), std), 1),)
-        dists = []
-        for head in self.mlp_heads:
+        dists: List[Distribution] = []
+        for continuous, head in zip(self.continuous, self.mlp_heads):
+            if continuous:
+                mean, std = torch.chunk(head(x).float(), 2, -1)
+                std = (self.max_std - self.min_std) * torch.sigmoid(std + 2.0) + self.min_std
+                dists.append(Independent(Normal(torch.tanh(mean), std), 1))
+                continue
             logits = head(x).float()
             if self.unimix > 0:
                 probs = logits.softmax(-1)
@@ -667,7 +676,7 @@ class Actor(nn.Module):
         if not with_actions:
             return (), dists
         if greedy:
-            actions = tuple(d.mean if self.is_continuous else d.mode for d in dists)
+            actions = tuple(d.mean if c else d.mode for d, c in zip(dists, self.continuous))
         else:
             actions = tuple(d.sample() for d in dists)
         return actions, dists
@@ -764,8 +773,8 @@ class DreamerV3_5Policy(nn.Module, DreamerPolicy):
             self.rssm.project_observations(embedded_obs),
         )
         actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
-        if self.actor.is_continuous:
-            actions = tuple(torch.clamp(a, -1, 1) for a in actions)
+        # The continuous actions clipped to [-1, 1]
+        actions = tuple(torch.clamp(a, -1, 1) if c else a for a, c in zip(actions, self.actor.continuous))
         self.actions = torch.cat(actions, -1)
         return actions
 
@@ -799,8 +808,7 @@ def build_agent(
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
     critic_cfg = cfg.algo.critic
-    codec.check("The actor of DreamerV3.5")
-    actions_dim, is_continuous = codec.dims, codec.continuous
+    actions_dim = codec.dims
     activation = hydra.utils.get_class(cfg.algo.dense_act)
     eps = cfg.algo.norm_eps
 
@@ -861,7 +869,7 @@ def build_agent(
     actor = Actor(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
-        is_continuous=is_continuous,
+        continuous=codec.continuous_heads,
         dense_units=actor_cfg.dense_units,
         mlp_layers=actor_cfg.mlp_layers,
         min_std=actor_cfg.min_std,

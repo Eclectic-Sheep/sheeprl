@@ -11,6 +11,7 @@ import gymnasium as gym
 import numpy as np
 from lightning import Fabric
 
+from sheeprl.core.actions import batched_env_actions
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.transforms.base import Pipeline
 from sheeprl.transforms.observations import EnvsTransforms
@@ -190,7 +191,9 @@ class GymEnvironment(Environment):
 
     def step(self, actions: np.ndarray) -> EnvStep:
         """Play `actions` (one row per environment) and return what happened."""
-        next_obs, rewards, terminated, truncated, info = self.envs.step(actions.reshape(self.envs.action_space.shape))
+        next_obs, rewards, terminated, truncated, info = self.envs.step(
+            batched_env_actions(actions, self.envs.action_space)
+        )
         # The same-step autoreset and `RestartOnException` report them in `info`
         final_obs = info.get("final_obs", [None] * self.num_envs)
         restarted = info.get("restart_on_exception", np.zeros(self.num_envs, dtype=bool))

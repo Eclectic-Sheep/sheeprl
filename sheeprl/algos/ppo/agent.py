@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from lightning import Fabric
 from torch import Tensor
-from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
+from torch.distributions import Independent, Normal, OneHotCategorical
 
 from sheeprl.core.actions import ActionCodec
 from sheeprl.core.collector import Act, Policy
@@ -58,10 +58,36 @@ class PPOActor(nn.Module):
         return [head(x) for head in self.actor_heads]
 
 
+def normal_head(out: Tensor) -> Independent:
+    """The normal distribution of a continuous head from the output of its layer: the means, then the log-stds."""
+    mean, log_std = torch.chunk(out, chunks=2, dim=-1)
+    std = log_std.exp()
+    return Independent(Normal(mean, std), 1)
+
+
+def head_distribution(codec: ActionCodec, distribution: str) -> str:
+    """The distribution of the continuous heads of `codec` (`distribution`, `normal` with `auto`), or `discrete` when
+    all the heads are categorical: the ones of PPO, A2C and recurrent PPO."""
+    has_continuous = not codec.categorical
+    if distribution not in ("auto", "normal", "tanh_normal", "discrete"):
+        raise ValueError(
+            f"The distribution must be on of: `auto`, `discrete`, `normal` and `tanh_normal`. Found: {distribution}"
+        )
+    if distribution == "discrete" and has_continuous:
+        raise ValueError("The `discrete` distribution plays categorical actions, but some actions are continuous")
+    if distribution not in ("discrete", "auto") and not has_continuous:
+        raise ValueError(f"The `{distribution}` distribution plays continuous actions, but all actions are discrete")
+    if distribution == "auto":
+        return "normal" if has_continuous else "discrete"
+    return distribution
+
+
 class PPOAgent(nn.Module):
-    """The feature extractor (the inputs of `algo.inputs`), the actor and the critic of PPO and A2C. The actor plays
-    all-categorical or continuous actions (`codec`); with `ortho_init`, the linear layers of the feature extractor get
-    orthogonal weights (gain 1) and zero biases."""
+    """The feature extractor (the inputs of `algo.inputs`), the actor and the critic of PPO and A2C. The actor has one
+    head per action of `codec`: a categorical distribution for a discrete one, a normal or a tanh-normal one
+    (`distribution`) for a continuous one, so the actions may mix them; the log-probabilities and the entropies are
+    summed over the heads. With `ortho_init`, the linear layers of the feature extractor get orthogonal weights (gain
+    1) and zero biases."""
 
     def __init__(
         self,
@@ -73,27 +99,12 @@ class PPOAgent(nn.Module):
         ortho_init: bool = False,
     ):
         super().__init__()
-        codec.check("The actor of PPO")
         self.codec = codec
         is_continuous = codec.continuous
         actions_dim = codec.dims
         self.is_continuous = is_continuous
         self.distribution_cfg = distribution_cfg
-        self.distribution = distribution_cfg.get("type", "auto").lower()
-        if self.distribution not in ("auto", "normal", "tanh_normal", "discrete"):
-            raise ValueError(
-                "The distribution must be on of: `auto`, `discrete`, `normal` and `tanh_normal`. "
-                f"Found: {self.distribution}"
-            )
-        if self.distribution == "discrete" and is_continuous:
-            raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
-        elif self.distribution not in {"discrete", "auto"} and not is_continuous:
-            raise ValueError("You have choose a continuous distribution but `is_continuous` is false")
-        if self.distribution == "auto":
-            if is_continuous:
-                self.distribution = "normal"
-            else:
-                self.distribution = "discrete"
+        self.distribution = head_distribution(codec, distribution_cfg.get("type", "auto").lower())
         self.actions_dim = actions_dim
         self.feature_extractor = feature_extractor
         if ortho_init:
@@ -131,10 +142,13 @@ class PPOAgent(nn.Module):
             if actor_cfg.mlp_layers > 0
             else nn.Identity()
         )
-        if is_continuous:
-            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, sum(actions_dim) * 2)])
-        else:
-            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
+        # One layer per action: the means and the log-stds of a continuous one, the logits of a categorical one
+        actor_heads = nn.ModuleList(
+            [
+                nn.Linear(actor_cfg.dense_units, head.size * 2 if head.kind == "continuous" else head.size)
+                for head in codec.heads
+            ]
+        )
         self.actor = PPOActor(actor_backbone, actor_heads, is_continuous, self.distribution)
         # Orthogonal initialization as in the PPO implementation details (https://iclr-blog-track.github.io/2022/03/25/
         # ppo-implementation-details/): hidden layers with gain sqrt(2), the actor's heads with 0.01 (an almost uniform
@@ -145,56 +159,41 @@ class PPOAgent(nn.Module):
         if critic_cfg.ortho_init:
             ortho_init_linear_layers(self.critic, gain=sqrt(2), output_gain=1.0)
 
-    def _normal(self, actor_out: Tensor, actions: Optional[List[Tensor]] = None) -> Tuple[Tensor, Tensor, Tensor]:
-        mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
-        std = log_std.exp()
-        normal = Independent(Normal(mean, std), 1)
-        actions = actions[0]
-        log_prob = normal.log_prob(actions)
-        return actions, log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1)
-
-    def _tanh_normal(self, actor_out: Tensor, actions: Optional[List[Tensor]] = None) -> Tuple[Tensor, Tensor, Tensor]:
-        mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
-        std = log_std.exp()
-        normal = Independent(Normal(mean, std), 1)
-        # The actions played are stored before the tanh (`PPOPolicy.env_actions`): their log-probability is computed
-        # from them, as the policy did, also where the tanh saturates
-        actions = actions[0].float()
-        log_prob = normal.log_prob(actions) - tanh_log_abs_det_jacobian(actions)
-        return actions, log_prob.unsqueeze(dim=-1), normal.entropy().unsqueeze(dim=-1)
-
     def forward(
-        self, obs: Dict[str, Tensor], actions: Optional[List[Tensor]] = None
+        self, obs: Dict[str, Tensor], actions: Optional[Sequence[Tensor]] = None
     ) -> Tuple[Sequence[Tensor], Tensor, Tensor, Tensor]:
+        """The actions (`actions`, or sampled without them), their log-probabilities and entropies summed over the
+        heads, and the values of `obs`."""
         feat = self.feature_extractor(obs)
         actor_out: List[Tensor] = self.actor(feat)
         values = self.critic(feat)
-        if self.is_continuous:
-            if self.distribution == "normal":
-                actions, log_prob, entropy = self._normal(actor_out[0], actions)
-            elif self.distribution == "tanh_normal":
-                actions, log_prob, entropy = self._tanh_normal(actor_out[0], actions)
-            return tuple([actions]), log_prob, entropy, values
-        else:
-            should_append = False
-            actions_logprobs: List[Tensor] = []
-            actions_entropies: List[Tensor] = []
-            actions_dist: List[Distribution] = []
-            if actions is None:
-                should_append = True
-                actions: List[Tensor] = []
-            for i, logits in enumerate(actor_out):
-                actions_dist.append(OneHotCategorical(logits=logits))
-                actions_entropies.append(actions_dist[-1].entropy())
-                if should_append:
-                    actions.append(actions_dist[-1].sample())
-                actions_logprobs.append(actions_dist[-1].log_prob(actions[i]))
-            return (
-                tuple(actions),
-                torch.stack(actions_logprobs, dim=-1).sum(dim=-1, keepdim=True),
-                torch.stack(actions_entropies, dim=-1).sum(dim=-1, keepdim=True),
-                values,
-            )
+        played: List[Tensor] = []
+        logprobs: List[Tensor] = []
+        entropies: List[Tensor] = []
+        for i, out in enumerate(actor_out):
+            if self.codec.is_continuous(i):
+                normal = normal_head(out)
+                action = normal.sample() if actions is None else actions[i]
+                if self.distribution == "tanh_normal":
+                    # The actions played are stored before the tanh (`PPOPolicy.env_actions`): their log-probability
+                    # is computed from them, as the policy did, also where the tanh saturates
+                    action = action.float()
+                    logprobs.append(normal.log_prob(action) - tanh_log_abs_det_jacobian(action))
+                else:
+                    logprobs.append(normal.log_prob(action))
+                entropies.append(normal.entropy())
+            else:
+                categorical = OneHotCategorical(logits=out)
+                entropies.append(categorical.entropy())
+                action = categorical.sample() if actions is None else actions[i]
+                logprobs.append(categorical.log_prob(action))
+            played.append(action)
+        return (
+            tuple(played),
+            torch.stack(logprobs, dim=-1).sum(dim=-1, keepdim=True),
+            torch.stack(entropies, dim=-1).sum(dim=-1, keepdim=True),
+            values,
+        )
 
 
 class PPOPolicy(nn.Module, Policy):
@@ -220,46 +219,30 @@ class PPOPolicy(nn.Module, Policy):
         # The keys of the inputs of the feature extractor, by default
         self.keys = tuple(keys) or tuple(feature_extractor.keys)
 
-    def _normal(self, actor_out: Tensor) -> Tuple[Tensor, Tensor]:
-        mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
-        std = log_std.exp()
-        normal = Independent(Normal(mean, std), 1)
-        actions = normal.sample()
-        log_prob = normal.log_prob(actions)
-        return actions, log_prob.unsqueeze(dim=-1)
-
-    def _tanh_normal(self, actor_out: Tensor) -> Tuple[Tensor, Tensor]:
-        mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
-        std = log_std.exp()
-        normal = Independent(Normal(mean, std), 1)
-        # Returned before the tanh, which `env_actions` applies: the agent computes the same log-probability from them
-        actions = normal.sample().float()
-        log_prob = normal.log_prob(actions) - tanh_log_abs_det_jacobian(actions)
-        return actions, log_prob.unsqueeze(dim=-1)
-
     def forward(self, obs: Dict[str, Tensor]) -> Tuple[Sequence[Tensor], Tensor, Tensor]:
+        """The sampled actions, one per head, their log-probability summed over the heads and the values of `obs`."""
         feat = self.feature_extractor(obs, phase="act")
         values = self.critic(feat)
         actor_out: List[Tensor] = self.actor(feat)
-        if self.actor.is_continuous:
-            if self.actor.distribution == "normal":
-                actions, log_prob = self._normal(actor_out[0])
-            elif self.actor.distribution == "tanh_normal":
-                actions, log_prob = self._tanh_normal(actor_out[0])
-            return tuple([actions]), log_prob, values
-        else:
-            actions_dist: List[Distribution] = []
-            actions_logprobs: List[Tensor] = []
-            actions: List[Tensor] = []
-            for i, logits in enumerate(actor_out):
-                actions_dist.append(OneHotCategorical(logits=logits))
-                actions.append(actions_dist[-1].sample())
-                actions_logprobs.append(actions_dist[-1].log_prob(actions[i]))
-            return (
-                tuple(actions),
-                torch.stack(actions_logprobs, dim=-1).sum(dim=-1, keepdim=True),
-                values,
-            )
+        actions: List[Tensor] = []
+        logprobs: List[Tensor] = []
+        for i, out in enumerate(actor_out):
+            if self.codec.is_continuous(i):
+                normal = normal_head(out)
+                if self.actor.distribution == "tanh_normal":
+                    # Returned before the tanh, which `env_actions` applies: the agent computes the same
+                    # log-probability from them
+                    action = normal.sample().float()
+                    logprobs.append(normal.log_prob(action) - tanh_log_abs_det_jacobian(action))
+                else:
+                    action = normal.sample()
+                    logprobs.append(normal.log_prob(action))
+            else:
+                categorical = OneHotCategorical(logits=out)
+                action = categorical.sample()
+                logprobs.append(categorical.log_prob(action))
+            actions.append(action)
+        return tuple(actions), torch.stack(logprobs, dim=-1).sum(dim=-1, keepdim=True), values
 
     def get_values(self, obs: Dict[str, Tensor]) -> Tensor:
         """The values of the observations `obs` (the ones the policy plays from, e.g. the last ones of a rollout)."""
@@ -273,9 +256,11 @@ class PPOPolicy(nn.Module, Policy):
     def env_actions(self, actions: Sequence[Tensor]) -> np.ndarray:
         """The actions to play in the environments, from the ones returned by `forward`: the indices of the discrete
         actions; the continuous actions, squashed by the tanh with `tanh_normal` (they are stored before it)."""
-        if self.actor.is_continuous and self.actor.distribution == "tanh_normal":
-            squashed = torch.cat(list(actions), dim=-1)
-            return self.codec.to_env([safetanh(squashed, eps=torch.finfo(squashed.dtype).resolution)])
+        if self.actor.distribution == "tanh_normal":
+            actions = [
+                safetanh(a, eps=torch.finfo(a.dtype).resolution) if self.codec.is_continuous(i) else a
+                for i, a in enumerate(actions)
+            ]
         return self.codec.to_env(actions)
 
     def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
@@ -296,27 +281,17 @@ class PPOPolicy(nn.Module, Policy):
     def get_actions(self, obs: Dict[str, Tensor], greedy: bool = False) -> Sequence[Tensor]:
         feat = self.feature_extractor(obs, phase="act")
         actor_out: List[Tensor] = self.actor(feat)
-        if self.actor.is_continuous:
-            mean, log_std = torch.chunk(actor_out[0], chunks=2, dim=-1)
-            if greedy:
-                actions = mean
+        actions: List[Tensor] = []
+        for i, out in enumerate(actor_out):
+            if self.codec.is_continuous(i):
+                action = torch.chunk(out, chunks=2, dim=-1)[0] if greedy else normal_head(out).sample()
+                if self.actor.distribution == "tanh_normal":
+                    action = safetanh(action, eps=torch.finfo(action.dtype).resolution)
             else:
-                std = log_std.exp()
-                normal = Independent(Normal(mean, std), 1)
-                actions = normal.sample()
-            if self.actor.distribution == "tanh_normal":
-                actions = safetanh(actions, eps=torch.finfo(actions.dtype).resolution)
-            return tuple([actions])
-        else:
-            actions: List[Tensor] = []
-            actions_dist: List[Distribution] = []
-            for logits in actor_out:
-                actions_dist.append(OneHotCategorical(logits=logits))
-                if greedy:
-                    actions.append(actions_dist[-1].mode)
-                else:
-                    actions.append(actions_dist[-1].sample())
-            return tuple(actions)
+                categorical = OneHotCategorical(logits=out)
+                action = categorical.mode if greedy else categorical.sample()
+            actions.append(action)
+        return tuple(actions)
 
 
 def build_agent(

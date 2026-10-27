@@ -49,9 +49,44 @@ class MaskVelocityWrapper(gym.ObservationWrapper):
         return observation * self.mask
 
 
+class _BoxNormalizer:
+    """The bounded dimensions of the `Box` space `space` exposed as [-1, 1] (`self.space`): `__call__` clips an action
+    of the exposed space and rescales it to the bounds of `space`."""
+
+    def __init__(self, space: gym.spaces.Box) -> None:
+        self.env_dtype = space.dtype
+        self._mask = np.isfinite(space.low) & np.isfinite(space.high)
+        self._low = np.where(self._mask, space.low, -1)
+        self._high = np.where(self._mask, space.high, 1)
+        # The dimensions already in [-1, 1] are not recomputed: they get the same actions, bit for bit
+        self._rescale = self._mask & ((self._low != -1) | (self._high != 1))
+        self.space = gym.spaces.Box(
+            low=np.where(self._mask, -1, space.low),
+            high=np.where(self._mask, 1, space.high),
+            shape=space.shape,
+            dtype=space.dtype,
+        )
+
+    def __call__(self, action: np.ndarray) -> np.ndarray:
+        action = np.clip(action, self.space.low, self.space.high)
+        env_action = (action + 1) / 2 * (self._high - self._low) + self._low
+        return np.where(self._rescale, env_action, action).astype(self.env_dtype, copy=False)
+
+
+def has_box_actions(space: gym.Space) -> bool:
+    """Whether the action space `space` is a `Box`, or a tuple or a dictionary of spaces with a `Box` among its
+    parts."""
+    if isinstance(space, gym.spaces.Tuple):
+        return any(has_box_actions(part) for part in space.spaces)
+    if isinstance(space, gym.spaces.Dict):
+        return any(has_box_actions(part) for part in space.spaces.values())
+    return isinstance(space, gym.spaces.Box)
+
+
 class NormalizeAction(gym.ActionWrapper):
     """Exposes the bounded dimensions of a `Box` action space as [-1, 1], rescaled to the bounds of the environment,
-    and clips the actions to the exposed space. The unbounded dimensions are left as they are.
+    and clips the actions to the exposed space. The unbounded dimensions are left as they are. In a tuple or a
+    dictionary of action spaces, the `Box` parts are normalized and the other parts left as they are.
 
     The `NormalizeAction` and `ClipAction` wrappers of DreamerV3
     (https://github.com/danijar/dreamerv3/blob/bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01/embodied/core/wrappers.py).
@@ -59,25 +94,43 @@ class NormalizeAction(gym.ActionWrapper):
 
     def __init__(self, env: gym.Env):
         super().__init__(env)
-        space = env.action_space
-        if not isinstance(space, gym.spaces.Box):
-            raise ValueError(f"Only `Box` action spaces can be normalized, got: {space}")
-        self._mask = np.isfinite(space.low) & np.isfinite(space.high)
-        self._low = np.where(self._mask, space.low, -1)
-        self._high = np.where(self._mask, space.high, 1)
-        # The dimensions already in [-1, 1] are not recomputed: they get the same actions, bit for bit
-        self._rescale = self._mask & ((self._low != -1) | (self._high != 1))
-        self.action_space = gym.spaces.Box(
-            low=np.where(self._mask, -1, space.low),
-            high=np.where(self._mask, 1, space.high),
-            shape=space.shape,
-            dtype=space.dtype,
-        )
+        if not has_box_actions(env.action_space):
+            raise ValueError(f"Only `Box` actions can be normalized, got: {env.action_space}")
+        self._normalizers = self._build(env.action_space)
+        self.action_space = self._exposed(env.action_space, self._normalizers)
 
-    def action(self, action: np.ndarray) -> np.ndarray:
-        action = np.clip(action, self.action_space.low, self.action_space.high)
-        env_action = (action + 1) / 2 * (self._high - self._low) + self._low
-        return np.where(self._rescale, env_action, action).astype(self.env.action_space.dtype, copy=False)
+    @classmethod
+    def _build(cls, space: gym.Space) -> Any:
+        if isinstance(space, gym.spaces.Box):
+            return _BoxNormalizer(space)
+        if isinstance(space, gym.spaces.Tuple):
+            return tuple(cls._build(part) for part in space.spaces)
+        if isinstance(space, gym.spaces.Dict):
+            return {key: cls._build(part) for key, part in space.spaces.items()}
+        return None
+
+    @classmethod
+    def _exposed(cls, space: gym.Space, normalizers: Any) -> gym.Space:
+        if isinstance(space, gym.spaces.Box):
+            return normalizers.space
+        if isinstance(space, gym.spaces.Tuple):
+            return gym.spaces.Tuple([cls._exposed(part, n) for part, n in zip(space.spaces, normalizers)])
+        if isinstance(space, gym.spaces.Dict):
+            return gym.spaces.Dict({key: cls._exposed(part, normalizers[key]) for key, part in space.spaces.items()})
+        return space
+
+    @classmethod
+    def _normalize(cls, action: Any, normalizers: Any) -> Any:
+        if isinstance(normalizers, _BoxNormalizer):
+            return normalizers(action)
+        if isinstance(normalizers, tuple):
+            return tuple(cls._normalize(part, n) for part, n in zip(action, normalizers))
+        if isinstance(normalizers, dict):
+            return {key: cls._normalize(action[key], n) for key, n in normalizers.items()}
+        return action
+
+    def action(self, action: Any) -> Any:
+        return self._normalize(action, self._normalizers)
 
 
 class ActionRepeat(gym.Wrapper):
@@ -328,6 +381,11 @@ class ActionsAsObservationWrapper(gym.Wrapper):
         self._num_stack = num_stack
         self._dilation = dilation
         self._actions = deque(maxlen=num_stack * dilation)
+        if isinstance(self.env.action_space, (gym.spaces.Tuple, gym.spaces.Dict)):
+            raise NotImplementedError(
+                f"The actions as observations of a tuple or a dictionary of action spaces are not supported, got: "
+                f"{self.env.action_space}"
+            )
         self._is_continuous = isinstance(self.env.action_space, gym.spaces.Box)
         self._is_multidiscrete = isinstance(self.env.action_space, gym.spaces.MultiDiscrete)
         self.observation_space = copy.deepcopy(self.env.observation_space)

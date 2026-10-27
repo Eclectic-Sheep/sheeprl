@@ -242,7 +242,8 @@ def train(
             posteriors,
             recurrent_states,
             horizon=cfg.algo.horizon,
-            action_clip=float(cfg.algo.actor.action_clip) if is_continuous else 0.0,
+            continuous=tuple(actor_exploration.continuous),
+            action_clip=float(cfg.algo.actor.action_clip),
         )
         targets = {}
         for k, critic in critics_exploration.items():

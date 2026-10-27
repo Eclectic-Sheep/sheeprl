@@ -18,6 +18,7 @@ from sheeprl.envs.wrappers import (
     NormalizeAction,
     RewardAsObservationWrapper,
     TransformsWrapper,
+    has_box_actions,
     has_nested_observations,
 )
 from sheeprl.transforms.observations import frame_pipelines
@@ -141,7 +142,7 @@ def make_env(
 
         # The bounded continuous actions exposed as [-1, 1], the range of the actor (the Dreamers). Read with a
         # default: the configurations saved before the option don't have it, and their checkpoints play as trained
-        if cfg.algo.get("normalize_actions", False) and isinstance(env.action_space, gym.spaces.Box):
+        if cfg.algo.get("normalize_actions", False) and has_box_actions(env.action_space):
             env = NormalizeAction(env)
 
         # action repeat: the Atari environments repeat the action through the `frame_skip`
@@ -199,6 +200,10 @@ def get_dummy_env(id: str):
         from sheeprl.envs.dummy import NestedDummyEnv
 
         env = NestedDummyEnv()
+    elif "mixed" in id:
+        from sheeprl.envs.dummy import MixedDummyEnv
+
+        env = MixedDummyEnv()
     elif "grid" in id:
         from sheeprl.envs.dummy import GridDummyEnv
 

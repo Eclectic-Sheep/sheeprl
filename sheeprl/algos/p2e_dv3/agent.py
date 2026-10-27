@@ -84,7 +84,7 @@ def build_agent(
             The critic is under the 'module' key, whereas, the target critic is under the 'target_critic' key.
     """
     world_model_cfg = cfg.algo.world_model
-    actions_dim, is_continuous = codec.dims, codec.continuous
+    actions_dim = codec.dims
     actor_cfg = cfg.algo.actor
     critic_cfg = cfg.algo.critic
 
@@ -109,7 +109,7 @@ def build_agent(
     actor_exploration: Union[Actor, MinedojoActor] = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
-        is_continuous=is_continuous,
+        continuous=codec.continuous_heads,
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
         max_std=actor_cfg.max_std,

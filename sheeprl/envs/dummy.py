@@ -108,6 +108,31 @@ class MultiDiscreteDummyEnv(BaseDummyEnv):
         )
 
 
+class MixedDummyEnv(BaseDummyEnv):
+    """Mixed actions: a tuple of a discrete action of 3 choices and a continuous one of 2 dimensions in [-2, 2]. A step
+    checks that it gets the actions with the structure of the action space."""
+
+    def __init__(
+        self,
+        image_size: Tuple[int, int, int] = (3, 64, 64),
+        n_steps: int = 4,
+        vector_shape: Tuple[int] = (10,),
+        dict_obs_space: bool = True,
+    ):
+        self.action_space = gym.spaces.Tuple(
+            (gym.spaces.Discrete(3), gym.spaces.Box(-2, 2, shape=(2,), dtype=np.float32))
+        )
+        super().__init__(
+            image_size=image_size, n_steps=n_steps, vector_shape=vector_shape, dict_obs_space=dict_obs_space
+        )
+
+    def step(self, action):
+        choice, values = action
+        if not (0 <= int(choice) < 3 and np.shape(values) == (2,)):
+            raise ValueError(f"Mixed actions are a choice in [0, 3) and 2 values, got {action}")
+        return super().step(action)
+
+
 class GridDummyEnv(gym.Env):
     """Grids of 0 and 1 (the field of view of issue #237): `fov`, five channels of a 5 x 5 field of view, and `plane`, a
     single 5 x 5 one, both float32, random at every step; a discrete action; episodes of `n_steps` steps and reward 1

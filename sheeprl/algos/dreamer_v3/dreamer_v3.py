@@ -22,7 +22,14 @@ from torch.distributions import Distribution, Independent, OneHotCategorical
 from torch.optim import Optimizer
 
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, actor_objective, reinforce_weight
-from sheeprl.algos.dreamer_v3.agent import Actor, DreamerV3Policy, MinedojoActor, WorldModel, build_agent, clip_actions
+from sheeprl.algos.dreamer_v3.agent import (
+    Actor,
+    DreamerV3Policy,
+    MinedojoActor,
+    WorldModel,
+    build_agent,
+    clip_head_actions,
+)
 from sheeprl.algos.dreamer_v3.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values
 from sheeprl.core import (
@@ -368,14 +375,16 @@ def imagine_trajectories(
     recurrent_states: Tensor,
     *,
     horizon: int,
+    continuous: Sequence[bool],
     action_clip: float = 0.0,
 ) -> Tuple[Tensor, Tensor, Tensor]:
     """Imagine `horizon` steps from every latent state of the batch, with the actions of the actor. Can be compiled
     (`algo.compile`).
 
     Args:
-        action_clip: the magnitude the recurrent model clips the continuous actions to (`clip_actions`), 0 for the
-            discrete ones.
+        continuous: whether every action (head) of the actor is continuous.
+        action_clip: the magnitude the recurrent model clips the continuous actions to (`clip_actions`); the discrete
+            ones are not clipped.
 
     Returns:
         The imagined latent states, the imagined actions (the samples of the actor, whose log-probabilities REINFORCE
@@ -386,10 +395,10 @@ def imagine_trajectories(
     imagined_prior = posteriors.detach().reshape(1, -1, stoch_state_size)
     recurrent_state = recurrent_states.detach().reshape(1, -1, recurrent_state_size)
     imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-    actions = torch.cat(actor(imagined_latent_state.detach(), clip=False)[0], dim=-1)
+    head_actions = actor(imagined_latent_state.detach(), clip=False)[0]
     imagined_trajectories = [imagined_latent_state]
-    imagined_actions = [actions]
-    clipped_actions = [clip_actions(actions, action_clip)]
+    imagined_actions = [torch.cat(head_actions, dim=-1)]
+    clipped_actions = [clip_head_actions(head_actions, continuous, action_clip)]
 
     # The imagination goes like this, with H=3:
     # Actions:           a'0      a'1      a'2     a'4
@@ -410,10 +419,10 @@ def imagine_trajectories(
         )
         imagined_prior = imagined_prior.view(1, -1, stoch_state_size)
         imagined_latent_state = torch.cat((imagined_prior, recurrent_state), -1)
-        actions = torch.cat(actor(imagined_latent_state.detach(), clip=False)[0], dim=-1)
+        head_actions = actor(imagined_latent_state.detach(), clip=False)[0]
         imagined_trajectories.append(imagined_latent_state)
-        imagined_actions.append(actions)
-        clipped_actions.append(clip_actions(actions, action_clip))
+        imagined_actions.append(torch.cat(head_actions, dim=-1))
+        clipped_actions.append(clip_head_actions(head_actions, continuous, action_clip))
     return (
         torch.cat(imagined_trajectories, dim=0),
         torch.cat(imagined_actions, dim=0),
@@ -432,6 +441,7 @@ def imagine(
     horizon: int,
     gamma: float,
     lmbda: float,
+    continuous: Sequence[bool],
     action_clip: float = 0.0,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Imagine `horizon` steps from every latent state of the batch, with the actions of the actor
@@ -442,7 +452,13 @@ def imagine(
         discounts of the imagined steps.
     """
     imagined_trajectories, imagined_actions, _ = imagine_trajectories(
-        world_model, actor, posteriors, recurrent_states, horizon=horizon, action_clip=action_clip
+        world_model,
+        actor,
+        posteriors,
+        recurrent_states,
+        horizon=horizon,
+        continuous=continuous,
+        action_clip=action_clip,
     )
 
     # Predict values, rewards and continues
@@ -596,7 +612,8 @@ def behaviour_learning(
             horizon=cfg.algo.horizon,
             gamma=cfg.algo.gamma,
             lmbda=cfg.algo.lmbda,
-            action_clip=float(cfg.algo.actor.action_clip) if is_continuous else 0.0,
+            continuous=tuple(actor.continuous),
+            action_clip=float(cfg.algo.actor.action_clip),
         )
     with autocast_cache_scope(fabric):
         # The normalization of the returns, from their percentiles (not compiled: it updates its state in place)

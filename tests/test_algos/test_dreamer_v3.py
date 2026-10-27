@@ -249,7 +249,7 @@ def test_the_actions_of_the_actor_are_its_samples_clipped():
     actor = dv3_agent.Actor(
         latent_state_size=4,
         actions_dim=[2],
-        is_continuous=True,
+        continuous=[True],
         distribution_cfg={"type": "auto"},
         init_std=2.0,
         min_std=0.1,
@@ -562,3 +562,21 @@ def test_dreamer_v3_builds_its_decoder_of_the_configured_class():
     world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), codec_of([3], False), cfg, obs_space)
     decoder = getattr(world_model.observation_model, "module", world_model.observation_model)
     assert type(decoder).__name__ == "RecordingDecoder" and set(decoder.named_keys()) == {"image", "vector"}
+
+
+def test_the_imagination_clips_only_the_continuous_actions_of_a_mixed_actor():
+    actor = dv3_agent.Actor(
+        latent_state_size=4,
+        actions_dim=[3, 2],
+        continuous=[False, True],
+        distribution_cfg={"type": "auto"},
+        dense_units=8,
+        mlp_layers=1,
+    )
+    assert actor.distribution == "scaled_normal" and not actor.is_continuous
+    actions, dists = actor(torch.randn(5, 4), clip=False)
+    assert actions[0].shape == (5, 3) and actions[1].shape == (5, 2) and len(dists) == 2
+    big = (torch.zeros(5, 3), torch.full((5, 2), 4.0))
+    clipped = dv3_agent.clip_head_actions(big, actor.continuous, 1.0)
+    # The one-hot is untouched, the continuous actions scaled to the magnitude 1
+    assert torch.equal(clipped[:, :3], big[0]) and torch.allclose(clipped[:, 3:], torch.ones(5, 2))

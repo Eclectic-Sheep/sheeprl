@@ -29,6 +29,8 @@ An observation of another kind (e.g. a grid of 0 and 1, or a `Discrete` observat
 
 An action of type `gymnasium.spaces.Box` must be of shape `(n,)`, where `n` is the number of (possibly continuous) actions the environment supports. When `algo.normalize_actions=True` (the default for the Dreamer and Plan2Explore algorithms), the bounded dimensions of a `gymnasium.spaces.Box` action space are exposed to the agent in $[-1, 1]$ and rescaled to the bounds of the environment by the `sheeprl.envs.wrappers.NormalizeAction` wrapper, whereas the unbounded dimensions are left as they are.
 
+An action space can also be a `gymnasium.spaces.Tuple` or a `gymnasium.spaces.Dict` of action spaces, e.g. a discrete action and a continuous one: the agent has one head per action, each with its own distribution, and the environment receives the actions with the structure of its action space. A2C, PPO, PPO Recurrent, the Dreamers and Plan2Explore play them; SAC, DroQ and SAC-AE play `Box` actions only.
+
 # Add a new Environment
 There are two ways to add a new environment:
 1. Create from scratch a custom environment by inheriting from the [`gymnasium.Env`](https://gymnasium.farama.org/api/env/#gymnasium-env) class.

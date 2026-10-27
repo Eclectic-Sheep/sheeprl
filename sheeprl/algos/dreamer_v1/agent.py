@@ -48,7 +48,7 @@ class Actor(DV2Actor):
         self,
         latent_state_size: int,
         actions_dim: Sequence[int],
-        is_continuous: bool,
+        continuous: Sequence[bool],
         distribution_cfg: dotdict,
         init_std: float = 5.0,
         min_std: float = 1e-4,
@@ -63,7 +63,7 @@ class Actor(DV2Actor):
         super().__init__(
             latent_state_size=latent_state_size,
             actions_dim=actions_dim,
-            is_continuous=is_continuous,
+            continuous=continuous,
             distribution_cfg=distribution_cfg,
             init_std=init_std,
             min_std=min_std,
@@ -75,7 +75,7 @@ class Actor(DV2Actor):
             expl_decay=expl_decay,
             expl_min=expl_min,
         )
-        if is_continuous and distribution_cfg.get("type", "auto").lower() == "auto":
+        if any(continuous) and distribution_cfg.get("type", "auto").lower() == "auto":
             self.distribution = "tanh_normal"
         if self.distribution == "tanh_normal":
             # The inverse of the softplus of `init_std` (`raw_init_std` of the official implementation)
@@ -465,8 +465,7 @@ def build_agent(
 
     # Sizes
     latent_state_size = world_model_cfg.stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
-    codec.check("The actor of DreamerV1")
-    actions_dim, is_continuous = codec.dims, codec.continuous
+    actions_dim = codec.dims
 
     # Define models
     encoder = build_encoder(cfg, obs_space)
@@ -523,7 +522,7 @@ def build_agent(
     actor: Union[Actor, MinedojoActor] = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
-        is_continuous=is_continuous,
+        continuous=codec.continuous_heads,
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
         mlp_layers=actor_cfg.mlp_layers,

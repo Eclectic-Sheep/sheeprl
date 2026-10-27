@@ -141,3 +141,38 @@ def test_the_compiled_policy_plays_as_the_eager_one(monkeypatch, is_continuous):
             torch.testing.assert_close(a, e)
         torch.testing.assert_close(logprobs, eager_logprobs, rtol=1e-4, atol=1e-5)
         torch.testing.assert_close(values, eager_values, rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize("distribution", ["auto", "tanh_normal"])
+def test_the_log_probability_of_mixed_actions_is_the_sum_over_their_heads(distribution):
+    from torch.distributions import Independent, Normal, OneHotCategorical
+
+    from sheeprl.algos.ppo.agent import tanh_log_abs_det_jacobian
+
+    torch.manual_seed(0)
+    networks = {"dense_units": 16, "mlp_layers": 1, "dense_act": "torch.nn.Tanh", "layer_norm": False}
+    net = {"_target_": "sheeprl.models.MLPEncoder", **networks, "features_dim": 16}
+    space = gym.spaces.Tuple([gym.spaces.Discrete(3), gym.spaces.Box(-1, 1, (2,), np.float32)])
+    agent = PPOAgent(
+        codec=ActionCodec.from_space(space),
+        feature_extractor=MultiEncoder.from_config({"vector": {"keys": ["state"], "net": net}}, OBS_SPACE),
+        actor_cfg=dotdict({**networks, "ortho_init": False}),
+        critic_cfg=dotdict({**networks, "ortho_init": False}),
+        distribution_cfg=dotdict({"type": distribution}),
+    )
+    # One head per action: the logits of the discrete one, the means and log-stds of the continuous one
+    assert [head.out_features for head in agent.actor.actor_heads] == [3, 4]
+    obs = {"state": torch.randn(5, 8)}
+    actions, log_prob, entropy, _ = agent(obs)
+    assert actions[0].shape == (5, 3) and actions[1].shape == (5, 2)
+    logits, normal_out = agent.actor(agent.feature_extractor(obs))
+    mean, log_std = normal_out.chunk(2, -1)
+    normal = Independent(Normal(mean, log_std.exp()), 1)
+    expected = OneHotCategorical(logits=logits).log_prob(actions[0]) + normal.log_prob(actions[1])
+    if distribution == "tanh_normal":
+        expected = expected - tanh_log_abs_det_jacobian(actions[1])
+    torch.testing.assert_close(log_prob.squeeze(-1), expected)
+    torch.testing.assert_close(entropy.squeeze(-1), OneHotCategorical(logits=logits).entropy() + normal.entropy())
+    # Evaluated again from the stored actions, as in the loss
+    _, log_prob_again, _, _ = agent(obs, actions)
+    torch.testing.assert_close(log_prob_again, log_prob)

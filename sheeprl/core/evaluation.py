@@ -10,6 +10,7 @@ import torch
 from lightning import Fabric
 from torch import nn
 
+from sheeprl.core.actions import single_env_actions
 from sheeprl.core.algorithm import Algorithm, TrainState
 from sheeprl.core.loop import load_trained_state
 from sheeprl.transforms.observations import EnvsTransforms
@@ -55,7 +56,7 @@ def run_test(
         # The policy plays one environment: its observations are a row
         obs = transforms.envs({k: v[np.newaxis] for k, v in obs.items()}, update=False)
         act = policy.act(obs, greedy=greedy)
-        obs, reward, terminated, truncated, _ = env.step(act.env_actions.reshape(env.action_space.shape))
+        obs, reward, terminated, truncated, _ = env.step(single_env_actions(act.env_actions, env.action_space))
         done = terminated or truncated or cfg.dry_run
         cumulative_rew += reward
     env.close()

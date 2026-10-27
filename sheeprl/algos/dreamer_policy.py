@@ -62,5 +62,7 @@ class DreamerPolicy(Policy):
         ignore them."""
         if len(self.mask_keys) > 0:
             return self.act(env.obs)
-        env_actions = np.array(env.random_actions())
+        env_actions = env.random_actions()
+        if self.codec.space is None:
+            env_actions = np.array(env_actions)
         return Act(env_actions, {"actions": self.codec.from_env(env_actions)})

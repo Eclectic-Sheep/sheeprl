@@ -19,8 +19,9 @@ if TYPE_CHECKING:
 class Act:
     """The actions chosen by a policy for the current observations of the environments."""
 
-    # The actions played in the environments, one row per environment
-    env_actions: np.ndarray
+    # The actions played in the environments, one row per environment: for a `Tuple` or a `Dict` action space, a tuple
+    # or a dictionary of the actions of its parts
+    env_actions: Any
     # What the writer stores with the step, one row per environment: e.g. the actions as the agent trains on them
     # (one-hot for discrete actions), their log-probabilities, the values of the observations
     columns: Dict[str, np.ndarray] = field(default_factory=dict)

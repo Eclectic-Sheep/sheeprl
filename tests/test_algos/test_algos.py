@@ -210,7 +210,26 @@ def test_a2c(standard_args, start_time, gae_method):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+def test_a2c_plays_mixed_actions(standard_args, start_time):
+    # A discrete and a continuous action (`mixed_dummy`), each with its own head
+    root_dir = os.path.join(f"pytest_{start_time}", "a2c_mixed", os.environ["LT_DEVICES"])
+    args = standard_args + [
+        "exp=a2c",
+        "env=dummy",
+        "env.id=mixed_dummy",
+        f"algo.rollout_steps={os.environ['LT_DEVICES']}",
+        "algo.per_rank_batch_size=1",
+        f"root_dir={root_dir}",
+        "run_name=test_a2c_mixed",
+        "algo.inputs.image.keys=[]",
+        "algo.inputs.vector.keys=[state]",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy", "mixed_dummy"])
 def test_ppo(standard_args, start_time, env_id):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo", os.environ["LT_DEVICES"])
     run_name = "test_ppo"
@@ -260,7 +279,7 @@ def test_on_policy_truncated_episodes(standard_args, start_time, algo):
 
 
 @pytest.mark.parametrize("gae_method", ["loop", "log_scan"])
-@pytest.mark.parametrize("env_id", ["CartPole-v1", "continuous_dummy"])
+@pytest.mark.parametrize("env_id", ["CartPole-v1", "continuous_dummy", "mixed_dummy"])
 def test_ppo_recurrent(standard_args, start_time, env_id, gae_method):
     root_dir = os.path.join(f"pytest_{start_time}", "ppo_recurrent", os.environ["LT_DEVICES"])
     run_name = "test_ppo_recurrent"
@@ -390,7 +409,7 @@ def test_dreamer_dry_run_with_longer_sequences(standard_args, start_time, exp):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy", "mixed_dummy"])
 def test_dreamer_v1(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v1", os.environ["LT_DEVICES"])
     run_name = "test_dreamer_v1"
@@ -420,7 +439,7 @@ def test_dreamer_v1(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy", "mixed_dummy"])
 def test_p2e_dv1(standard_args, env_id, start_time):
     if os.environ["LT_DEVICES"] != "1" and env_id != "continuous_dummy":
         # The exploration and the finetuning of every action space run with 1 process: with 2, one of them is enough
@@ -501,7 +520,7 @@ def test_p2e_dv1(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy", "mixed_dummy"])
 def test_dreamer_v2(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v2", os.environ["LT_DEVICES"])
     run_name = "test_dreamer_v2"
@@ -536,7 +555,7 @@ def test_dreamer_v2(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy", "mixed_dummy"])
 def test_p2e_dv2(standard_args, env_id, start_time):
     if os.environ["LT_DEVICES"] != "1" and env_id != "continuous_dummy":
         # The exploration and the finetuning of every action space run with 1 process: with 2, one of them is enough
@@ -617,7 +636,7 @@ def test_p2e_dv2(standard_args, env_id, start_time):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
-@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy", "mixed_dummy"])
 def test_dreamer_v3(standard_args, env_id, start_time):
     root_dir = os.path.join(f"pytest_{start_time}", "dreamer_v3", os.environ["LT_DEVICES"])
     run_name = "test_dreamer_v3"
@@ -735,7 +754,7 @@ DREAMER_V3_5_ARGS = [
 ]
 
 
-@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy"])
+@pytest.mark.parametrize("env_id", ["discrete_dummy", "multidiscrete_dummy", "continuous_dummy", "mixed_dummy"])
 @pytest.mark.parametrize("replay_context", [0, 1])
 def test_dreamer_v3_5(standard_args, env_id, replay_context, start_time):
     if os.environ["LT_DEVICES"] != "1" and env_id != "continuous_dummy":
@@ -954,6 +973,8 @@ def test_the_off_policy_algorithms_sample_the_online_queue_of_their_buffer(stand
         ("discrete_dummy", "null"),
         ("multidiscrete_dummy", "null"),
         ("continuous_dummy", "null"),
+        # A discrete and a continuous action: REINFORCE by default
+        ("mixed_dummy", "null"),
         # The continuous actions of both actors learned by REINFORCE
         ("continuous_dummy", "1"),
     ],

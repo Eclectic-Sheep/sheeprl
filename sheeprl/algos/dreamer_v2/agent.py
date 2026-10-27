@@ -386,10 +386,11 @@ class Actor(nn.Module):
 
     Args:
         latent_state_size (int): the dimension of the latent state (stochastic size + recurrent_state_size).
-        actions_dim (Sequence[int]): the dimension in output of the actor.
-            The number of actions if continuous, the dimension of the action if discrete.
-        is_continuous (bool): whether or not the actions are continuous.
-        distribution_cfg (dotdict): The configs of the distributions.
+        actions_dim (Sequence[int]): the size of every action (head): its dimensions if continuous, its number of
+            choices if discrete.
+        continuous (Sequence[bool]): whether every action is continuous: the actions may mix continuous and discrete
+            ones, each with its own distribution.
+        distribution_cfg (dotdict): The configs of the distributions (the one of the continuous actions).
         init_std (float): the amount to sum to the input of the softplus function for the standard deviation.
             Default to 5.
         min_std (float): the minimum standard deviation for the actions.
@@ -414,7 +415,7 @@ class Actor(nn.Module):
         self,
         latent_state_size: int,
         actions_dim: Sequence[int],
-        is_continuous: bool,
+        continuous: Sequence[bool],
         distribution_cfg: dotdict,
         init_std: float = 0.0,
         min_std: float = 0.1,
@@ -434,13 +435,13 @@ class Actor(nn.Module):
                 "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `trunc_normal`. "
                 f"Found: {self.distribution}"
             )
-        if self.distribution == "discrete" and is_continuous:
-            raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
+        self.continuous = tuple(bool(c) for c in continuous)
+        if len(self.continuous) != len(actions_dim):
+            raise ValueError(f"One kind per action: got {len(self.continuous)} for the actions {list(actions_dim)}")
+        if self.distribution == "discrete" and any(self.continuous):
+            raise ValueError("The `discrete` distribution plays categorical actions, but some actions are continuous")
         if self.distribution == "auto":
-            if is_continuous:
-                self.distribution = "trunc_normal"
-            else:
-                self.distribution = "discrete"
+            self.distribution = "trunc_normal" if any(self.continuous) else "discrete"
         self.model = MLP(
             input_dims=latent_state_size,
             output_dim=None,
@@ -454,12 +455,13 @@ class Actor(nn.Module):
                 else None
             ),
         )
-        if is_continuous:
-            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, sum(actions_dim) * 2)])
-        else:
-            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, action_dim) for action_dim in actions_dim])
+        # One layer per action: the means and the stds of a continuous one, the logits of a categorical one
+        self.mlp_heads = nn.ModuleList(
+            [nn.Linear(dense_units, dim * 2 if c else dim) for dim, c in zip(actions_dim, self.continuous)]
+        )
         self.actions_dim = actions_dim
-        self.is_continuous = is_continuous
+        # Whether all the actions are continuous: the default of the objective (`reinforce_weight`)
+        self.is_continuous = all(self.continuous)
         self.init_std = torch.tensor(init_std)
         self.min_std = min_std
         self.distribution_cfg = distribution_cfg
@@ -494,54 +496,51 @@ class Actor(nn.Module):
         """
         out: Tensor = self.model(state)
         pre_dist: List[Tensor] = [head(out) for head in self.mlp_heads]
-        if self.is_continuous:
-            mean, std = torch.chunk(pre_dist[0], 2, -1)
-            if self.distribution == "tanh_normal":
-                mean = 5 * torch.tanh(mean / 5)
-                std = F.softplus(std + self.init_std) + self.min_std
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(TransformedDistribution(actions_dist, SafeTanhTransform()), 1)
-            elif self.distribution == "normal":
-                # The std is the output of the network: made positive as the one of `tanh_normal`
-                std = F.softplus(std + self.init_std) + self.min_std
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(actions_dist, 1)
-            elif self.distribution == "trunc_normal":
-                std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
-                dist = TruncatedNormal(torch.tanh(mean), std, -1, 1)
-                actions_dist = Independent(dist, 1)
-            if not greedy:
-                actions = actions_dist.rsample()
-            else:
-                # The most likely of 100 samples, for every state
-                sample = actions_dist.sample((100,))
-                best = actions_dist.log_prob(sample).argmax(0, keepdim=True)
-                actions = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
-            actions = [actions]
-            actions_dist = [actions_dist]
-        else:
-            actions_dist: List[Distribution] = []
-            actions: List[Tensor] = []
-            for logits in pre_dist:
-                actions_dist.append(OneHotCategoricalStraightThrough(logits=logits))
+        actions: List[Tensor] = []
+        actions_dist: List[Distribution] = []
+        for continuous, head_out in zip(self.continuous, pre_dist):
+            if continuous:
+                dist = self._continuous_distribution(head_out)
                 if not greedy:
-                    actions.append(actions_dist[-1].rsample())
+                    actions.append(dist.rsample())
                 else:
-                    actions.append(actions_dist[-1].mode)
+                    # The most likely of 100 samples, for every state
+                    sample = dist.sample((100,))
+                    best = dist.log_prob(sample).argmax(0, keepdim=True)
+                    actions.append(sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0))
+            else:
+                dist = OneHotCategoricalStraightThrough(logits=head_out)
+                actions.append(dist.rsample() if not greedy else dist.mode)
+            actions_dist.append(dist)
         return tuple(actions), tuple(actions_dist)
+
+    def _continuous_distribution(self, head_out: Tensor) -> Distribution:
+        """The distribution of a continuous action (`distribution`), from the output of its head."""
+        mean, std = torch.chunk(head_out, 2, -1)
+        if self.distribution == "tanh_normal":
+            mean = 5 * torch.tanh(mean / 5)
+            std = F.softplus(std + self.init_std) + self.min_std
+            return Independent(TransformedDistribution(Normal(mean, std), SafeTanhTransform()), 1)
+        if self.distribution == "normal":
+            # The std is the output of the network: made positive as the one of `tanh_normal`
+            std = F.softplus(std + self.init_std) + self.min_std
+            return Independent(Normal(mean, std), 1)
+        std = 2 * torch.sigmoid((std + self.init_std) / 2) + self.min_std
+        return Independent(TruncatedNormal(torch.tanh(mean), std, -1, 1), 1)
 
     def add_exploration_noise(
         self, actions: Sequence[Tensor], step: int = 0, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
+        """The actions with the exploration noise of `step`: a normal noise of std `expl_amount` on the continuous
+        ones (clipped to [-1, 1]), a random choice with probability `expl_amount` for every categorical one."""
         expl_amount = self._get_expl_amount(step)
-        if self.is_continuous:
-            actions = torch.cat(actions, -1)
-            if expl_amount > 0.0:
-                actions = torch.clip(Normal(actions, expl_amount).sample(), -1, 1)
-            expl_actions = [actions]
-        else:
-            expl_actions = []
-            for act in actions:
+        expl_actions = []
+        for continuous, act in zip(self.continuous, actions):
+            if continuous:
+                if expl_amount > 0.0:
+                    act = torch.clip(Normal(act, expl_amount).sample(), -1, 1)
+                expl_actions.append(act)
+            else:
                 sample = OneHotCategorical(logits=torch.zeros_like(act)).sample().to(act.device)
                 # A random action with probability `expl_amount`, drawn for every environment
                 explore = torch.rand(*act.shape[:-1], 1, device=act.device) < expl_amount
@@ -554,7 +553,7 @@ class MinedojoActor(Actor):
         self,
         latent_state_size: int,
         actions_dim: Sequence[int],
-        is_continuous: bool,
+        continuous: Sequence[bool],
         distribution_cfg: dotdict,
         init_std: float = 0,
         min_std: float = 0.1,
@@ -569,7 +568,7 @@ class MinedojoActor(Actor):
         super().__init__(
             latent_state_size=latent_state_size,
             actions_dim=actions_dim,
-            is_continuous=is_continuous,
+            continuous=continuous,
             distribution_cfg=distribution_cfg,
             init_std=init_std,
             min_std=min_std,
@@ -841,8 +840,7 @@ def build_agent(
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
     critic_cfg = cfg.algo.critic
-    codec.check("The actor of DreamerV2")
-    actions_dim, is_continuous = codec.dims, codec.continuous
+    actions_dim = codec.dims
 
     # Sizes
     stochastic_size = world_model_cfg.stochastic_size * world_model_cfg.discrete_size
@@ -940,7 +938,7 @@ def build_agent(
     actor: nn.Module = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
-        is_continuous=is_continuous,
+        continuous=codec.continuous_heads,
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
         mlp_layers=actor_cfg.mlp_layers,

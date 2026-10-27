@@ -1,5 +1,5 @@
 from math import sqrt
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
@@ -8,9 +8,9 @@ import torch
 import torch.nn as nn
 from lightning import Fabric
 from torch import Tensor
-from torch.distributions import Independent, Normal, OneHotCategorical
+from torch.distributions import OneHotCategorical
 
-from sheeprl.algos.ppo.agent import PPOActor, ortho_init_linear_layers
+from sheeprl.algos.ppo.agent import PPOActor, normal_head, ortho_init_linear_layers
 from sheeprl.core.actions import ActionCodec
 from sheeprl.core.collector import Act, Policy
 from sheeprl.models.io import Encoder, build_encoder, to_device
@@ -121,8 +121,8 @@ class RecurrentModel(nn.Module):
 
 class RecurrentPPOAgent(nn.Module):
     """The feature extractor (the inputs of `algo.inputs`), the LSTM, the actor and the critic of recurrent PPO. The
-    actor plays all-categorical or continuous actions (`codec`); with `ortho_init`, the linear layers of the feature
-    extractor get orthogonal weights (gain 1) and zero biases."""
+    actor has one head per action of `codec`, categorical or normal, so the actions may mix them (`PPOAgent`); with
+    `ortho_init`, the linear layers of the feature extractor get orthogonal weights (gain 1) and zero biases."""
 
     def __init__(
         self,
@@ -135,7 +135,6 @@ class RecurrentPPOAgent(nn.Module):
         ortho_init: bool = False,
     ):
         super().__init__()
-        codec.check("The actor of recurrent PPO")
         self.codec = codec
         is_continuous = codec.continuous
         actions_dim = codec.dims
@@ -182,10 +181,13 @@ class RecurrentPPOAgent(nn.Module):
                 else None
             ),
         )
-        if is_continuous:
-            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, int(sum(actions_dim)) * 2)])
-        else:
-            actor_heads = nn.ModuleList([nn.Linear(actor_cfg.dense_units, action_dim) for action_dim in actions_dim])
+        # One layer per action: the means and the log-stds of a continuous one, the logits of a categorical one
+        actor_heads = nn.ModuleList(
+            [
+                nn.Linear(actor_cfg.dense_units, head.size * 2 if head.kind == "continuous" else head.size)
+                for head in codec.heads
+            ]
+        )
         self.actor = PPOActor(actor_backbone, actor_heads, is_continuous)
         # Orthogonal initialization, as PPO's agent: the encoder with gain 1, the hidden layers of actor and critic with
         # gain sqrt(2), the actor's heads with 0.01 and the critic's output with 1 (the LSTM keeps its own)
@@ -203,37 +205,24 @@ class RecurrentPPOAgent(nn.Module):
         logprobs = []
         entropies = []
         sampled_actions = []
-        if self.is_continuous:
-            dist = Independent(Normal(*pre_dist), 1)
+        for i, out in enumerate(pre_dist):
+            dist = normal_head(out) if self.codec.is_continuous(i) else OneHotCategorical(logits=out)
             if actions is None:
                 sampled_actions.append(dist.sample())
             else:
-                sampled_actions.append(actions[0])
+                sampled_actions.append(actions[i])
             entropies.append(dist.entropy())
             logprobs.append(dist.log_prob(sampled_actions[-1]))
-        else:
-            for i, logits in enumerate(pre_dist):
-                dist = OneHotCategorical(logits=logits)
-                if actions is None:
-                    sampled_actions.append(dist.sample())
-                else:
-                    sampled_actions.append(actions[i])
-                entropies.append(dist.entropy())
-                logprobs.append(dist.log_prob(sampled_actions[-1]))
         return (
             tuple(sampled_actions),
             torch.stack(logprobs, dim=-1).sum(dim=-1, keepdim=True),
             torch.stack(entropies, dim=-1).sum(dim=-1, keepdim=True),
         )
 
-    def _get_pre_dist(self, input: Tensor) -> Union[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
-        pre_dist: List[Tensor] = self.actor(input)
-        if self.is_continuous:
-            mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
-            std = log_std.exp()
-            return (mean, std)
-        else:
-            return tuple(pre_dist)
+    def _get_pre_dist(self, input: Tensor) -> Tuple[Tensor, ...]:
+        """The outputs of the heads of the actor: the means and the log-stds of a continuous action, the logits of a
+        categorical one."""
+        return tuple(self.actor(input))
 
     def _get_values(self, input: Tensor) -> Tensor:
         return self.critic(input)
@@ -310,40 +299,23 @@ class RecurrentPPOPolicy(nn.Module, Policy):
     ) -> Tuple[Tuple[Tensor, ...], Tensor]:
         logprobs = []
         sampled_actions = []
-        if self.actor.is_continuous:
-            dist = Independent(Normal(*pre_dist), 1)
+        for i, out in enumerate(pre_dist):
+            dist = normal_head(out) if self.codec.is_continuous(i) else OneHotCategorical(logits=out)
             if greedy:
                 sampled_actions.append(dist.mode)
+            elif actions is None:
+                sampled_actions.append(dist.sample())
             else:
-                if actions is None:
-                    sampled_actions.append(dist.sample())
-                else:
-                    sampled_actions.append(actions[0])
+                sampled_actions.append(actions[i])
             logprobs.append(dist.log_prob(sampled_actions[-1]))
-        else:
-            for i, logits in enumerate(pre_dist):
-                dist = OneHotCategorical(logits=logits)
-                if greedy:
-                    sampled_actions.append(dist.mode)
-                else:
-                    if actions is None:
-                        sampled_actions.append(dist.sample())
-                    else:
-                        sampled_actions.append(actions[i])
-                logprobs.append(dist.log_prob(sampled_actions[-1]))
         return (
             tuple(sampled_actions),
             torch.stack(logprobs, dim=-1).sum(dim=-1, keepdim=True),
         )
 
-    def _get_pre_dist(self, input: Tensor) -> Union[Tuple[Tensor, ...], Tuple[Tensor, Tensor]]:
-        pre_dist: List[Tensor] = self.actor(input)
-        if self.actor.is_continuous:
-            mean, log_std = torch.chunk(pre_dist[0], chunks=2, dim=-1)
-            std = log_std.exp()
-            return (mean, std)
-        else:
-            return tuple(pre_dist)
+    def _get_pre_dist(self, input: Tensor) -> Tuple[Tensor, ...]:
+        """The outputs of the heads of the actor (`RecurrentPPOAgent._get_pre_dist`)."""
+        return tuple(self.actor(input))
 
     def _get_values(self, input: Tensor) -> Tensor:
         return self.critic(input)
@@ -452,19 +424,9 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
         pre_dist = self._get_pre_dist(out)
         sampled_actions = []
-        if self.actor.is_continuous:
-            dist = Independent(Normal(*pre_dist), 1)
-            if greedy:
-                sampled_actions.append(dist.mode)
-            else:
-                sampled_actions.append(dist.sample())
-        else:
-            for logits in pre_dist:
-                dist = OneHotCategorical(logits=logits)
-                if greedy:
-                    sampled_actions.append(dist.mode)
-                else:
-                    sampled_actions.append(dist.sample())
+        for i, out in enumerate(pre_dist):
+            dist = normal_head(out) if self.codec.is_continuous(i) else OneHotCategorical(logits=out)
+            sampled_actions.append(dist.mode if greedy else dist.sample())
         return tuple(sampled_actions), states
 
 

@@ -129,5 +129,20 @@ def test_normalize_action():
 
 
 def test_normalize_action_rejects_discrete_actions():
-    with pytest.raises(ValueError, match="Only `Box` action spaces"):
+    with pytest.raises(ValueError, match="Only `Box` actions"):
         NormalizeAction(DiscreteDummyEnv())
+
+
+def test_normalize_action_normalizes_the_box_parts_of_a_tuple_of_actions():
+    dummy = DiscreteDummyEnv()
+    dummy.action_space = gym.spaces.Tuple(
+        [gym.spaces.Discrete(3), gym.spaces.Box(np.array([0.0, -4.0]), np.array([2.0, 4.0]), dtype=np.float32)]
+    )
+    played = []
+    dummy.step = lambda action: played.append(action) or (dummy.get_obs(), 0.0, False, False, {})
+    env = NormalizeAction(dummy)
+    assert env.action_space[0] == dummy.action_space[0]
+    np.testing.assert_array_equal(env.action_space[1].low, [-1, -1])
+    env.step((2, np.array([1.0, -0.5], dtype=np.float32)))
+    assert played[0][0] == 2
+    np.testing.assert_allclose(played[0][1], [2.0, -2.0])

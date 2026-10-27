@@ -703,6 +703,12 @@ class DreamerV3Policy(nn.Module, DreamerPolicy):
         return actions
 
 
+def clip_head_actions(actions: Sequence[Tensor], continuous: Sequence[bool], action_clip: float) -> Tensor:
+    """The actions of the heads of the actor concatenated, the continuous ones (`continuous`) clipped to `action_clip`
+    (`clip_actions`), the categorical ones as they are."""
+    return torch.cat([clip_actions(a, action_clip) if c else a for a, c in zip(actions, continuous)], dim=-1)
+
+
 def clip_actions(actions: Tensor, action_clip: float) -> Tensor:
     """The continuous `actions` divided by their magnitude where it exceeds `action_clip` (when greater than 0), with
     the gradient of the division stopped, as DreamerV3 clips the actions that its recurrent model takes."""
@@ -718,10 +724,11 @@ class Actor(nn.Module):
 
     Args:
         latent_state_size (int): the dimension of the latent state (stochastic size + recurrent_state_size).
-        actions_dim (Sequence[int]): the dimension in output of the actor.
-            The number of actions if continuous, the dimension of the action if discrete.
-        is_continuous (bool): whether or not the actions are continuous.
-        distribution_cfg (dotdict): The configs of the distributions.
+        actions_dim (Sequence[int]): the size of every action (head): its dimensions if continuous, its number of
+            choices if discrete.
+        continuous (Sequence[bool]): whether every action is continuous: the actions may mix continuous and discrete
+            ones, each with its own distribution.
+        distribution_cfg (dotdict): The configs of the distributions (the one of the continuous actions).
         init_std (float): the amount to sum to the standard deviation.
             Default to 0.0.
         min_std (float): the minimum standard deviation for the actions.
@@ -751,7 +758,7 @@ class Actor(nn.Module):
         self,
         latent_state_size: int,
         actions_dim: Sequence[int],
-        is_continuous: bool,
+        continuous: Sequence[bool],
         distribution_cfg: dotdict,
         init_std: float = 0.0,
         min_std: float = 1.0,
@@ -772,13 +779,13 @@ class Actor(nn.Module):
                 "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `scaled_normal`. "
                 f"Found: {self.distribution}"
             )
-        if self.distribution == "discrete" and is_continuous:
-            raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
+        self.continuous = tuple(bool(c) for c in continuous)
+        if len(self.continuous) != len(actions_dim):
+            raise ValueError(f"One kind per action: got {len(self.continuous)} for the actions {list(actions_dim)}")
+        if self.distribution == "discrete" and any(self.continuous):
+            raise ValueError("The `discrete` distribution plays categorical actions, but some actions are continuous")
         if self.distribution == "auto":
-            if is_continuous:
-                self.distribution = "scaled_normal"
-            else:
-                self.distribution = "discrete"
+            self.distribution = "scaled_normal" if any(self.continuous) else "discrete"
         self.model = MLP(
             input_dims=latent_state_size,
             output_dim=None,
@@ -789,12 +796,13 @@ class Actor(nn.Module):
             norm_layer=layer_norm_cls,
             norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
-        if is_continuous:
-            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
-        else:
-            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, action_dim) for action_dim in actions_dim])
+        # One layer per action: the means and the stds of a continuous one, the logits of a categorical one
+        self.mlp_heads = nn.ModuleList(
+            [nn.Linear(dense_units, dim * 2 if c else dim) for dim, c in zip(actions_dim, self.continuous)]
+        )
         self.actions_dim = actions_dim
-        self.is_continuous = is_continuous
+        # Whether all the actions are continuous: the default of the objective (`reinforce_weight`)
+        self.is_continuous = all(self.continuous)
         self.init_std = init_std
         self.min_std = min_std
         self.max_std = max_std
@@ -824,43 +832,40 @@ class Actor(nn.Module):
         """
         out: Tensor = self.model(state)
         pre_dist: List[Tensor] = [head(out) for head in self.mlp_heads]
-        if self.is_continuous:
-            mean, std = torch.chunk(pre_dist[0], 2, -1)
-            if self.distribution == "tanh_normal":
-                mean = 5 * torch.tanh(mean / 5)
-                std = F.softplus(std + self.init_std) + self.min_std
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(TransformedDistribution(actions_dist, SafeTanhTransform()), 1)
-            elif self.distribution == "normal":
-                # The std is the output of the network: made positive as the one of `tanh_normal`
-                std = F.softplus(std + self.init_std) + self.min_std
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(actions_dist, 1)
-            elif self.distribution == "scaled_normal":
-                std = (self.max_std - self.min_std) * torch.sigmoid(std + self.init_std) + self.min_std
-                dist = Normal(torch.tanh(mean), std)
-                actions_dist = Independent(dist, 1)
-            if not greedy:
-                actions = actions_dist.rsample()
-            else:
-                # The most likely of 100 samples, for every state
-                sample = actions_dist.sample((100,))
-                best = actions_dist.log_prob(sample).argmax(0, keepdim=True)
-                actions = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
-            if clip:
-                actions = clip_actions(actions, self._action_clip)
-            actions = [actions]
-            actions_dist = [actions_dist]
-        else:
-            actions_dist: List[Distribution] = []
-            actions: List[Tensor] = []
-            for logits in pre_dist:
-                actions_dist.append(OneHotCategoricalStraightThrough(logits=self._uniform_mix(logits)))
+        actions: List[Tensor] = []
+        actions_dist: List[Distribution] = []
+        for continuous, head_out in zip(self.continuous, pre_dist):
+            if continuous:
+                dist = self._continuous_distribution(head_out)
                 if not greedy:
-                    actions.append(actions_dist[-1].rsample())
+                    action = dist.rsample()
                 else:
-                    actions.append(actions_dist[-1].mode)
+                    # The most likely of 100 samples, for every state
+                    sample = dist.sample((100,))
+                    best = dist.log_prob(sample).argmax(0, keepdim=True)
+                    action = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
+                if clip:
+                    action = clip_actions(action, self._action_clip)
+            else:
+                dist = OneHotCategoricalStraightThrough(logits=self._uniform_mix(head_out))
+                action = dist.rsample() if not greedy else dist.mode
+            actions.append(action)
+            actions_dist.append(dist)
         return tuple(actions), tuple(actions_dist)
+
+    def _continuous_distribution(self, head_out: Tensor) -> Distribution:
+        """The distribution of a continuous action (`distribution`), from the output of its head."""
+        mean, std = torch.chunk(head_out, 2, -1)
+        if self.distribution == "tanh_normal":
+            mean = 5 * torch.tanh(mean / 5)
+            std = F.softplus(std + self.init_std) + self.min_std
+            return Independent(TransformedDistribution(Normal(mean, std), SafeTanhTransform()), 1)
+        if self.distribution == "normal":
+            # The std is the output of the network: made positive as the one of `tanh_normal`
+            std = F.softplus(std + self.init_std) + self.min_std
+            return Independent(Normal(mean, std), 1)
+        std = (self.max_std - self.min_std) * torch.sigmoid(std + self.init_std) + self.min_std
+        return Independent(Normal(torch.tanh(mean), std), 1)
 
     def _uniform_mix(self, logits: Tensor) -> Tensor:
         if self._unimix > 0.0:
@@ -876,7 +881,7 @@ class MinedojoActor(Actor):
         self,
         latent_state_size: int,
         actions_dim: Sequence[int],
-        is_continuous: bool,
+        continuous: Sequence[bool],
         distribution_cfg: dotdict,
         init_std: float = 0,
         min_std: float = 0.1,
@@ -892,7 +897,7 @@ class MinedojoActor(Actor):
         super().__init__(
             latent_state_size=latent_state_size,
             actions_dim=actions_dim,
-            is_continuous=is_continuous,
+            continuous=continuous,
             distribution_cfg=distribution_cfg,
             init_std=init_std,
             min_std=min_std,
@@ -998,8 +1003,7 @@ def build_agent(
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
     critic_cfg = cfg.algo.critic
-    codec.check("The actor of DreamerV3")
-    actions_dim, is_continuous = codec.dims, codec.continuous
+    actions_dim = codec.dims
 
     # Sizes
     recurrent_state_size = world_model_cfg.recurrent_model.recurrent_state_size
@@ -1112,7 +1116,7 @@ def build_agent(
     actor: Actor | MinedojoActor = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
-        is_continuous=is_continuous,
+        continuous=codec.continuous_heads,
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
         max_std=actor_cfg.max_std,

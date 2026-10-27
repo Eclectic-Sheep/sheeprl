@@ -113,7 +113,7 @@ def test_each_environment_explores_on_its_own():
     torch.manual_seed(0)
     num_envs = 1000
     actions = torch.nn.functional.one_hot(torch.zeros(1, num_envs, dtype=torch.long), 4).float()
-    actor = SimpleNamespace(is_continuous=False, _get_expl_amount=lambda step: 0.5)
+    actor = SimpleNamespace(continuous=(False,), _get_expl_amount=lambda step: 0.5)
     (explored,) = Actor.add_exploration_noise(actor, [actions])
     assert explored.shape == actions.shape
     changed = (explored != actions).any(-1).sum().item()
@@ -295,7 +295,7 @@ def test_the_continuous_actions_come_from_a_tanh_normal_of_the_initial_std(exp):
     actor = get_class(actor_cfg.cls)(
         latent_state_size=4,
         actions_dim=[2],
-        is_continuous=True,
+        continuous=[True],
         distribution_cfg=cfg.distribution,
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,

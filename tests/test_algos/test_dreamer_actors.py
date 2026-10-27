@@ -20,7 +20,7 @@ def make_actor(actor_cls, distribution, actions_dim=(2,), is_continuous=True, **
     return actor_cls(
         latent_state_size=LATENT,
         actions_dim=list(actions_dim),
-        is_continuous=is_continuous,
+        continuous=[is_continuous] * len(actions_dim),
         distribution_cfg={"type": distribution},
         init_std=0.0,
         min_std=0.1,
