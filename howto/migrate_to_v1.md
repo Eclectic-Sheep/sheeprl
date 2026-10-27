@@ -50,7 +50,7 @@ Every other key keeps its default. 1.0 adds:
 
 ## Checkpoints
 
-The checkpoints of 0.x cannot be resumed, finetuned from, evaluated or registered with 1.0: the training state and the replay buffers are saved in other formats. Use sheeprl 0.8.3 for them (`pip install "sheeprl<1"`).
+The checkpoints of 0.x cannot be resumed, finetuned from, evaluated or registered with 1.0: the training state and the replay buffers are saved in other formats. Use sheeprl 0.8.3 for them (`uv pip install "sheeprl<1"`).
 
 The checkpoints and the replay buffers saved by the release candidates of 1.0 (`1.0.0rc1` to `1.0.0rc6`) cannot be loaded either: the observations are stored by key as the inputs read them (e.g. SAC no longer concatenates them in the buffer), the encoders and decoders are other modules, and the state of the environments in the checkpoints (`checkpoint["env"]`) is the one of the transforms (`{"transforms": ..., "rewards": ...}`).
 

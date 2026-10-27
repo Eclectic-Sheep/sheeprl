@@ -130,8 +130,8 @@ The models of the SAC-AE agent are defined in the `agent.py` file in order to ha
 ## Packages
 In order to use a broader set of environments of provided by [Gymnasium](https://gymnasium.farama.org/) it is necessary to install optional packages:
 
-*  Mujoco environments: `pip install -e .[mujoco]`
-*  DMC environments: `pip install -e .[dmc]`
+*  Mujoco environments: `uv pip install -e ".[mujoco]"`
+*  DMC environments: `uv pip install -e ".[dmc]"`
 
 For more information, check the [DMC and MuJoCo how-to](../../../howto/learn_in_dmc.md).
 

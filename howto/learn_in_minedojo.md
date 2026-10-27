@@ -22,7 +22,7 @@ sudo update-alternatives --config java
 Now, you can install the MineDojo environment:
 
 ```bash
-pip install -e .[minedojo]
+uv pip install -e ".[minedojo]"
 ```
 
 > [!WARNING]

@@ -1,6 +1,6 @@
 # Register an external algorithm
 
-Suppose that we have installed SheepRL through pip with `pip install sheeprl[box2d,atari,dev,test]` and we want to add a new (external) SoTA algorithm called `ext_sota` without directly adding the new algorithm to the SheepRL codebase, i.e. without the need to clone the repo locally.
+Suppose that we have installed SheepRL with uv, `uv pip install "sheeprl[box2d,atari,dev,test]"` and we want to add a new (external) SoTA algorithm called `ext_sota` without directly adding the new algorithm to the SheepRL codebase, i.e. without the need to clone the repo locally.
 
 We can start by creating two new folders called `my_awesome_algo` and `my_awesome_configs`, the former will contain the implementation of the algorithm, the latter the configs needed to run the experiment and configure our new algorithm.
 

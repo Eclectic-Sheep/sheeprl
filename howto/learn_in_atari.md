@@ -2,7 +2,7 @@
 First, we should install the Atari environments with:
 
 ```bash
-pip install .[atari]
+uv pip install ".[atari]"
 ```
 
 The Atari environments are provided by the [Arcade Learning Environment](https://ale.farama.org/) (`ale-py`), which already ships the game ROMs and registers the environments in Gymnasium (e.g. `ALE/Pong-v5` or `PongNoFrameskip-v4`).

@@ -2,7 +2,7 @@
 First, we should install the Super Mario Bros environment with:
 
 ```bash
-pip install .[supermario]
+uv pip install ".[supermario]"
 ```
 
 For more information: https://github.com/Kautenja/gym-super-mario-bros/tree/master

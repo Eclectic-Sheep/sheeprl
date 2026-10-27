@@ -108,9 +108,9 @@ The models of the DreamerV2 agent are defined in the `agent.py` file in order to
 ## Packages
 In order to use a broader set of environments of provided by [Gymnasium](https://gymnasium.farama.org/) it is necessary to install optional packages:
 
-*  Mujoco environments: `pip install -e .[mujoco]`
-*  Atari environments: `pip install -e .[atari]` (the ROMs are included)
-*  DMC environments: `pip install -e .[dmc]`
+*  Mujoco environments: `uv pip install -e ".[mujoco]"`
+*  Atari environments: `uv pip install -e ".[atari]"` (the ROMs are included)
+*  DMC environments: `uv pip install -e ".[dmc]"`
 
 For more information, check the [Atari](../../../howto/learn_in_atari.md) and the [DMC and MuJoCo](../../../howto/learn_in_dmc.md) how-tos.
 

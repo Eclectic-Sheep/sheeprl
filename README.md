@@ -133,7 +133,6 @@ The algorithms sheeped by sheeprl out-of-the-box are:
 | Algorithm                 | Recurrent          | Vector obs         | Pixel obs          | Custom inputs      | Status             |
 | ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
 | A2C                       | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| A3C                       | :x:                | :heavy_check_mark: | :x:                | :x:                | :construction:     |
 | PPO                       | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | SAC                       | :x:                | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: |
@@ -156,7 +155,6 @@ The actions supported by sheeprl agents are:
 | Algorithm                 | Continuous         | Discrete           | Multi-Discrete     | Mixed              |
 | ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ |
 | A2C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| A3C                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :x:                |
 | PPO                       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 | SAC                       | :heavy_check_mark: | :x:                | :x:                | :x:                |

@@ -14,7 +14,7 @@ sudo apt-get install openjdk-8-jdk
 Now, you can install the MineRL environment:
 
 ```bash
-pip install -e .[minerl]
+uv pip install -e ".[minerl]"
 ```
 
 > [!WARNING]

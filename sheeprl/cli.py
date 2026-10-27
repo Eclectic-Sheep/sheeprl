@@ -307,7 +307,8 @@ def check_configs(cfg: dotdict):
     if not (_IS_MLFLOW_AVAILABLE or cfg.model_manager.disabled):
         warnings.warn(
             "MLFlow is not installed. "
-            "Please install it with 'pip install mlflow' if you want to use the MLFlow logger and log models. "
+            "Please install it with 'uv pip install \"sheeprl[mlflow]\"' if you want to use the MLFlow logger and log "
+            "models. "
             "Setting `cfg.model_manager.disabled=True`",
             UserWarning,
         )

@@ -1,8 +1,8 @@
 ## Install Gymnasium MuJoCo/DMC environments
 First, you should install the proper environments:
 
-- MuJoCo (Gymnasium): you need to install extra packages: use the `pip install -e .[mujoco]` command to have available all the MuJoCo environments provided by Gymnasium (https://gymnasium.farama.org/environments/mujoco/).
-- DMC: you have to install extra packages with the following command: `pip install -e .[dmc]`. (https://github.com/deepmind/dm_control).
+- MuJoCo (Gymnasium): you need to install extra packages: use the `uv pip install -e ".[mujoco]"` command to have available all the MuJoCo environments provided by Gymnasium (https://gymnasium.farama.org/environments/mujoco/).
+- DMC: you have to install extra packages with the following command: `uv pip install -e ".[dmc]"`. (https://github.com/deepmind/dm_control).
 
 ## Install OpenGL rendering backands packages
 
@@ -17,7 +17,7 @@ In order to use one of these rendering backends, you need to set the `MUJOCO_GL`
 >
 > The `libglew2.2` could have a different name, based on your OS (e.g., `libglew2.2` is for Ubuntu 22.04.2 LTS).
 >
-> It could be necessary to install also the `PyOpenGL-accelerate` package with the `pip install PyOpenGL-accelerate` command and the `mesalib` package with the `conda install conda-forge::mesalib` command.
+> It could be necessary to install also the `PyOpenGL-accelerate` package with the `uv pip install PyOpenGL-accelerate` command and the `mesalib` package with the `conda install conda-forge::mesalib` command.
 
 For more information: [https://github.com/deepmind/dm_control](https://github.com/deepmind/dm_control) and [https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl](https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl).
 

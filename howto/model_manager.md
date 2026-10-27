@@ -2,7 +2,7 @@
 
 SheepRL makes it possible to register trained models on MLFLow, so as to keep track of model versions and stages.
 
-It requires MLflow 3 (`pip install sheeprl[mlflow]` installs `mlflow>=3.11,<4`). The models are logged with `mlflow.pytorch.log_model` in the `pickle` format: the whole module is saved, as with `torch.save`.
+It requires MLflow 3 (`uv pip install "sheeprl[mlflow]"` installs `mlflow>=3.11,<4`). The models are logged with `mlflow.pytorch.log_model` in the `pickle` format: the whole module is saved, as with `torch.save`.
 
 ## Register models with training
 The configurations of the model manager are placed in the `./sheeprl/configs/model_manager/` folder, and the default configuration is defined as follows:

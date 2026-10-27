@@ -3,7 +3,7 @@
 2. Second, you need to install docker and check that you have permission to run it: e.g., on Linux, you can run the following command: `sudo usermod -aG docker $USER`.
 3. Install DIAMBRA with the following command:
 ```bash
-pip install -e .[diambra]
+uv pip install -e ".[diambra]"
 ```
 
 ## Install ROMs

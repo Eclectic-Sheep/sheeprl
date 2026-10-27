@@ -133,7 +133,6 @@ The algorithms sheeped by sheeprl out-of-the-box are:
 | Algorithm                 | Recurrent          | Vector obs         | Pixel obs          | Custom inputs      | Status             |
 | ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
 | A2C                       | ❌                  | ✅                  | ✅                  | ✅                  | ✅                  |
-| A3C                       | ❌                  | ✅                  | ❌                  | ❌                  | 🚧                  |
 | PPO                       | ❌                  | ✅                  | ✅                  | ✅                  | ✅                  |
 | PPO Recurrent             | ✅                  | ✅                  | ✅                  | ✅                  | ✅                  |
 | SAC                       | ❌                  | ✅                  | ❌                  | ❌                  | ✅                  |
@@ -156,7 +155,6 @@ The actions supported by sheeprl agents are:
 | Algorithm                 | Continuous         | Discrete           | Multi-Discrete     | Mixed              |
 | ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ |
 | A2C                       | ✅                  | ✅                  | ✅                  | ✅                  |
-| A3C                       | ✅                  | ✅                  | ✅                  | ❌                  |
 | PPO                       | ✅                  | ✅                  | ✅                  | ✅                  |
 | PPO Recurrent             | ✅                  | ✅                  | ✅                  | ✅                  |
 | SAC                       | ✅                  | ❌                  | ❌                  | ❌                  |
