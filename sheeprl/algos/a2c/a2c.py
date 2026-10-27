@@ -28,9 +28,8 @@ from sheeprl.core import (
     rollout_store,
     run,
 )
+from sheeprl.core.actions import ActionCodec
 from sheeprl.utils.compile import compiled
-from sheeprl.utils.env import actions_dim_of, legacy_keys
-from sheeprl.utils.obs import prepare_obs, scale_images
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor
 
@@ -81,11 +80,6 @@ class A2C(Algorithm):
                 "in order to play correctly the game. "
                 "As an alternative you can use one of the Dreamers' agents."
             )
-        if legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys == []:
-            raise RuntimeError(
-                "You should specify at least one CNN keys or MLP keys from the cli: "
-                "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
-            )
         # The buffer holds one rollout: every row is trained on, and the returns are computed over all of them
         if cfg.buffer.size != cfg.algo.rollout_steps:
             raise ValueError(
@@ -101,13 +95,11 @@ class A2C(Algorithm):
         cfg = self.cfg
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
-        if cfg.metric.log_level > 0:
-            self.fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
-            self.fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
-        actions_dim, is_continuous = actions_dim_of(action_space)
-
         # The agent of PPO
-        agent, self._policy = build_agent(self.fabric, actions_dim, is_continuous, cfg, obs_space)
+        agent, self._policy = build_agent(self.fabric, ActionCodec.from_space(action_space), cfg, obs_space)
+        if cfg.metric.log_level > 0:
+            for name, inp in agent.feature_extractor.inputs.items():
+                self.fabric.print(f"Input `{name}`: {list(inp.keys)}")
 
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)
@@ -133,13 +125,8 @@ class A2C(Algorithm):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
-            next_obs = prepare_obs(
-                self.fabric.device,
-                rollout.last_step.next_obs,
-                cnn_keys=legacy_keys(cfg).image_keys,
-                num_envs=cfg.env.num_envs,
-            )
-            next_values = self.policy(state).get_values(next_obs)
+            policy = self.policy(state)
+            next_values = policy.get_values(policy.obs_to_device(rollout.last_step.next_obs))
             returns, advantages = self.gae(
                 data["rewards"].to(torch.float64),
                 data["values"],
@@ -175,8 +162,7 @@ class A2C(Algorithm):
         state.optimizer.zero_grad(set_to_none=True)
         policy_losses, value_losses = [], []
         for batch in minibatches:
-            keys = legacy_keys(self.cfg)
-            obs = scale_images(batch, keys.image_keys, keys.vector_keys + keys.image_keys)
+            obs = {k: batch[k] for k in state.agent.feature_extractor.keys}
             # Compiled with `algo.compile.enabled`, without CUDA graphs: the gradients are accumulated
             with autocast(self.fabric):
                 loss, pg_loss, v_loss = compiled(a2c_loss, self.fabric, self.cfg, cuda_graphs=False)(

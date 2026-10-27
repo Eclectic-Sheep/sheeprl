@@ -240,6 +240,12 @@ def run_experiment(overrides: List[str]) -> Recorder:
     return recorder
 
 
+def flat(array: Dict[str, Any]) -> Dict[str, Any]:
+    """An encoded array flattened."""
+    values = np.asarray(array["values"]).reshape(-1)
+    return {"dtype": array["dtype"], "shape": list(values.shape), "values": values.tolist()}
+
+
 def arrays_equal(a: Dict[str, Any], b: Dict[str, Any], rtol: Optional[float], atol: float) -> bool:
     if a["shape"] != b["shape"]:
         return False
@@ -263,7 +269,9 @@ def compare(reference: Dict[str, Any], recorder: Recorder, rtol: Optional[float]
         where = f"acts[{i}] ({ref['phase']}, {ref['kind']})"
         if (got["phase"], got["kind"]) != (ref["phase"], ref["kind"]):
             act_errors.append(f"{where}: played as ({got['phase']}, {got['kind']})")
-        if not arrays_equal(got["env_actions"], ref["env_actions"], rtol, atol):
+        # The environments reshape the actions to their action space: the layout of the array is not compared, the
+        # actions are (their values in order and their dtype)
+        if not arrays_equal(flat(got["env_actions"]), flat(ref["env_actions"]), rtol, atol):
             act_errors.append(f"{where}: env_actions differ")
         if sorted(got["columns"]) != sorted(ref["columns"]):
             act_errors.append(f"{where}: columns {sorted(got['columns'])}, the reference has {sorted(ref['columns'])}")

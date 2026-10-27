@@ -8,7 +8,11 @@ import torch
 from torch import nn
 
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
+from sheeprl.core.actions import ActionCodec
+from sheeprl.models.io import MultiEncoder
 from sheeprl.utils.utils import dotdict
+
+OBS_SPACE = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (8,), np.float32)})
 
 
 def build_agent(
@@ -16,25 +20,16 @@ def build_agent(
 ) -> PPOAgent:
     torch.manual_seed(0)
     networks = {"dense_units": 64, "mlp_layers": 2, "dense_act": "torch.nn.Tanh", "layer_norm": False}
+    net = {"_target_": "sheeprl.models.MLPEncoder", **networks, "mlp_layers": encoder_layers, "features_dim": 64}
+    inputs = {"vector": {"keys": ["state"], "transforms": [], "net": net}}
+    action_space = gym.spaces.Box(-1, 1, (4,), np.float32) if is_continuous else gym.spaces.Discrete(4)
     return PPOAgent(
-        actions_dim=[4],
-        obs_space=gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (8,), np.float32)}),
-        encoder_cfg=dotdict(
-            {
-                **networks,
-                "mlp_layers": encoder_layers,
-                "cnn_features_dim": 512,
-                "mlp_features_dim": 64,
-                "ortho_init": ortho_init,
-            }
-        ),
+        codec=ActionCodec.from_space(action_space),
+        feature_extractor=MultiEncoder.from_config(inputs, OBS_SPACE),
         actor_cfg=dotdict({**networks, "ortho_init": ortho_init}),
         critic_cfg=dotdict({**networks, "ortho_init": ortho_init}),
-        cnn_keys=[],
-        mlp_keys=["state"],
-        screen_size=64,
         distribution_cfg=dotdict({"type": distribution}),
-        is_continuous=is_continuous,
+        ortho_init=ortho_init,
     )
 
 
@@ -83,7 +78,7 @@ def tanh_normal_policy(mean: float, std: float) -> Tuple[PPOPolicy, PPOAgent]:
     with torch.no_grad():
         head.weight.zero_()
         head.bias.copy_(torch.tensor([mean] * 4 + [np.log(std)] * 4))
-    return PPOPolicy(agent.feature_extractor, agent.actor, agent.critic), agent
+    return PPOPolicy(agent.feature_extractor, agent.actor, agent.critic, agent.codec), agent
 
 
 def test_ppo_tanh_normal_greedy_actions_are_squashed():
@@ -100,7 +95,8 @@ def test_ppo_tanh_normal_log_probs_of_the_played_actions(mean):
     obs = {"state": torch.zeros(1000, 8)}
     actions, logprobs, _ = policy(obs)
     # The environments play the tanh of the stored actions
-    torch.testing.assert_close(policy.env_actions(actions).squeeze(-1), actions[0].tanh().clamp(-1 + 1e-6, 1 - 1e-6))
+    played = torch.as_tensor(policy.env_actions(actions))
+    torch.testing.assert_close(played, actions[0].tanh().clamp(-1 + 1e-6, 1 - 1e-6))
     # The agent computes the log-probabilities the policy computed, also where the tanh saturates (mean 8: the stored
     # tanh lost the action, and the ratio of PPO started far from 1)
     _, new_logprobs, _, _ = agent(obs, actions)
@@ -131,8 +127,8 @@ def test_the_compiled_policy_plays_as_the_eager_one(monkeypatch, is_continuous):
     cfg = dotdict(
         {"algo": {"compile": {"enabled": True, "mode": "reduce-overhead"}}, "fabric": {"precision": "32-true"}}
     )
-    eager = PPOPolicy(agent.feature_extractor, agent.actor, agent.critic)
-    compiled = PPOPolicy(agent.feature_extractor, agent.actor, agent.critic)
+    eager = PPOPolicy(agent.feature_extractor, agent.actor, agent.critic, agent.codec)
+    compiled = PPOPolicy(agent.feature_extractor, agent.actor, agent.critic, agent.codec)
     compiled.forward = compiled_policy(compiled.forward, Fabric(accelerator="cuda", devices=1), cfg)
     obs = {"state": torch.randn(4, 8, device="cuda")}
     played = []

@@ -190,7 +190,11 @@ def make_env(
 
 
 def get_dummy_env(id: str):
-    if "continuous" in id:
+    if "grid" in id:
+        from sheeprl.envs.dummy import GridDummyEnv
+
+        env = GridDummyEnv()
+    elif "continuous" in id:
         from sheeprl.envs.dummy import ContinuousDummyEnv
 
         env = ContinuousDummyEnv()

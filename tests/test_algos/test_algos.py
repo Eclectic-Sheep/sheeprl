@@ -1200,3 +1200,39 @@ def test_dreamer_v2_trains_on_the_episodes_of_its_buffer(standard_args, start_ti
     with mock.patch.object(sys, "argv", args + [f"checkpoint.resume_from={ckpt[0]}"]):
         run()
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
+FLATTEN = "{_target_:sheeprl.transforms.Flatten}"
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        # The grid through convolutions, the 2D plane flattened into the vector input
+        [
+            "+algo.inputs.grid.keys=[fov]",
+            "+algo.inputs.grid.net={_target_:sheeprl.models.ConvEncoder,channels:[8,8],features_dim:16}",
+            "algo.inputs.vector.keys=[plane]",
+            f"algo.inputs.vector.transforms=[{FLATTEN}]",
+        ],
+        # Both flattened into the vector input
+        ["algo.inputs.vector.keys=[fov,plane]", f"algo.inputs.vector.transforms=[{FLATTEN}]"],
+    ],
+)
+def test_ppo_learns_from_grids(standard_args, start_time, inputs):
+    # Issue #237: a `Box(0, 1, (5, 5, 5))` grid read as it is, without resize, grayscale or division by 255
+    root_dir = os.path.join(f"pytest_{start_time}", "ppo_grid", os.environ["LT_DEVICES"])
+    args = standard_args + [
+        "exp=ppo",
+        "env=dummy",
+        "env.id=grid_dummy",
+        f"algo.rollout_steps={os.environ['LT_DEVICES']}",
+        "algo.per_rank_batch_size=1",
+        "algo.inputs.image.keys=[]",
+        *inputs,
+        f"root_dir={root_dir}",
+        "run_name=test_ppo_grid",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))

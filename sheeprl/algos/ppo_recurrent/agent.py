@@ -1,4 +1,4 @@
-from math import prod, sqrt
+from math import sqrt
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import gymnasium
@@ -10,13 +10,13 @@ from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Independent, Normal, OneHotCategorical
 
-from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor, ortho_init_linear_layers
+from sheeprl.algos.ppo.agent import PPOActor, ortho_init_linear_layers
+from sheeprl.core.actions import ActionCodec
 from sheeprl.core.collector import Act, Policy
-from sheeprl.models.models import MLP, MultiEncoder
+from sheeprl.models.io import MultiEncoder, build_encoder, to_device
+from sheeprl.models.models import MLP
 from sheeprl.utils.compile import compiled_policy
-from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
-from sheeprl.utils.obs import prepare_obs
 from sheeprl.utils.utils import dotdict
 
 
@@ -120,47 +120,29 @@ class RecurrentModel(nn.Module):
 
 
 class RecurrentPPOAgent(nn.Module):
+    """The feature extractor (the inputs of `algo.inputs`), the LSTM, the actor and the critic of recurrent PPO. The
+    actor plays all-categorical or continuous actions (`codec`); with `ortho_init`, the linear layers of the feature
+    extractor get orthogonal weights (gain 1) and zero biases."""
+
     def __init__(
         self,
-        actions_dim: Sequence[int],
-        obs_space: gymnasium.spaces.Dict,
-        encoder_cfg: dotdict,
+        codec: ActionCodec,
+        feature_extractor: MultiEncoder,
         rnn_cfg: dotdict,
         actor_cfg: dotdict,
         critic_cfg: dotdict,
-        cnn_keys: Sequence[str],
-        mlp_keys: Sequence[str],
-        is_continuous: bool,
         distribution_cfg: dotdict,
-        screen_size: int = 64,
+        ortho_init: bool = False,
     ):
         super().__init__()
+        codec.check("The actor of recurrent PPO")
+        self.codec = codec
+        is_continuous = codec.continuous
+        actions_dim = codec.dims
         self.actions_dim = actions_dim
         self.distribution_cfg = distribution_cfg
         self.rnn_hidden_size = rnn_cfg.lstm.hidden_size
-
-        # Encoder
-        in_channels = sum([prod(obs_space[k].shape[:-2]) for k in cnn_keys])
-        mlp_input_dim = sum([obs_space[k].shape[0] for k in mlp_keys])
-        cnn_encoder = (
-            CNNEncoder(in_channels, encoder_cfg.cnn_features_dim, screen_size, cnn_keys)
-            if cnn_keys is not None and len(cnn_keys) > 0
-            else None
-        )
-        mlp_encoder = (
-            MLPEncoder(
-                mlp_input_dim,
-                encoder_cfg.mlp_features_dim,
-                mlp_keys,
-                encoder_cfg.dense_units,
-                encoder_cfg.mlp_layers,
-                hydra.utils.get_class(encoder_cfg.dense_act),
-                encoder_cfg.layer_norm,
-            )
-            if mlp_keys is not None and len(mlp_keys) > 0
-            else None
-        )
-        self.feature_extractor = MultiEncoder(cnn_encoder, mlp_encoder)
+        self.feature_extractor = feature_extractor
         self.is_continuous = is_continuous
         features_dim = self.feature_extractor.output_dim
 
@@ -207,7 +189,7 @@ class RecurrentPPOAgent(nn.Module):
         self.actor = PPOActor(actor_backbone, actor_heads, is_continuous)
         # Orthogonal initialization, as PPO's agent: the encoder with gain 1, the hidden layers of actor and critic with
         # gain sqrt(2), the actor's heads with 0.01 and the critic's output with 1 (the LSTM keeps its own)
-        if encoder_cfg.ortho_init:
+        if ortho_init:
             ortho_init_linear_layers(self.feature_extractor, gain=1.0)
         if actor_cfg.ortho_init:
             ortho_init_linear_layers(actor_backbone, gain=sqrt(2))
@@ -290,10 +272,10 @@ class RecurrentPPOAgent(nn.Module):
 
 class RecurrentPPOPolicy(nn.Module, Policy):
     """The policy of recurrent PPO: `forward` samples the actions from the observations, the previous actions and the
-    previous recurrent states as tensors; `act` plays them in the environments (`Policy`), from the observations
-    `obs_keys` (the images among them are `cnn_keys`) moved to `device`, and keeps the recurrent state and the previous
-    actions of every environment (`init_states`). When an episode ends, its previous actions are reset, and its
-    recurrent state too with `reset_recurrent_state_on_done`."""
+    previous recurrent states as tensors; `act` plays them in the environments (`Policy`), from the observations of the
+    keys of the inputs (`keys`) moved to `device`, and keeps the recurrent state and the previous actions of every
+    environment (`init_states`). When an episode ends, its previous actions are reset, and its recurrent state too with
+    `reset_recurrent_state_on_done`. The actions go to the environments through `codec`."""
 
     def __init__(
         self,
@@ -302,10 +284,9 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         actor: PPOActor,
         critic: nn.Module,
         rnn_hidden_size: int,
-        actions_dim: Sequence[int],
+        codec: ActionCodec,
         device: str | torch.device = "cpu",
-        obs_keys: Sequence[str] = (),
-        cnn_keys: Sequence[str] = (),
+        keys: Sequence[str] = (),
         reset_recurrent_state_on_done: bool = True,
     ) -> None:
         super().__init__()
@@ -314,10 +295,11 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         self.critic = critic
         self.actor = actor
         self.rnn_hidden_size = rnn_hidden_size
-        self.actions_dim = actions_dim
+        self.codec = codec
+        self.actions_dim = codec.dims
         self.device = torch.device(device)
-        self.obs_keys = obs_keys
-        self.cnn_keys = cnn_keys
+        # The keys of the inputs of the feature extractor, by default
+        self.keys = tuple(keys) or tuple(feature_extractor.keys)
         self.reset_recurrent_state_on_done = reset_recurrent_state_on_done
         # The recurrent states and the actions preceding the next step of every environment (`init_states`)
         self.prev_states: Optional[Tuple[Tensor, Tensor]] = None
@@ -391,7 +373,7 @@ class RecurrentPPOPolicy(nn.Module, Policy):
             values (Tensor): the state values.
             states (Tuple[Tensor, Tensor]): the new recurrent states (hx, cx).
         """
-        embedded_obs = self.feature_extractor(obs)
+        embedded_obs = self.feature_extractor(obs, phase="act")
         out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
         values = self._get_values(out)
         pre_dist = self._get_pre_dist(out)
@@ -405,7 +387,7 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         prev_states: Tuple[Tensor, Tensor],
         mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tuple[Tensor, Tensor]]:
-        embedded_obs = self.feature_extractor(obs)
+        embedded_obs = self.feature_extractor(obs, phase="act")
         out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
         return self._get_values(out), states
 
@@ -414,10 +396,7 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         their indices), their log-probabilities, the values of `obs`, and the recurrent states (`prev_hx`, `prev_cx`)
         and the actions (`prev_actions`) that preceded them. Its extras are the actions and the recurrent states as
         tensors, which bootstrap the returns."""
-        num_envs = len(obs[self.obs_keys[0]])
-        torch_obs = prepare_obs(
-            self.device, {k: obs[k] for k in self.obs_keys}, cnn_keys=self.cnn_keys, num_envs=num_envs, time_dim=True
-        )
+        torch_obs = self.obs_to_device(obs)
         torch_prev_actions = torch.from_numpy(self.prev_actions).to(self.device).float()
         if greedy:
             actions, states = self.get_actions(torch_obs, torch_prev_actions, self.prev_states, greedy=True)
@@ -425,10 +404,7 @@ class RecurrentPPOPolicy(nn.Module, Policy):
             actions, logprobs, values, states = self(
                 torch_obs, prev_actions=torch_prev_actions, prev_states=self.prev_states
             )
-        if self.actor.is_continuous:
-            env_actions = torch.stack(actions, -1).cpu().numpy()
-        else:
-            env_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy()
+        env_actions = self.codec.to_env(actions)
         torch_actions = torch.cat(actions, dim=-1)
         if greedy:
             self.prev_actions, self.prev_states = torch_actions.cpu().numpy(), states
@@ -443,6 +419,11 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         }
         self.prev_actions, self.prev_states = columns["actions"], states
         return Act(env_actions, columns, {"actions": torch_actions, "states": states})
+
+    def obs_to_device(self, obs: Dict[str, np.ndarray]) -> Dict[str, Tensor]:
+        """The observations of the keys of the inputs, as tensors on the device of the policy, with a time dimension of
+        one step (`[1, Num_Envs, ...]`)."""
+        return {k: v[None] for k, v in to_device({k: obs[k] for k in self.keys}, self.device).items()}
 
     def init_states(self, num_envs: int) -> None:
         self.prev_states = (
@@ -467,7 +448,7 @@ class RecurrentPPOPolicy(nn.Module, Policy):
         mask: Optional[Tensor] = None,
         greedy: bool = False,
     ) -> Tuple[Sequence[Tensor], Tuple[Tensor, Tensor]]:
-        embedded_obs = self.feature_extractor(obs)
+        embedded_obs = self.feature_extractor(obs, phase="act")
         out, states = self.rnn(torch.cat((embedded_obs, prev_actions), dim=-1), prev_states, mask)
         pre_dist = self._get_pre_dist(out)
         sampled_actions = []
@@ -489,24 +470,21 @@ class RecurrentPPOPolicy(nn.Module, Policy):
 
 def build_agent(
     fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
+    codec: ActionCodec,
     cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[RecurrentPPOAgent, RecurrentPPOPolicy]:
+    """The agent of recurrent PPO on the inputs of `algo.inputs`, from the spaces of the store (`obs_space`), and its
+    policy, which shares its modules."""
     agent = RecurrentPPOAgent(
-        actions_dim=actions_dim,
-        obs_space=obs_space,
-        encoder_cfg=cfg.algo.encoder,
+        codec=codec,
+        feature_extractor=build_encoder(cfg, obs_space),
         rnn_cfg=cfg.algo.rnn,
         actor_cfg=cfg.algo.actor,
         critic_cfg=cfg.algo.critic,
-        cnn_keys=legacy_keys(cfg).image_keys,
-        mlp_keys=legacy_keys(cfg).vector_keys,
-        is_continuous=is_continuous,
         distribution_cfg=cfg.distribution,
-        screen_size=cfg.env.screen_size,
+        ortho_init=cfg.algo.encoder.get("ortho_init", False),
     )
     if agent_state:
         agent.load_state_dict(agent_state)
@@ -527,10 +505,9 @@ def build_agent(
         policy_fabric.setup_module(agent.actor.module),
         policy_fabric.setup_module(agent.critic.module),
         cfg.algo.rnn.lstm.hidden_size,
-        actions_dim,
+        codec,
         device=policy_fabric.device,
-        obs_keys=legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys,
-        cnn_keys=legacy_keys(cfg).image_keys,
+        keys=agent.feature_extractor.keys,
         reset_recurrent_state_on_done=cfg.algo.reset_recurrent_state_on_done,
     )
     # The step of the policy, compiled with `algo.compile` (`compiled_policy`)

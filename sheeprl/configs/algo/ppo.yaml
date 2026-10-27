@@ -59,7 +59,6 @@ inputs:
       mlp_layers: ${algo.encoder.mlp_layers}
       dense_act: ${algo.encoder.dense_act}
       layer_norm: ${algo.encoder.layer_norm}
-      ortho_init: ${algo.encoder.ortho_init}
 
 # Actor
 actor:

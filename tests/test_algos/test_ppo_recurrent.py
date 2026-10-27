@@ -16,6 +16,8 @@ from torch import nn
 
 from sheeprl.algos.ppo_recurrent import ppo_recurrent
 from sheeprl.algos.ppo_recurrent.agent import RecurrentPPOAgent, RecurrentPPOPolicy
+from sheeprl.core.actions import ActionCodec
+from sheeprl.models.io import MultiEncoder
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
 from tests.test_algos.compiled import assert_same_step, no_host_reads, same_random_numbers
@@ -27,24 +29,22 @@ def build_agent(ortho_init: bool = False, is_continuous: bool = False) -> Recurr
     torch.manual_seed(0)
     networks = {"dense_units": 32, "mlp_layers": 2, "dense_act": "torch.nn.Tanh", "layer_norm": False}
     no_mlp = {"apply": False, "bias": True, "activation": "torch.nn.Tanh", "layer_norm": False, "dense_units": 8}
+    net = {"_target_": "sheeprl.models.MLPEncoder", **networks, "features_dim": 32}
+    inputs = {"vector": {"keys": ["state"], "transforms": [], "net": net}}
+    action_space = gym.spaces.Box(-1, 1, (2,), np.float32) if is_continuous else gym.spaces.Discrete(3)
     return RecurrentPPOAgent(
-        actions_dim=[2] if is_continuous else [3],
-        obs_space=gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (8,), np.float32)}),
-        encoder_cfg=dotdict({**networks, "cnn_features_dim": 64, "mlp_features_dim": 32, "ortho_init": ortho_init}),
+        codec=ActionCodec.from_space(action_space),
+        feature_extractor=MultiEncoder.from_config(inputs, gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (8,))})),
         rnn_cfg=dotdict({"lstm": {"hidden_size": HIDDEN_SIZE}, "pre_rnn_mlp": no_mlp, "post_rnn_mlp": no_mlp}),
         actor_cfg=dotdict({**networks, "ortho_init": ortho_init}),
         critic_cfg=dotdict({**networks, "ortho_init": ortho_init}),
-        cnn_keys=[],
-        mlp_keys=["state"],
-        is_continuous=is_continuous,
         distribution_cfg=dotdict({"type": "auto"}),
+        ortho_init=ortho_init,
     )
 
 
 def policy_of(agent: RecurrentPPOAgent) -> RecurrentPPOPolicy:
-    return RecurrentPPOPolicy(
-        agent.feature_extractor, agent.rnn, agent.actor, agent.critic, HIDDEN_SIZE, agent.actions_dim
-    )
+    return RecurrentPPOPolicy(agent.feature_extractor, agent.rnn, agent.actor, agent.critic, HIDDEN_SIZE, agent.codec)
 
 
 def linear_layers(module: nn.Module) -> List[nn.Linear]:
@@ -113,7 +113,7 @@ def test_the_policy_follows_the_updates_of_the_agent(accelerator):
     )
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (8,), np.float32)})
     fabric = Fabric(accelerator=accelerator, devices=1)
-    agent, policy = build_agents(fabric, [3], False, cfg, obs_space)
+    agent, policy = build_agents(fabric, ActionCodec.from_space(gym.spaces.Discrete(3)), cfg, obs_space)
     device = fabric.device
     with torch.no_grad():
         policy(
@@ -307,7 +307,9 @@ def test_the_refreshed_recurrent_states_are_the_ones_of_the_policy_with_its_weig
     )
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (5,), np.float32)})
     torch.manual_seed(0)
-    agent, policy = build_agents(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
+    agent, policy = build_agents(
+        Fabric(accelerator="cpu", devices=1), ActionCodec.from_space(gym.spaces.Discrete(3)), cfg, obs_space
+    )
     T, N = 12, 3
     generator = torch.Generator().manual_seed(1)
     obs = torch.randn(T, N, 5, generator=generator)

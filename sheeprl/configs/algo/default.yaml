@@ -7,6 +7,9 @@ run_test: True
 # with the transforms of every key (`sheeprl/transforms`) and one network on their concatenation. Every algorithm
 # ships the inputs `image` and `vector` without keys: the experiment sets them, and an input without keys is skipped
 inputs: {}
+# The class of the encoder of the inputs (`sheeprl.models.io.build_encoder`): `MultiEncoder` concatenates their features
+encoder:
+  _target_: sheeprl.models.io.MultiEncoder
 # The observations reconstructed from the latent state (the algorithms with a decoder): named outputs, each a group of
 # encoded keys with one network and, for the Dreamers, the likelihood of the reconstructions
 outputs: {}

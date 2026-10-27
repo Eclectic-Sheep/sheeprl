@@ -32,9 +32,8 @@ from sheeprl.core import (
     run,
     update,
 )
+from sheeprl.core.actions import ActionCodec
 from sheeprl.utils.compile import compile_enabled, compiled, mark_gradient_step
-from sheeprl.utils.env import actions_dim_of, legacy_keys
-from sheeprl.utils.obs import images_as_channels, prepare_obs
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor
 
@@ -55,8 +54,8 @@ class RecurrentPPOWriter(Writer):
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
-        self.cnn_keys = legacy_keys(cfg).image_keys
-        self.obs_keys = legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys
+        # The keys of the inputs, then the extra keys
+        self.obs_keys = tuple(policy.keys) + tuple(k for k in cfg.algo.extra_keys if k not in policy.keys)
 
     def write(self, rollout: ReplayStore, step: EnvStep, act: Act) -> None:
         cfg = self.cfg
@@ -64,10 +63,7 @@ class RecurrentPPOWriter(Writer):
         torch_actions, states = act.extras["actions"], act.extras["states"]
 
         def final_values(env_idxes: np.ndarray) -> np.ndarray:
-            final_obs = step.stack_final_obs(env_idxes, self.obs_keys)
-            final_obs = prepare_obs(
-                self.fabric.device, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes), time_dim=True
-            )
+            final_obs = self.policy.obs_to_device(step.stack_final_obs(env_idxes, self.policy.keys))
             values, _ = self.policy.get_values(
                 final_obs, torch_actions[:, env_idxes, :], tuple(s[:, env_idxes, ...] for s in states)
             )
@@ -79,9 +75,7 @@ class RecurrentPPOWriter(Writer):
         dones = np.logical_or(step.terminated, step.truncated).reshape(1, num_envs, -1).astype(np.float32)
         rewards = rewards.reshape(1, num_envs, -1).astype(np.float32)
 
-        # The stacked frames of an image are stored as its channels
-        obs = images_as_channels({k: step.obs[k] for k in self.obs_keys}, self.cnn_keys, num_envs)
-        data = {k: v[np.newaxis] for k, v in obs.items()}
+        data = {k: step.obs[k][np.newaxis] for k in self.obs_keys}
         data["dones"] = dones
         data["values"] = act.columns["values"].reshape(1, num_envs, -1)
         data["actions"] = act.columns["actions"].reshape(1, num_envs, -1)
@@ -223,11 +217,6 @@ class PPORecurrent(Algorithm):
                 "in order to play correctly the game. "
                 "As an alternative you can use one of the Dreamers' agents."
             )
-        if legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys == []:
-            raise RuntimeError(
-                "You should specify at least one CNN keys or MLP keys from the cli: "
-                "`algo.inputs.image.keys=[rgb]` or `algo.inputs.vector.keys=[state]`"
-            )
         if not cfg.algo.per_rank_sequence_length or cfg.algo.per_rank_sequence_length <= 0:
             raise ValueError(f"The sequence length must be greater than zero, got: {cfg.algo.per_rank_sequence_length}")
         if cfg.buffer.share_data:
@@ -247,11 +236,10 @@ class PPORecurrent(Algorithm):
         cfg = self.cfg
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
+        agent, self._policy = build_agent(self.fabric, ActionCodec.from_space(action_space), cfg, obs_space)
         if cfg.metric.log_level > 0:
-            self.fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
-            self.fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
-        actions_dim, is_continuous = actions_dim_of(action_space)
-        agent, self._policy = build_agent(self.fabric, actions_dim, is_continuous, cfg, obs_space)
+            for name, inp in agent.feature_extractor.inputs.items():
+                self.fabric.print(f"Input `{name}`: {list(inp.keys)}")
 
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)
@@ -283,22 +271,10 @@ class PPORecurrent(Algorithm):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
-            next_obs = {}
-            for k in legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys:
-                next_obs[k] = rollout.last_step.next_obs[k]
-                if k in legacy_keys(cfg).image_keys:
-                    next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
-            next_obs = prepare_obs(
-                self.fabric.device,
-                next_obs,
-                cnn_keys=legacy_keys(cfg).image_keys,
-                num_envs=cfg.env.num_envs,
-                time_dim=True,
-            )
+            policy = self.policy(state)
+            next_obs = policy.obs_to_device(rollout.last_step.next_obs)
             last_act = rollout.last_act
-            next_values, _ = self.policy(state).get_values(
-                next_obs, last_act.extras["actions"], last_act.extras["states"]
-            )
+            next_values, _ = policy.get_values(next_obs, last_act.extras["actions"], last_act.extras["states"])
             returns, advantages = self.gae(
                 data["rewards"].to(torch.float64),
                 data["values"],
@@ -342,8 +318,7 @@ class PPORecurrent(Algorithm):
                 # every epoch after the first one unrolls them again with the current weights, from the state before
                 # the first step of the rollout
                 # As the sequences, in single precision (`split_in_sequences`)
-                obs = {k: data[k].float() / 255.0 - 0.5 for k in legacy_keys(cfg).image_keys}
-                obs.update({k: data[k].float() for k in legacy_keys(cfg).vector_keys})
+                obs = {k: data[k] for k in state.agent.feature_extractor.keys}
                 with autocast(self.fabric):
                     prev_hx, prev_cx = recurrent_states(
                         state.agent,
@@ -370,10 +345,7 @@ class PPORecurrent(Algorithm):
     def train_step(self, state: PPORecurrentState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo
         batch = dict(batch)
-        keys = legacy_keys(self.cfg)
-        for k in keys.image_keys:
-            batch[k] = batch[k] / 255.0 - 0.5
-        obs = {k: batch[k] for k in set(keys.image_keys + keys.vector_keys)}
+        obs = {k: batch[k] for k in state.agent.feature_extractor.keys}
         states = (batch["prev_hx"][:1], batch["prev_cx"][:1])
         mask = batch["mask"].unsqueeze(-1)
         if compile_enabled(self.fabric, self.cfg):

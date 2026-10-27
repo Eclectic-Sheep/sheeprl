@@ -31,9 +31,8 @@ from sheeprl.core import (
     run,
     update,
 )
+from sheeprl.core.actions import ActionCodec
 from sheeprl.utils.compile import compiled, mark_gradient_step
-from sheeprl.utils.env import actions_dim_of, legacy_keys
-from sheeprl.utils.obs import images_as_channels, prepare_obs, scale_images
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor
 
@@ -64,16 +63,15 @@ class PPOWriter(Writer):
         self.cfg = cfg
         self.policy = policy
         self.rewards_dtype = rewards_dtype
-        self.cnn_keys = legacy_keys(cfg).image_keys
-        self.obs_keys = legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys
+        # The keys of the inputs, then the extra keys
+        self.obs_keys = tuple(policy.keys) + tuple(k for k in cfg.algo.extra_keys if k not in policy.keys)
 
     def write(self, rollout: ReplayStore, step: EnvStep, act: Act) -> None:
         cfg = self.cfg
         num_envs = len(step.rewards)
 
         def final_values(env_idxes: np.ndarray) -> np.ndarray:
-            final_obs = step.stack_final_obs(env_idxes, self.obs_keys)
-            final_obs = prepare_obs(self.fabric.device, final_obs, cnn_keys=self.cnn_keys, num_envs=len(env_idxes))
+            final_obs = self.policy.obs_to_device(step.stack_final_obs(env_idxes, self.policy.keys))
             return self.policy.get_values(final_obs).cpu().numpy()
 
         # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP: the
@@ -84,9 +82,7 @@ class PPOWriter(Writer):
         if self.rewards_dtype is not None:
             rewards = rewards.astype(self.rewards_dtype)
 
-        # The stacked frames of an image are stored as its channels
-        obs = images_as_channels({k: step.obs[k] for k in self.obs_keys}, self.cnn_keys, num_envs)
-        data = {k: v[np.newaxis] for k, v in obs.items()}
+        data = {k: step.obs[k][np.newaxis] for k in self.obs_keys}
         data["dones"] = dones[np.newaxis]
         for k in ("values", "actions", "logprobs"):
             data[k] = act.columns[k][np.newaxis]
@@ -140,11 +136,6 @@ class PPO(Algorithm):
                 "in order to play correctly the game. "
                 "As an alternative you can use one of the Dreamers' agents."
             )
-        if legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys == []:
-            raise RuntimeError(
-                "You should specify at least one CNN keys or MLP keys from the cli: "
-                "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
-            )
         # The buffer holds one rollout: every row is trained on, and the returns are computed over all of them
         if cfg.buffer.size != cfg.algo.rollout_steps:
             raise ValueError(
@@ -163,11 +154,10 @@ class PPO(Algorithm):
         cfg = self.cfg
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
+        agent, self._policy = build_agent(self.fabric, ActionCodec.from_space(action_space), cfg, obs_space)
         if cfg.metric.log_level > 0:
-            self.fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
-            self.fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
-        actions_dim, is_continuous = actions_dim_of(action_space)
-        agent, self._policy = build_agent(self.fabric, actions_dim, is_continuous, cfg, obs_space)
+            for name, inp in agent.feature_extractor.inputs.items():
+                self.fabric.print(f"Input `{name}`: {list(inp.keys)}")
 
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)
@@ -198,13 +188,8 @@ class PPO(Algorithm):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
-            next_obs = {
-                k: rollout.last_step.next_obs[k] for k in legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys
-            }
-            next_obs = prepare_obs(
-                self.fabric.device, next_obs, cnn_keys=legacy_keys(cfg).image_keys, num_envs=cfg.env.num_envs
-            )
-            next_values = self.policy(state).get_values(next_obs)
+            policy = self.policy(state)
+            next_values = policy.get_values(policy.obs_to_device(rollout.last_step.next_obs))
             returns, advantages = self.gae(
                 data["rewards"],
                 data["values"],
@@ -231,12 +216,10 @@ class PPO(Algorithm):
         cfg = self.cfg.algo
         # The loss is compiled when `algo.compile.enabled` is set
         mark_gradient_step(self.fabric, self.cfg)
-        keys = legacy_keys(self.cfg)
-        obs = scale_images(batch, keys.image_keys, keys.vector_keys + keys.image_keys)
         with autocast(self.fabric):
             loss, pg_loss, v_loss, ent_loss = compiled(ppo_loss, self.fabric, self.cfg)(
                 state.agent,
-                obs,
+                {k: batch[k] for k in state.agent.feature_extractor.keys},
                 batch["actions"],
                 batch["logprobs"],
                 batch["values"],

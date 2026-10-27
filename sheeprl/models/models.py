@@ -286,21 +286,17 @@ class DeCNN(nn.Module):
 
 
 class NatureCNN(CNN):
-    """CNN from DQN Nature paper: Mnih, Volodymyr, et al. "Human-level control through deep reinforcement learning."
-    Nature 518.7540 (2015): 529-533.
+    """The CNN of the DQN Nature paper (Mnih, Volodymyr, et al. "Human-level control through deep reinforcement
+    learning." Nature 518.7540 (2015): 529-533), on images of shape `input_shape` (channels, height, width): three
+    convolutions, then a linear layer with ReLU to `features_dim` features (the flattened feature maps without it).
+    Accepts any leading dimensions."""
 
-    Args:
-        in_channels (int): the input channels to the first convolutional layer
-        features_dim (int): the features dimension in output from the last convolutional layer
-        screen_size (int, optional): the dimension of the input image as a single integer.
-            Needed to extract the features and compute the output dimension after all the
-            convolutional layers.
-            Defaults to 64.
-    """
-
-    def __init__(self, in_channels: int, features_dim: int, screen_size: int = 64):
+    def __init__(self, input_shape: Sequence[int], features_dim: Optional[int] = 512):
+        input_shape = tuple(int(d) for d in input_shape)
+        if len(input_shape) != 3:
+            raise ValueError(f"NatureCNN takes images of shape (channels, height, width), got {input_shape}")
         super().__init__(
-            in_channels,
+            input_shape[0],
             [32, 64, 64],
             layer_args=[
                 {"kernel_size": 8, "stride": 4},
@@ -308,9 +304,9 @@ class NatureCNN(CNN):
                 {"kernel_size": 3, "stride": 1},
             ],
         )
-
+        self.input_shape = input_shape
         with torch.no_grad():
-            x = self.model(torch.rand(1, in_channels, screen_size, screen_size, device=self.model[0].weight.device))
+            x = self.model(torch.rand(1, *input_shape, device=self.model[0].weight.device))
             out_dim = x.flatten(1).shape[1]
         self._output_dim = out_dim
         self.fc = None
@@ -324,8 +320,7 @@ class NatureCNN(CNN):
 
     def forward(self, x: Tensor) -> Tensor:
         x = cnn_forward(self.model, x, input_dim=x.shape[-3:], output_dim=(-1,))
-        x = F.relu(self.fc(x))
-        return x
+        return x if self.fc is None else F.relu(self.fc(x))
 
 
 class LayerNormGRUCell(nn.Module):

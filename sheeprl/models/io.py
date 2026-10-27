@@ -1,0 +1,236 @@
+"""The inputs and outputs of the agents: what they read of the observations and what their decoders reconstruct.
+
+An input (`Input`) is a group of observation keys encoded together: the `batch` stage of the transforms of every key,
+one concatenation, one network. The inputs of an algorithm (`algo.inputs`) make its encoder (`MultiEncoder`), whose
+features are the ones of its inputs concatenated in the order of the configuration. An output (`Output`) is a group of
+encoded keys reconstructed together from the latent state by one network, split per key; the outputs of an algorithm
+(`algo.outputs`) make its decoder (`MultiDecoder`).
+
+The networks follow a contract: an encoder network takes `input_shape` (the shape of one sample of the concatenated
+keys) and exposes `output_dim`; a decoder network takes `latent_size` and `output_shape`. Both accept any leading
+dimensions.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+import gymnasium as gym
+import hydra
+import numpy as np
+import torch
+from torch import Tensor, nn
+
+from sheeprl.transforms.base import Pipeline
+
+
+def to_device(obs: Dict[str, np.ndarray], device: str | torch.device) -> Dict[str, Tensor]:
+    """The observations `obs` as tensors on `device`, with their dtype: the inputs cast them after their transforms."""
+    return {k: torch.from_numpy(np.array(v, copy=True)).to(device) for k, v in obs.items()}
+
+
+def _concat_dim(shapes: Sequence[Tuple[int, ...]], keys: Sequence[str], cat_dim: Optional[int]) -> int:
+    if cat_dim is not None:
+        return cat_dim
+    ndims = {len(shape) for shape in shapes}
+    if ndims == {3}:
+        return -3
+    if ndims == {1}:
+        return -1
+    raise ValueError(
+        f"The keys {list(keys)} have the shapes {[tuple(s) for s in shapes]} after their transforms: an input "
+        "concatenates images (3 dimensions, along the channels) or vectors (1 dimension). Transform them to one kind "
+        "(e.g. `sheeprl.transforms.Flatten`) or set the `cat_dim` of the input"
+    )
+
+
+def _concat_shape(shapes: Sequence[Tuple[int, ...]], cat_dim: int, what: str) -> Tuple[int, ...]:
+    """The shape of the concatenation of samples of `shapes` along `cat_dim`."""
+    first = list(shapes[0])
+    axis = cat_dim % len(first)
+    for shape in shapes[1:]:
+        if len(shape) != len(first) or any(a != b for i, (a, b) in enumerate(zip(shape, first)) if i != axis):
+            raise ValueError(f"{what}: the shapes {[tuple(s) for s in shapes]} cannot be concatenated along {cat_dim}")
+    first[axis] = sum(shape[axis] for shape in shapes)
+    return tuple(first)
+
+
+class Input(nn.Module):
+    """A group of observation keys encoded together: the `batch` stage of the transforms of every key, their
+    concatenation along `cat_dim`, one network. After their transforms, the tensors of the keys are cast to the default
+    dtype of torch, the one of the inputs of the precision of Fabric inside its modules (e.g. `bf16-true`)."""
+
+    def __init__(self, keys: Sequence[str], pipelines: Sequence[Pipeline], net: nn.Module, cat_dim: int) -> None:
+        super().__init__()
+        self.keys = tuple(keys)
+        # A list: the observation keys are any strings, not all valid names of modules
+        self.pipelines = nn.ModuleList(pipelines)
+        self.net = net
+        self.cat_dim = cat_dim
+        self.output_dim = int(net.output_dim)
+
+    @classmethod
+    def from_config(cls, cfg: Any, store_space: gym.spaces.Dict) -> Input:
+        """The input of `cfg` (`keys`, `transforms`, `net`, optionally `cat_dim`), from the spaces of the store."""
+        keys = list(cfg["keys"])
+        missing = [k for k in keys if k not in store_space.spaces]
+        if missing:
+            raise ValueError(f"The keys {missing} are not in the store, whose keys are {list(store_space.spaces)}")
+        pipelines = [Pipeline.from_config(cfg.get("transforms") or [], store_space[k], "batch", "batch") for k in keys]
+        shapes = [tuple(p.batch_space.shape) for p in pipelines]
+        cat_dim = _concat_dim(shapes, keys, cfg.get("cat_dim"))
+        input_shape = _concat_shape(shapes, cat_dim, f"The input of the keys {keys}")
+        net = hydra.utils.instantiate(cfg["net"], input_shape=list(input_shape), _convert_="all")
+        if not isinstance(getattr(net, "output_dim", None), int):
+            raise TypeError(f"The network of an input must expose `output_dim: int`, {type(net).__name__} doesn't")
+        return cls(keys, pipelines, net, cat_dim)
+
+    def transformed(self, obs: Dict[str, Tensor], phase: str = "train") -> List[Tensor]:
+        """The tensors of the keys through their `batch` transforms of `phase`, in the default dtype."""
+        dtype = torch.get_default_dtype()
+        return [p.batch(obs[k], phase).to(dtype) for k, p in zip(self.keys, self.pipelines)]
+
+    def forward(self, obs: Dict[str, Tensor], phase: str = "train") -> Tensor:
+        return self.net(torch.cat(self.transformed(obs, phase), dim=self.cat_dim))
+
+    def batch_space(self, key: str) -> gym.Space:
+        """The space of `key` after its `batch` transforms."""
+        return self.pipelines[self.keys.index(key)].batch_space
+
+
+class MultiEncoder(nn.Module):
+    """The inputs of an algorithm (`algo.inputs`), their features concatenated in the order of the configuration.
+    `keys` are the keys of all of them, each once: what the policies read and the writers store."""
+
+    def __init__(self, inputs: Dict[str, Input]) -> None:
+        super().__init__()
+        if not inputs:
+            raise ValueError("An encoder needs at least one input with keys (`algo.inputs.<name>.keys`)")
+        self.inputs = nn.ModuleDict(inputs)
+        keys: List[str] = []
+        for inp in inputs.values():
+            keys += [k for k in inp.keys if k not in keys]
+        self.keys = tuple(keys)
+        self.output_dim = sum(inp.output_dim for inp in inputs.values())
+
+    @classmethod
+    def from_config(cls, cfg_inputs: Any, store_space: gym.spaces.Dict) -> MultiEncoder:
+        """The inputs configured in `cfg_inputs` (`algo.inputs`), skipping the ones without keys."""
+        return cls(
+            {
+                name: Input.from_config(spec, store_space)
+                for name, spec in (cfg_inputs or {}).items()
+                if spec and spec.get("keys")
+            }
+        )
+
+    def forward(self, obs: Dict[str, Tensor], phase: str = "train") -> Tensor:
+        features = [inp(obs, phase) for inp in self.inputs.values()]
+        return features[0] if len(features) == 1 else torch.cat(features, dim=-1)
+
+    def batch_space(self, key: str) -> gym.Space:
+        """The space of `key` after the `batch` transforms of the first input that reads it."""
+        for inp in self.inputs.values():
+            if key in inp.keys:
+                return inp.batch_space(key)
+        raise KeyError(f"No input reads the key `{key}`: the keys of the inputs are {list(self.keys)}")
+
+    def targets(self, obs: Dict[str, Tensor], keys: Sequence[str]) -> Dict[str, Tensor]:
+        """The tensors of `keys` through the `batch` transforms of the first input that reads them, in the `train`
+        phase: the targets of the losses of the decoders."""
+        targets = {}
+        for k in keys:
+            for inp in self.inputs.values():
+                if k in inp.keys:
+                    targets[k] = inp.pipelines[inp.keys.index(k)].batch(obs[k], "train").to(torch.get_default_dtype())
+                    break
+            else:
+                raise KeyError(f"No input reads the key `{k}`: a decoded key must be encoded")
+        return targets
+
+
+def build_encoder(cfg: Any, store_space: gym.spaces.Dict) -> MultiEncoder:
+    """The encoder of the inputs of `cfg` (`algo.inputs`), of the class `algo.encoder._target_` (`MultiEncoder` by
+    default, for a fusion of the inputs other than the concatenation of their features)."""
+    target = ((cfg.algo.get("encoder") or {}).get("_target_")) or "sheeprl.models.io.MultiEncoder"
+    return hydra.utils.get_class(target).from_config(cfg.algo.inputs, store_space)
+
+
+class Output(nn.Module):
+    """A group of encoded keys reconstructed together: one network from the latent state to their concatenation (in the
+    domain of the `batch` transforms of the encoder), split per key. `likelihood`, if any, makes the distribution of the
+    reconstruction of a key, which scores the targets (`log_prob`)."""
+
+    def __init__(
+        self,
+        keys: Sequence[str],
+        shapes: Sequence[Tuple[int, ...]],
+        net: nn.Module,
+        cat_dim: int,
+        likelihood: Optional[Callable[..., Any]] = None,
+    ) -> None:
+        super().__init__()
+        self.keys = tuple(keys)
+        self.shapes = [tuple(s) for s in shapes]
+        self.net = net
+        self.cat_dim = cat_dim
+        self.likelihood = likelihood
+        axis = cat_dim % len(self.shapes[0])
+        self.split_sizes = [s[axis] for s in self.shapes]
+
+    @classmethod
+    def from_config(cls, cfg: Any, encoder: MultiEncoder, latent_size: int) -> Output:
+        """The output of `cfg` (`keys`, `net`, optionally `likelihood` and `cat_dim`): the shape of every key is the
+        one the encoder gives it after its `batch` transforms."""
+        keys = list(cfg["keys"])
+        shapes = [tuple(encoder.batch_space(k).shape) for k in keys]
+        cat_dim = _concat_dim(shapes, keys, cfg.get("cat_dim"))
+        output_shape = _concat_shape(shapes, cat_dim, f"The output of the keys {keys}")
+        net = hydra.utils.instantiate(
+            cfg["net"], latent_size=int(latent_size), output_shape=list(output_shape), _convert_="all"
+        )
+        likelihood = hydra.utils.instantiate(cfg["likelihood"]) if cfg.get("likelihood") else None
+        return cls(keys, shapes, net, cat_dim, likelihood)
+
+    def forward(self, latent: Tensor) -> Dict[str, Tensor]:
+        out = self.net(latent)
+        return dict(zip(self.keys, torch.split(out, self.split_sizes, dim=self.cat_dim)))
+
+    def log_prob(self, reconstructions: Dict[str, Tensor], targets: Dict[str, Tensor]) -> Tensor:
+        """The sum over the keys of the log-likelihood of their targets under the distribution of their
+        reconstruction."""
+        if self.likelihood is None:
+            raise RuntimeError(f"The output of the keys {list(self.keys)} has no likelihood")
+        return sum(
+            self.likelihood(reconstructions[k], dims=len(shape)).log_prob(targets[k])
+            for k, shape in zip(self.keys, self.shapes)
+        )
+
+
+class MultiDecoder(nn.Module):
+    """The outputs of an algorithm (`algo.outputs`): the reconstructions of all their keys."""
+
+    def __init__(self, outputs: Dict[str, Output]) -> None:
+        super().__init__()
+        self.outputs = nn.ModuleDict(outputs)
+        self.keys = tuple(k for out in outputs.values() for k in out.keys)
+
+    @classmethod
+    def from_config(cls, cfg_outputs: Any, encoder: MultiEncoder, latent_size: int) -> MultiDecoder:
+        """The outputs configured in `cfg_outputs` (`algo.outputs`), skipping the ones without keys."""
+        return cls(
+            {
+                name: Output.from_config(spec, encoder, latent_size)
+                for name, spec in (cfg_outputs or {}).items()
+                if spec and spec.get("keys")
+            }
+        )
+
+    def forward(self, latent: Tensor) -> Dict[str, Tensor]:
+        reconstructions: Dict[str, Tensor] = {}
+        for out in self.outputs.values():
+            reconstructions.update(out(latent))
+        return reconstructions
+
+    def log_prob(self, reconstructions: Dict[str, Tensor], targets: Dict[str, Tensor]) -> Tensor:
+        return sum(out.log_prob(reconstructions, targets) for out in self.outputs.values())

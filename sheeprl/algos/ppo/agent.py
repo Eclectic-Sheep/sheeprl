@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from math import log, prod, sqrt
+from math import log, sqrt
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
@@ -14,13 +14,13 @@ from lightning import Fabric
 from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal, OneHotCategorical
 
+from sheeprl.core.actions import ActionCodec
 from sheeprl.core.collector import Act, Policy
-from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
+from sheeprl.models.io import MultiEncoder, build_encoder, to_device
+from sheeprl.models.models import MLP
 from sheeprl.utils.compile import compiled_policy
-from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import per_layer_ortho_init_weights
-from sheeprl.utils.obs import prepare_obs
 from sheeprl.utils.utils import dotdict, safetanh
 
 
@@ -37,58 +37,6 @@ def ortho_init_linear_layers(module: nn.Module, gain: float, output_gain: Option
     for i, layer in enumerate(linear_layers):
         is_output = output_gain is not None and i == len(linear_layers) - 1
         per_layer_ortho_init_weights(layer, gain=output_gain if is_output else gain)
-
-
-class CNNEncoder(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        features_dim: int,
-        screen_size: int,
-        keys: Sequence[str],
-    ) -> None:
-        super().__init__()
-        self.keys = keys
-        self.input_dim = (in_channels, screen_size, screen_size)
-        self.output_dim = features_dim
-        self.model = NatureCNN(in_channels=in_channels, features_dim=features_dim, screen_size=screen_size)
-
-    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], dim=-3)
-        return self.model(x)
-
-
-class MLPEncoder(nn.Module):
-    def __init__(
-        self,
-        input_dim: int,
-        features_dim: int | None,
-        keys: Sequence[str],
-        dense_units: int = 64,
-        mlp_layers: int = 2,
-        dense_act: nn.Module = nn.ReLU,
-        layer_norm: bool = False,
-    ) -> None:
-        super().__init__()
-        self.keys = keys
-        self.input_dim = input_dim
-        self.output_dim = features_dim if features_dim else dense_units
-        if mlp_layers == 0:
-            self.model = nn.Identity()
-            self.output_dim = input_dim
-        else:
-            self.model = MLP(
-                input_dim,
-                features_dim,
-                [dense_units] * mlp_layers,
-                activation=dense_act,
-                norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
-                norm_args=[{"normalized_shape": dense_units} for _ in range(mlp_layers)] if layer_norm else None,
-            )
-
-    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], dim=-1)
-        return self.model(x)
 
 
 class PPOActor(nn.Module):
@@ -111,20 +59,24 @@ class PPOActor(nn.Module):
 
 
 class PPOAgent(nn.Module):
+    """The feature extractor (the inputs of `algo.inputs`), the actor and the critic of PPO and A2C. The actor plays
+    all-categorical or continuous actions (`codec`); with `ortho_init`, the linear layers of the feature extractor get
+    orthogonal weights (gain 1) and zero biases."""
+
     def __init__(
         self,
-        actions_dim: Sequence[int],
-        obs_space: gymnasium.spaces.Dict,
-        encoder_cfg: dotdict,
+        codec: ActionCodec,
+        feature_extractor: MultiEncoder,
         actor_cfg: dotdict,
         critic_cfg: dotdict,
-        cnn_keys: Sequence[str],
-        mlp_keys: Sequence[str],
-        screen_size: int,
         distribution_cfg: dotdict,
-        is_continuous: bool = False,
+        ortho_init: bool = False,
     ):
         super().__init__()
+        codec.check("The actor of PPO")
+        self.codec = codec
+        is_continuous = codec.continuous
+        actions_dim = codec.dims
         self.is_continuous = is_continuous
         self.distribution_cfg = distribution_cfg
         self.distribution = distribution_cfg.get("type", "auto").lower()
@@ -143,28 +95,8 @@ class PPOAgent(nn.Module):
             else:
                 self.distribution = "discrete"
         self.actions_dim = actions_dim
-        in_channels = sum([prod(obs_space[k].shape[:-2]) for k in cnn_keys])
-        mlp_input_dim = sum([obs_space[k].shape[0] for k in mlp_keys])
-        cnn_encoder = (
-            CNNEncoder(in_channels, encoder_cfg.cnn_features_dim, screen_size, cnn_keys)
-            if cnn_keys is not None and len(cnn_keys) > 0
-            else None
-        )
-        mlp_encoder = (
-            MLPEncoder(
-                mlp_input_dim,
-                encoder_cfg.mlp_features_dim,
-                mlp_keys,
-                encoder_cfg.dense_units,
-                encoder_cfg.mlp_layers,
-                hydra.utils.get_class(encoder_cfg.dense_act),
-                encoder_cfg.layer_norm,
-            )
-            if mlp_keys is not None and len(mlp_keys) > 0
-            else None
-        )
-        self.feature_extractor = MultiEncoder(cnn_encoder, mlp_encoder)
-        if encoder_cfg.ortho_init:
+        self.feature_extractor = feature_extractor
+        if ortho_init:
             for layer in self.feature_extractor.modules():
                 if isinstance(layer, torch.nn.Linear):
                     torch.nn.init.orthogonal_(layer.weight, 1.0)
@@ -267,25 +199,26 @@ class PPOAgent(nn.Module):
 
 class PPOPolicy(nn.Module, Policy):
     """The policy of PPO and A2C: `forward` samples the actions from the observations as tensors, `act` plays them in
-    the environments (`Policy`), from the observations `obs_keys` (the images among them are `cnn_keys`) moved to
-    `device`."""
+    the environments (`Policy`), from the observations of the keys of the inputs (`keys`) moved to `device`. The
+    actions go to the environments and to the store through `codec`."""
 
     def __init__(
         self,
         feature_extractor: MultiEncoder,
         actor: PPOActor,
         critic: nn.Module,
+        codec: ActionCodec,
         device: str | torch.device = "cpu",
-        obs_keys: Sequence[str] = (),
-        cnn_keys: Sequence[str] = (),
+        keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.feature_extractor = feature_extractor
         self.critic = critic
         self.actor = actor
+        self.codec = codec
         self.device = torch.device(device)
-        self.obs_keys = obs_keys
-        self.cnn_keys = cnn_keys
+        # The keys of the inputs of the feature extractor, by default
+        self.keys = tuple(keys) or tuple(feature_extractor.keys)
 
     def _normal(self, actor_out: Tensor) -> Tuple[Tensor, Tensor]:
         mean, log_std = torch.chunk(actor_out, chunks=2, dim=-1)
@@ -305,7 +238,7 @@ class PPOPolicy(nn.Module, Policy):
         return actions, log_prob.unsqueeze(dim=-1)
 
     def forward(self, obs: Dict[str, Tensor]) -> Tuple[Sequence[Tensor], Tensor, Tensor]:
-        feat = self.feature_extractor(obs)
+        feat = self.feature_extractor(obs, phase="act")
         values = self.critic(feat)
         actor_out: List[Tensor] = self.actor(feat)
         if self.actor.is_continuous:
@@ -329,40 +262,39 @@ class PPOPolicy(nn.Module, Policy):
             )
 
     def get_values(self, obs: Dict[str, Tensor]) -> Tensor:
-        feat = self.feature_extractor(obs)
+        """The values of the observations `obs` (the ones the policy plays from, e.g. the last ones of a rollout)."""
+        feat = self.feature_extractor(obs, phase="act")
         return self.critic(feat)
 
-    def env_actions(self, actions: Sequence[Tensor]) -> Tensor:
+    def obs_to_device(self, obs: Dict[str, np.ndarray]) -> Dict[str, Tensor]:
+        """The observations of the keys of the inputs, as tensors on the device of the policy."""
+        return to_device({k: obs[k] for k in self.keys}, self.device)
+
+    def env_actions(self, actions: Sequence[Tensor]) -> np.ndarray:
         """The actions to play in the environments, from the ones returned by `forward`: the indices of the discrete
-        actions; the continuous actions, squashed by the tanh with `tanh_normal`."""
-        if self.actor.is_continuous:
-            env_actions = torch.stack(actions, dim=-1)
-            if self.actor.distribution == "tanh_normal":
-                env_actions = safetanh(env_actions, eps=torch.finfo(env_actions.dtype).resolution)
-            return env_actions
-        return torch.stack([act.argmax(dim=-1) for act in actions], dim=-1)
+        actions; the continuous actions, squashed by the tanh with `tanh_normal` (they are stored before it)."""
+        if self.actor.is_continuous and self.actor.distribution == "tanh_normal":
+            squashed = torch.cat(list(actions), dim=-1)
+            return self.codec.to_env([safetanh(squashed, eps=torch.finfo(squashed.dtype).resolution)])
+        return self.codec.to_env(actions)
 
     def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
-        """The actions for `obs`, with their columns: the actions one-hot for discrete actions (the environments take
-        their indices), their log-probabilities and the values of `obs`."""
-        num_envs = len(obs[self.obs_keys[0]])
-        obs = prepare_obs(self.device, {k: obs[k] for k in self.obs_keys}, cnn_keys=self.cnn_keys, num_envs=num_envs)
+        """The actions for `obs`, with their columns: the actions as stored (one-hot for discrete actions, while the
+        environments take their indices), their log-probabilities and the values of `obs`."""
+        obs = self.obs_to_device(obs)
         if greedy:
             # The modes of the distributions, the continuous ones already squashed with `tanh_normal`
-            actions = self.get_actions(obs, greedy=True)
-            if self.actor.is_continuous:
-                return Act(torch.cat(actions, dim=-1).cpu().numpy())
-            return Act(torch.stack([act.argmax(dim=-1) for act in actions], dim=-1).cpu().numpy())
+            return Act(self.codec.to_env(self.get_actions(obs, greedy=True)))
         actions, logprobs, values = self(obs)
         columns = {
-            "actions": torch.cat(actions, dim=-1).cpu().numpy(),
+            "actions": self.codec.to_store(actions),
             "logprobs": logprobs.cpu().numpy(),
             "values": values.cpu().numpy(),
         }
-        return Act(self.env_actions(actions).cpu().numpy(), columns)
+        return Act(self.env_actions(actions), columns)
 
     def get_actions(self, obs: Dict[str, Tensor], greedy: bool = False) -> Sequence[Tensor]:
-        feat = self.feature_extractor(obs)
+        feat = self.feature_extractor(obs, phase="act")
         actor_out: List[Tensor] = self.actor(feat)
         if self.actor.is_continuous:
             mean, log_std = torch.chunk(actor_out[0], chunks=2, dim=-1)
@@ -389,23 +321,20 @@ class PPOPolicy(nn.Module, Policy):
 
 def build_agent(
     fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
+    codec: ActionCodec,
     cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[PPOAgent, PPOPolicy]:
+    """The agent of PPO and A2C on the inputs of `algo.inputs`, from the spaces of the store (`obs_space`), and its
+    policy, which shares its weights."""
     agent = PPOAgent(
-        actions_dim=actions_dim,
-        obs_space=obs_space,
-        encoder_cfg=cfg.algo.encoder,
+        codec=codec,
+        feature_extractor=build_encoder(cfg, obs_space),
         actor_cfg=cfg.algo.actor,
         critic_cfg=cfg.algo.critic,
-        cnn_keys=legacy_keys(cfg).image_keys,
-        mlp_keys=legacy_keys(cfg).vector_keys,
-        screen_size=cfg.env.screen_size,
         distribution_cfg=cfg.distribution,
-        is_continuous=is_continuous,
+        ortho_init=cfg.algo.encoder.get("ortho_init", False),
     )
     if agent_state:
         agent.load_state_dict(agent_state)
@@ -416,9 +345,9 @@ def build_agent(
         copy.deepcopy(agent.feature_extractor),
         copy.deepcopy(agent.actor),
         copy.deepcopy(agent.critic),
+        codec,
         device=policy_fabric.device,
-        obs_keys=legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys,
-        cnn_keys=legacy_keys(cfg).image_keys,
+        keys=agent.feature_extractor.keys,
     )
 
     # Setup training agent
