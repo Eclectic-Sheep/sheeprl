@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import math
 import copy
+import math
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import gymnasium

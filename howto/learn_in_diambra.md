@@ -54,17 +54,17 @@ The observation space is slightly modified to be compatible with our algorithms,
 ## Multi-environments / Distributed training
 In order to train your agent with multiple environments or to perform distributed training, you have to specify to the `diambra run` command the number of environments you want to instantiate  (through the `-s` cli argument). So, you have to multiply the number of environments per single process and the number of processes you want to launch. For example, if you want to distribute your training among $2$ processes each one containing $4$ environments, the total number of environments will be: $2 \cdot 4 = 8$. The command will be:
 ```bash
-diambra run -s=8 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4 env.sync_env=True algo.cnn_keys.encoder=[frame] algo.cnn_keys.decoder=[frame] fabric.devices=2
+diambra run -s=8 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4 env.sync_env=True algo.inputs.image.keys=[frame] fabric.devices=2
 ```
 
 ## Args
 The IDs of the DIAMBRA environments are specified [here](https://docs.diambra.ai/envs/games/). To train your agent on a DIAMBRA environment you have to select the DIAMBRA configs with the argument `env=diambra`, then set the `env.id` argument to the environment ID, e.g., to train your agent on the *Dead Or Alive ++* game, you have to set the `env.id` argument to `doapp` (i.e., `env.id=doapp`).
 
 ```bash
-diambra run -s=4 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4 algo.cnn_keys.encoder=[frame] algo.cnn_keys.decoder=[frame]
+diambra run -s=4 python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.num_envs=4 algo.inputs.image.keys=[frame]
 ```
 
-The image observation of DIAMBRA is called `frame`, while the `dreamer_v3` experiment encodes and decodes the `rgb` key: both `algo.cnn_keys.encoder` and `algo.cnn_keys.decoder` must be set, since the keys of the decoder must be among the ones of the encoder.
+The image observation of DIAMBRA is called `frame`, while the `dreamer_v3` experiment reads the `state` key (the frames of Atari): `algo.inputs.image.keys` must be set, and the decoder reconstructs the keys of the image input by default (`algo.outputs.image.keys`). Check the [inputs and outputs howto](./inputs_and_outputs.md).
 
 Another possibility is to create a new config file in the `sheeprl/configs/exp` folder, where you specify all the configs you want to use in your experiment. An example of a custom configuration file is available [here](../sheeprl/configs/exp/dreamer_v3_L_doapp.yaml).
 
@@ -94,9 +94,9 @@ env:
             normalization_factor: 0.3
 
 algo:
-    cnn_keys:
-        encoder: [frame]
-        decoder: [frame]
+    inputs:
+        image:
+            keys: [frame]
 ```
 
 Now, to run your experiment, you have to execute the following command:
@@ -113,8 +113,7 @@ diambra run -s=4 python sheeprl.py exp=custom_exp env.num_envs=4
 > * `frame_shape` (settings and wrappers): you can set it with the `env.screen_size` argument.
 > * `flatten` (wrappers): you cannot set it, since it is always `True`.
 > * `repeat_action` (wrappers): you can set it with the `env.action_repeat` argument.
-> * `stack_frames` (wrappers): you can set it with the `env.frame_stack` argument.
-> * `dilation` (wrappers): you can set it with the `env.frame_stack_dilation` argument
+> * `stack_frames` and `dilation` (wrappers): stack the frames with the `sheeprl.transforms.FrameStack` transform of the image input instead (its `n` and `dilation`), with `refill_on: [round_done, stage_done, game_done]` to fill the stack again with the current frame when a round, a stage or a game ends and the episode goes on.
 >
 > When you set the `action_repeat` cli argument greater than one (i.e., the `repeat_action` DIAMBRA wrapper), the `step_ratio` diambra setting is automatically modified to $1$ because it is a DIAMBRA requirement.
 >
@@ -127,5 +126,5 @@ diambra run -s=4 python sheeprl.py exp=custom_exp env.num_envs=4
 ## Headless machines
 
 If you work on a headless machine, you need to software renderer. We recommend to adopt one of the following solutions:
-1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the training command with `xvfb-run`. For instance, to train DreamerV3 on the *Dead Or Alive ++* game on a headless machine, you need to run the following command: `xvfb-run diambra run python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.sync_env=True env.num_envs=1 algo.cnn_keys.encoder=[frame] algo.cnn_keys.decoder=[frame] fabric.devices=1`
+1. Install the `xvfb` software with the `sudo apt install xvfb` command and prefix the training command with `xvfb-run`. For instance, to train DreamerV3 on the *Dead Or Alive ++* game on a headless machine, you need to run the following command: `xvfb-run diambra run python sheeprl.py exp=dreamer_v3 env=diambra env.id=doapp env.sync_env=True env.num_envs=1 algo.inputs.image.keys=[frame] fabric.devices=1`
 2. Exploit the [PyVirtualDisplay](https://github.com/ponty/PyVirtualDisplay) package.

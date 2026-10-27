@@ -27,7 +27,7 @@ The list of selectable algorithms is given below:
 Once you have chosen the algorithm you want to train, you can start the train, for instance, of the ppo agent by running:
 
 ```bash
-python sheeprl.py exp=ppo env=atari env.id=PongNoFrameskip-v4 algo.cnn_keys.encoder=[rgb] fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2 algo.mlp_keys.encoder=[]
+python sheeprl.py exp=ppo env=atari env.id=PongNoFrameskip-v4 algo.inputs.image.keys=[state] algo.inputs.vector.keys=[] fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2
 ```
 
 The `sheeprl/configs/exp` folder also contains ready-made Atari experiments, e.g. `exp=ppo_atari`, `exp=a2c_atari` or `exp=dreamer_v3_100k_ms_pacman`.

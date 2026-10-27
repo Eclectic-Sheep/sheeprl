@@ -25,7 +25,7 @@ The fine-tuning starts from the checkpoint of the exploration (`checkpoint.explo
 
 - **Environment Configuration:** The fine-tuning must be executed on the same environment used during exploration (the same `env.id`, otherwise an error is raised). The frame stack, screen size, action repeat, grayscale, reward clipping, frame stack dilation, maximum episode steps and reward-as-observation settings of the environment are taken from the exploration (as the Minecraft settings, for the MineRL and MineDojo environments).
 
-- **Hyper-parameter Consistency:** The hyper-parameters of the agent are taken from the exploration: the configurations of the world model, of the actor and of the critic, `algo.gamma`, `algo.lmbda`, `algo.horizon` and the sizes, activations and initialization of the models, the action normalization (`algo.normalize_actions`), and the cnn and mlp keys.
+- **Hyper-parameter Consistency:** The hyper-parameters of the agent are taken from the exploration: the configurations of the world model, of the actor and of the critic, `algo.gamma`, `algo.lmbda`, `algo.horizon` and the sizes, activations and initialization of the models, the action normalization (`algo.normalize_actions`), the transforms of the rewards (`algo.rewards`) and the inputs and outputs (`algo.inputs`, `algo.outputs`, `algo.extra_keys`).
 
 ### Experience Collection
 
@@ -43,7 +43,7 @@ The implementation supports flexibility in experience collection during fine-tun
 
 To use the Plan2Explore framework, follow these steps:
 
-1. Run the exploration script to learn the dynamics of the environment, e.g. `python sheeprl.py exp=p2e_dv3_exploration env=dmc env.wrapper.domain_name=walker env.wrapper.task_name=walk algo.cnn_keys.encoder=[rgb]`.
+1. Run the exploration script to learn the dynamics of the environment, e.g. `python sheeprl.py exp=p2e_dv3_exploration env=dmc env.wrapper.domain_name=walker env.wrapper.task_name=walk algo.inputs.image.keys=[rgb]`.
 2. Execute the fine-tuning script on the same environment, starting from a checkpoint of the exploration, e.g. `python sheeprl.py exp=p2e_dv3_finetuning env=dmc env.wrapper.domain_name=walker env.wrapper.task_name=walk checkpoint.exploration_ckpt_path=/path/to/exploration/checkpoint/ckpt_1000000_0.ckpt`.
 
 > [!NOTE]

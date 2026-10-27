@@ -59,7 +59,6 @@ from torch.optim import Optimizer
 
 from my_awesome_algo.agent import build_agent
 from my_awesome_algo.loss import policy_loss, value_loss
-from sheeprl.utils.obs import prepare_obs, scale_images
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
 from sheeprl.core import (
     Act,
@@ -89,14 +88,15 @@ class ExtSOTAState(TrainState):
 class ExtSOTAWriter(Writer):
     """Writes every step in the rollout, with the columns of the actions of `PPOPolicy.act`."""
 
-    def __init__(self, cfg: Dict[str, Any]) -> None:
-        self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+    def __init__(self, cfg: Dict[str, Any], policy: PPOPolicy) -> None:
+        # The keys the inputs read, then the extra keys (stored, not encoded)
+        self.obs_keys = tuple(policy.keys) + tuple(k for k in cfg.algo.extra_keys if k not in policy.keys)
 
     def write(self, rollout: ReplayStore, step: EnvStep, act: Act) -> None:
         num_envs = len(step.rewards)
         dones = np.logical_or(step.terminated, step.truncated)
         data = {k: step.obs[k][np.newaxis] for k in self.obs_keys}
-        # The environments played the indices of the discrete actions, the rollout stores them one-hot
+        # The environments played the indices of the discrete actions, the rollout stores them one-hot (`codec.to_store`)
         data["actions"] = act.columns["actions"][np.newaxis]
         data["values"] = act.columns["values"][np.newaxis]
         data["rewards"] = step.rewards.reshape(1, num_envs, 1).astype(np.float32)
@@ -132,33 +132,29 @@ class ExtSOTA(Algorithm):
 
     def policy(self, state: ExtSOTAState) -> PPOPolicy:
         """The policy to play with: it shares its modules, and so its weights, with the trained agent."""
-        cfg = self.cfg
+        # It reads the keys of the inputs of the feature extractor and moves them to the device as they are: the inputs
+        # transform them
         return PPOPolicy(
             state.agent.feature_extractor,
             state.agent.actor,
             state.agent.critic,
+            state.agent.codec,
             device=self.fabric.device,
-            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-            cnn_keys=cfg.algo.cnn_keys.encoder,
         )
 
     def writer(self, state: ExtSOTAState, policy: PPOPolicy) -> ExtSOTAWriter:
-        return ExtSOTAWriter(self.cfg)
+        return ExtSOTAWriter(self.cfg, policy)
 
     def batches(
         self, state: ExtSOTAState, rollout: ReplayStore, n_steps: Optional[int], iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
-        obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
         data = rollout.read()
 
         # The returns and the advantages, bootstrapped with the value of the observations after the rollout
         with torch.inference_mode():
-            next_obs = {k: rollout.last_step.next_obs[k] for k in obs_keys}
-            next_obs = prepare_obs(
-                self.fabric.device, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
-            )
-            next_values = state.agent.critic(state.agent.feature_extractor(next_obs))
+            policy = self.policy(state)
+            next_values = policy.get_values(policy.obs_to_device(rollout.last_step.next_obs))
             returns, advantages = gae(
                 data["rewards"],
                 data["values"],
@@ -178,9 +174,11 @@ class ExtSOTA(Algorithm):
 
     def train_step(self, state: ExtSOTAState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo
-        obs = scale_images(batch, cfg.cnn_keys.encoder, cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)
+        # The stored observations of the keys of the inputs: the feature extractor transforms them
+        obs = {k: batch[k] for k in state.agent.feature_extractor.keys}
         with autocast(self.fabric):
-            actions = torch.split(batch["actions"], state.agent.actions_dim, dim=-1)
+            # The stored actions, one tensor per action
+            actions = state.agent.codec.split(batch["actions"])
             _, logprobs, _, values = state.agent(obs, actions)
             pg_loss = policy_loss(logprobs, batch["advantages"])
             v_loss = value_loss(values, batch["returns"])
@@ -287,16 +285,39 @@ encoder:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+# The images resized and scaled to [-0.5, 0.5] into the CNN of the Nature paper, the vectors into an MLP
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    net:
+      _target_: sheeprl.models.NatureCNN
+      features_dim: ${algo.encoder.cnn_features_dim}
+  vector:
+    keys: []
+    transforms: []
+    net:
+      _target_: sheeprl.models.MLPEncoder
+      features_dim: ${algo.encoder.mlp_features_dim}
+      dense_units: ${algo.encoder.dense_units}
+      mlp_layers: ${algo.encoder.mlp_layers}
+      dense_act: ${algo.encoder.dense_act}
+      layer_norm: ${algo.encoder.layer_norm}
 actor:
   dense_units: ${algo.dense_units}
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  # Orthogonal weights and zero biases (PPO's agent)
+  ortho_init: False
 critic:
   dense_units: ${algo.dense_units}
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  ortho_init: False
 
 # Override the parameters of `optim/adam.yaml`
 optimizer:
@@ -357,8 +378,10 @@ defaults:
 algo:
   total_steps: 65536
   per_rank_batch_size: 64
-  mlp_keys:
-    encoder: [state]
+  # CartPole returns a bare vector: the key `state`
+  inputs:
+    vector:
+      keys: [state]
 
 env:
   id: CartPole-v1

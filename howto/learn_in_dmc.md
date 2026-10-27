@@ -25,14 +25,14 @@ For more information: [https://github.com/deepmind/dm_control](https://github.co
 In order to train your agents on the [MuJoCo environments](https://gymnasium.farama.org/environments/mujoco/) provided by Gymnasium, it is sufficient to select the *MuJoCo* environment (`env=mujoco`) and set the `env.id` to the name of the environment you want to use. For instance, `"Walker2d-v4"` if you want to train your agent in the *walker walk* environment.
 
 ```bash
-python sheeprl.py exp=dreamer_v3 env=mujoco env.id=Walker2d-v4 algo.cnn_keys.encoder=[rgb]
+python sheeprl.py exp=dreamer_v3 env=mujoco env.id=Walker2d-v4 env.render_key=rgb algo.inputs.image.keys=[rgb]
 ```
 
 ## DeepMind Control
 In order to train your agents on the [DeepMind control suite](https://github.com/deepmind/dm_control/blob/main/dm_control/suite/README.md), you have to select the *DMC* environment (`env=dmc`) and set the `domain` and the `task` of the environment you want to use. A list of the available environments can be found [here](https://arxiv.org/abs/1801.00690). For instance, if you want to train your agent on the *walker walk* environment, you need to set the `env.wrapper.domain_name` to `"walker"` and the  `env.wrapper.task_name` to `"walk"`.
 
 ```bash
-python sheeprl.py exp=dreamer_v3 env=dmc env.wrapper.domain_name=walker env.wrapper.task_name=walk algo.cnn_keys.encoder=[rgb]
+python sheeprl.py exp=dreamer_v3 env=dmc env.wrapper.domain_name=walker env.wrapper.task_name=walk algo.inputs.image.keys=[rgb]
 ```
 
 > [!NOTE]

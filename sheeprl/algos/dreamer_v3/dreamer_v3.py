@@ -42,10 +42,7 @@ from sheeprl.data.store import ReplayStore
 from sheeprl.models.io import check_reconstructs, log_inputs_and_outputs
 from sheeprl.transforms.observations import stored_keys
 from sheeprl.utils.compile import compiled, mark_gradient_step
-from sheeprl.utils.distribution import (
-    BernoulliSafeMode,
-    TwoHotEncodingDistribution,
-)
+from sheeprl.utils.distribution import BernoulliSafeMode, TwoHotEncodingDistribution
 from sheeprl.utils.distribution import entropy as policy_entropy
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator

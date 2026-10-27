@@ -6,7 +6,7 @@ When you want to add the last `n` actions to the observations, you must specify 
 - `actions_as_observation.dilation` (integer greater than 0): The dilation (number of steps) between one action and the next one.
 - `actions_as_observation.noop` (integer or float or list of integer): The noop action to use when resetting the environment, the buffer is filled with this action. Every environment has its own NOOP action, it is strongly recommended to use that action for the correct learning of the algorithm.
 
-The actions are added to the observations under the `action_stack` key, as a vector (the discrete actions are one-hot encoded): to let the agent use them, you must add the `action_stack` key to the vector observations of the encoder, e.g. `algo.mlp_keys.encoder=[state,action_stack]`. For more information about how to select the observations, check the [select observations howto](./select_observations.md).
+The actions are added to the observations under the `action_stack` key, as a vector (the discrete actions are one-hot encoded): to let the agent use them, you must add the `action_stack` key to the keys of the vector input, e.g. `algo.inputs.vector.keys=[state,action_stack]`. For more information about how to select the observations, check the [inputs and outputs howto](./inputs_and_outputs.md).
 
 > [!NOTE]
 >

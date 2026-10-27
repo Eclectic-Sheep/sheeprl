@@ -7,7 +7,7 @@ The main properties/methods that the environment has to provide are the followin
 * A `render` function that renders the environment to help visualizing what the agent sees, some possible render modes are: `human` or `rgb_array`.
 * A `close` function that closes the environment.
 * An `action_space` property indicating the valid actions, i.e., all the valid actions should be contained in that space. For more info, check [here](https://gymnasium.farama.org/api/spaces/fundamental/).
-* An `observation_space` property indicating all the valid observations that an agent can receive from the environment. This observation space must be of type [`gymnasium.spaces.Dict`](https://gymnasium.farama.org/api/spaces/composite/#gymnasium.spaces.Dict), and, its elements cannot be of type `gymnasium.spaces.Dict`, so it must be a flatten dictionary. The only exception is an observation space of type `gymnasium.spaces.Box` (a 1D vector or a 2D/3D image): the `make_env` function in `./sheeprl/utils/env.py` puts its observations in a dictionary, under the key specified in `algo.mlp_keys.encoder` or `algo.cnn_keys.encoder`, respectively (check the [select observations howto](./select_observations.md)).
+* An `observation_space` property indicating all the valid observations that an agent can receive from the environment. This observation space must be of type [`gymnasium.spaces.Dict`](https://gymnasium.farama.org/api/spaces/composite/#gymnasium.spaces.Dict), and, its elements cannot be of type `gymnasium.spaces.Dict`, so it must be a flatten dictionary. The only exception is an observation space of type `gymnasium.spaces.Box`: the `make_env` function in `./sheeprl/utils/env.py` puts its observations in a dictionary, under the key `state`. The render of the environment is added to the observations under the key `env.render_key`, when it is set (check the [inputs and outputs howto](./inputs_and_outputs.md)).
 * A `reward_range` (not mandatory), to specify the range that the agent can receive in a single step.
 
 > [!NOTE]
@@ -20,10 +20,12 @@ The main properties/methods that the environment has to provide are the followin
 >
 > Please remember that any environment is considered independent of any other and it is supposed to interact with a single agent as Multi-Agent Reinforcement Learning (MARL) is not actually supported.
 
-The current observations shapes supported are:
+Every observation is read by the input that lists its key (`algo.inputs`), through the transforms and the network of that input, so its shape is the one the transforms and the network take. The shipped inputs are:
 
-* 1D vector: everything that is a 1D vector will be processed by an MLP by the agent.
-* 2D/3D images: everything that is not a 1D vector will be processed by a CNN by the agent. A 2D image or a 3D image of shape `[H,W,1]` or `[1,H,W]` will be considered as a grayscale image, a multi-channel image otherwise.
+* `vector`: 1D vectors, concatenated and processed by an MLP. A 2D or 3D observation is read as a vector after the `sheeprl.transforms.Flatten` transform.
+* `image`: 2D/3D images, processed by a CNN after the `sheeprl.transforms.Image` transform, which resizes them to `env.screen_size` and converts them to grayscale with `env.grayscale`. A 2D image or a 3D image of shape `[H,W,1]` or `[1,H,W]` is considered as a grayscale image, a multi-channel image otherwise.
+
+An observation of another kind (e.g. a grid of 0 and 1, or a `Discrete` observation through `sheeprl.transforms.OneHot`) gets its own input, with its transforms and its network: check the [inputs and outputs howto](./inputs_and_outputs.md) and [how to add a transform](./add_transform.md).
 
 An action of type `gymnasium.spaces.Box` must be of shape `(n,)`, where `n` is the number of (possibly continuous) actions the environment supports. When `algo.normalize_actions=True` (the default for the Dreamer and Plan2Explore algorithms), the bounded dimensions of a `gymnasium.spaces.Box` action space are exposed to the agent in $[-1, 1]$ and rescaled to the bounds of the environment by the `sheeprl.envs.wrappers.NormalizeAction` wrapper, whereas the unbounded dimensions are left as they are.
 

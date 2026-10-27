@@ -33,7 +33,8 @@ algo:
   # you need to comment the test function in the `./sheeprl/algos/ppo/ppo.py` file.
   run_test: False
   # If you want to run this benchmark with older versions,
-  # you need to move the `total_steps` and the `mlp_keys` config from `algo` to the root.
+  # you need to move the `total_steps` config from `algo` to the root, and to replace `inputs` with the `mlp_keys`
+  # config of the vector keys there.
   total_steps: 65536
   inputs:
     vector:

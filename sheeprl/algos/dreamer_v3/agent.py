@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import math
 import copy
+import math
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 

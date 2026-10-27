@@ -98,42 +98,31 @@ def build_agent(cfg: Dict[str, Any], obs_space: gymnasium.spaces.Dict, action_sp
     return SOTAAgent(...)
 ```
 
+The agent reads the observations through the inputs of `algo.inputs` (check the [inputs and outputs howto](./inputs_and_outputs.md)): `sheeprl.models.io.build_encoder(cfg, obs_space)` builds them from the space of the observations the store holds (`obs_space`), and returns one module, whose `keys` are the observation keys it reads and whose `output_dim` is the size of its features. Its forward takes the observations as they are stored (e.g. images as `uint8`) and transforms them (the `batch` transforms of the inputs, e.g. the division by 255). The actions go through an `ActionCodec` (`sheeprl/core/actions.py`), made from the action space: the dimensions of the actions (`dims`), whether they are continuous, the actions as the environments take them (`to_env`) and as the store keeps them (`to_store`, the discrete ones one-hot), and the stored actions split per action (`split`).
+
 In this guide `sota` is an actor-critic that uses the agent of PPO (`sheeprl/algos/ppo/agent.py`, a good example of an agent that works with both image and vector observations and with every action space):
 
 ```python
 from __future__ import annotations
 
-from typing import Any, Dict, Sequence, Tuple
+from typing import Any, Dict
 
 import gymnasium as gym
 
 from sheeprl.algos.ppo.agent import PPOAgent
-
-
-def actions_dim_of(action_space: gym.Space) -> Tuple[Sequence[int], bool]:
-    """The dimensions of the actions (one per discrete action) and whether they are continuous."""
-    is_continuous = isinstance(action_space, gym.spaces.Box)
-    if is_continuous:
-        return tuple(action_space.shape), True
-    if isinstance(action_space, gym.spaces.MultiDiscrete):
-        return tuple(action_space.nvec.tolist()), False
-    return (action_space.n,), False
+from sheeprl.core.actions import ActionCodec
+from sheeprl.models.io import build_encoder
 
 
 def build_agent(cfg: Dict[str, Any], obs_space: gym.spaces.Dict, action_space: gym.Space) -> PPOAgent:
-    """The agent with its initial weights, on the CPU: the algorithm sets it up with Fabric."""
-    actions_dim, is_continuous = actions_dim_of(action_space)
+    """The agent with its initial weights, on the CPU: the algorithm sets it up with Fabric. Its feature extractor is
+    the encoder of the inputs of `algo.inputs`, sized from the space of the stored observations (`obs_space`)."""
     return PPOAgent(
-        actions_dim=actions_dim,
-        obs_space=obs_space,
-        encoder_cfg=cfg.algo.encoder,
+        codec=ActionCodec.from_space(action_space),
+        feature_extractor=build_encoder(cfg, obs_space),
         actor_cfg=cfg.algo.actor,
         critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
-        mlp_keys=cfg.algo.mlp_keys.encoder,
-        screen_size=cfg.env.screen_size,
         distribution_cfg=cfg.distribution,
-        is_continuous=is_continuous,
     )
 ```
 
@@ -198,7 +187,6 @@ from torch.optim import Optimizer
 from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
 from sheeprl.algos.sota.agent import build_agent
 from sheeprl.algos.sota.loss import policy_loss, value_loss
-from sheeprl.utils.obs import prepare_obs, scale_images
 from sheeprl.core import (
     Act,
     Algorithm,
@@ -227,14 +215,15 @@ class SOTAState(TrainState):
 class SOTAWriter(Writer):
     """Writes every step in the rollout, with the columns of the actions of `PPOPolicy.act`."""
 
-    def __init__(self, cfg: Dict[str, Any]) -> None:
-        self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+    def __init__(self, cfg: Dict[str, Any], policy: PPOPolicy) -> None:
+        # The keys the inputs read, then the extra keys (stored, not encoded)
+        self.obs_keys = tuple(policy.keys) + tuple(k for k in cfg.algo.extra_keys if k not in policy.keys)
 
     def write(self, rollout: ReplayStore, step: EnvStep, act: Act) -> None:
         num_envs = len(step.rewards)
         dones = np.logical_or(step.terminated, step.truncated)
         data = {k: step.obs[k][np.newaxis] for k in self.obs_keys}
-        # The environments played the indices of the discrete actions, the rollout stores them one-hot
+        # The environments played the indices of the discrete actions, the rollout stores them one-hot (`codec.to_store`)
         data["actions"] = act.columns["actions"][np.newaxis]
         data["values"] = act.columns["values"][np.newaxis]
         data["rewards"] = step.rewards.reshape(1, num_envs, 1).astype(np.float32)
@@ -270,33 +259,29 @@ class SOTA(Algorithm):
 
     def policy(self, state: SOTAState) -> PPOPolicy:
         """The policy to play with: it shares its modules, and so its weights, with the trained agent."""
-        cfg = self.cfg
+        # It reads the keys of the inputs of the feature extractor and moves them to the device as they are: the inputs
+        # transform them
         return PPOPolicy(
             state.agent.feature_extractor,
             state.agent.actor,
             state.agent.critic,
+            state.agent.codec,
             device=self.fabric.device,
-            obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-            cnn_keys=cfg.algo.cnn_keys.encoder,
         )
 
     def writer(self, state: SOTAState, policy: PPOPolicy) -> SOTAWriter:
-        return SOTAWriter(self.cfg)
+        return SOTAWriter(self.cfg, policy)
 
     def batches(
         self, state: SOTAState, rollout: ReplayStore, n_steps: Optional[int], iteration: int
     ) -> Iterator[Dict[str, Tensor]]:
         cfg = self.cfg
-        obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
         data = rollout.read()
 
         # The returns and the advantages, bootstrapped with the value of the observations after the rollout
         with torch.inference_mode():
-            next_obs = {k: rollout.last_step.next_obs[k] for k in obs_keys}
-            next_obs = prepare_obs(
-                self.fabric.device, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
-            )
-            next_values = state.agent.critic(state.agent.feature_extractor(next_obs))
+            policy = self.policy(state)
+            next_values = policy.get_values(policy.obs_to_device(rollout.last_step.next_obs))
             returns, advantages = gae(
                 data["rewards"],
                 data["values"],
@@ -316,9 +301,11 @@ class SOTA(Algorithm):
 
     def train_step(self, state: SOTAState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo
-        obs = scale_images(batch, cfg.cnn_keys.encoder, cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)
+        # The stored observations of the keys of the inputs: the feature extractor transforms them
+        obs = {k: batch[k] for k in state.agent.feature_extractor.keys}
         with autocast(self.fabric):
-            actions = torch.split(batch["actions"], state.agent.actions_dim, dim=-1)
+            # The stored actions, one tensor per action
+            actions = state.agent.codec.split(batch["actions"])
             _, logprobs, _, values = state.agent(obs, actions)
             pg_loss = policy_loss(logprobs, batch["advantages"])
             v_loss = value_loss(values, batch["returns"])
@@ -355,7 +342,7 @@ An off-policy algorithm sets `off_policy = True` and returns a replay buffer as 
 - the replay buffer is saved in the checkpoints when `buffer.checkpoint=True`. A run resumed with its buffer doesn't play random actions again; one resumed without it fills a new buffer with its policy for `algo.learning_starts` policy steps first.
 
 ### Utils
-The observations are moved to the device by `prepare_obs` and the images of the batches are scaled by `scale_images` (`sheeprl/utils/obs.py`); the test episode at the end of the training is the one of every algorithm (`Algorithm.test`). The `log_models` function imported above is defined in the `sheeprl.algos.sota.utils` module, here the one of PPO (`sheeprl/algos/ppo/utils.py`): it registers the models with MLflow at the end of the training.
+The policy moves the observations of the keys of its inputs to the device as they are (`obs_to_device`, with `sheeprl.models.io.to_device`), and the inputs transform them in the forward of the feature extractor, in the policy as in the training step; the test episode at the end of the training is the one of every algorithm (`Algorithm.test`). The `log_models` function imported above is defined in the `sheeprl.algos.sota.utils` module, here the one of PPO (`sheeprl/algos/ppo/utils.py`): it registers the models with MLflow at the end of the training.
 
 ```python
 from __future__ import annotations
@@ -454,7 +441,7 @@ configs
 ```
 
 #### Algo Configs
-In the `./sheeprl/configs/algo/sota.yaml` we need to specify all the configs needed to initialize and train your agent. The `algo/default.yaml` config, which it extends, holds the keys every algorithm has: `name`, `total_steps`, `per_rank_batch_size`, `run_test` and the observation keys (`cnn_keys` and `mlp_keys`).
+In the `./sheeprl/configs/algo/sota.yaml` we need to specify all the configs needed to initialize and train your agent. The `algo/default.yaml` config, which it extends, holds the keys every algorithm has: `name`, `total_steps`, `per_rank_batch_size`, `run_test`, the inputs and outputs (`inputs`, `encoder`, `outputs`, `extra_keys`) and the transforms of the rewards (`rewards`). An algorithm declares its inputs, `image` and `vector` without keys, with their transforms and networks: the experiment sets the keys (check the [inputs and outputs howto](./inputs_and_outputs.md)).
 Here is an example of the `./sheeprl/configs/algo/sota.yaml` config file:
 
 ```yaml
@@ -486,16 +473,39 @@ encoder:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+# The images resized and scaled to [-0.5, 0.5] into the CNN of the Nature paper, the vectors into an MLP
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    net:
+      _target_: sheeprl.models.NatureCNN
+      features_dim: ${algo.encoder.cnn_features_dim}
+  vector:
+    keys: []
+    transforms: []
+    net:
+      _target_: sheeprl.models.MLPEncoder
+      features_dim: ${algo.encoder.mlp_features_dim}
+      dense_units: ${algo.encoder.dense_units}
+      mlp_layers: ${algo.encoder.mlp_layers}
+      dense_act: ${algo.encoder.dense_act}
+      layer_norm: ${algo.encoder.layer_norm}
 actor:
   dense_units: ${algo.dense_units}
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  # Orthogonal weights and zero biases (PPO's agent)
+  ortho_init: False
 critic:
   dense_units: ${algo.dense_units}
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  ortho_init: False
 
 # Override the parameters of `optim/adam.yaml`
 optimizer:
@@ -554,8 +564,10 @@ defaults:
 algo:
   total_steps: 65536
   per_rank_batch_size: 64
-  mlp_keys:
-    encoder: [state]
+  # CartPole returns a bare vector: the key `state`
+  inputs:
+    vector:
+      keys: [state]
 
 env:
   id: CartPole-v1

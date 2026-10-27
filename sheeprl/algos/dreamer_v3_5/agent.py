@@ -333,7 +333,7 @@ class CNNDecoder(nn.Module):
 
 class MLPDecoder(nn.Module):
     """The vector decoder of DreamerV3.5: `mlp_layers` blocks of `dense_units` units from the latent state, then a
-    linear head to `output_shape` (its values flat, then reshaped) (initialized with `outscale`), in the symlog space."""
+    linear head initialized with `outscale` to the values of `output_shape`, reshaped to it, in the symlog space."""
 
     def __init__(
         self,

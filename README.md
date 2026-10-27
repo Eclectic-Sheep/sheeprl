@@ -130,24 +130,26 @@ With these small models, 2 devices on 4 cores are not faster than 1: synchronizi
 An easy-to-use framework for reinforcement learning in PyTorch, accelerated with [Lightning Fabric](https://lightning.ai/docs/fabric/stable/).  
 The algorithms sheeped by sheeprl out-of-the-box are:
 
-| Algorithm                 | Recurrent          | Vector obs         | Pixel obs          | Status             |
-| ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ |
-| A2C                       | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| A3C                       | :x:                | :heavy_check_mark: | :x:                | :construction:     |
-| PPO                       | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| SAC                       | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
-| SAC-AE                    | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| DroQ                      | :x:                | :heavy_check_mark: | :x:                | :heavy_check_mark: |
-| Dreamer-V1                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Dreamer-V2                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Dreamer-V3                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Dreamer-V3 (Nature)       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Plan2Explore (Dreamer V1) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Plan2Explore (Dreamer V2) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
-| Plan2Explore (Dreamer V3) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Algorithm                 | Recurrent          | Vector obs         | Pixel obs          | Custom inputs      | Status             |
+| ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ | ------------------ |
+| A2C                       | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| A3C                       | :x:                | :heavy_check_mark: | :x:                | :x:                | :construction:     |
+| PPO                       | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| PPO Recurrent             | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| SAC                       | :x:                | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: |
+| SAC-AE                    | :x:                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| DroQ                      | :x:                | :heavy_check_mark: | :x:                | :x:                | :heavy_check_mark: |
+| Dreamer-V1                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V2                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V3                | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Dreamer-V3 (Nature)       | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V1) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V2) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
+| Plan2Explore (Dreamer V3) | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: | :heavy_check_mark: |
 
 and more are coming soon! [Open a PR](https://github.com/Eclectic-Sheep/sheeprl/pulls) if you have any particular request :sheep:
+
+An agent reads the observation keys it is given, through declared inputs: groups of keys, each with its transforms (resize, frame stack, scaling, running standardization, ...) and its network. *Custom inputs* are inputs other than the image and vector ones, with their own transforms and networks (e.g. a grid read by small convolutions); SAC and DroQ read the vector observations only, as they are, and any other observation flattened. Check [how to select the observations](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/inputs_and_outputs.md).
 
 
 The actions supported by sheeprl agents are:
@@ -348,7 +350,7 @@ That's all it takes to train an agent with SheepRL! 🎉
 > 1. How to [run experiments](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/run_experiments.md)
 > 2. How to [modify the default configs](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/configs.md)
 > 3. How to [work with steps](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/work_with_steps.md)
-> 4. How to [select observations](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/select_observations.md)
+> 4. How to [select the observations](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/inputs_and_outputs.md) and [transform them](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/add_transform.md)
 >
 > Moreover, there are other useful documents in the [`howto` folder](https://github.com/Eclectic-Sheep/sheeprl/tree/main/howto), these documents contain some guidance on how to properly use the framework.
 

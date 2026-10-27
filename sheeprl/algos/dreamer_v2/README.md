@@ -103,7 +103,7 @@ The replay buffer also stores `is_first`, which marks the first step of every ep
 Continuous actions are in $[-1, 1]$ for the agent: with `algo.normalize_actions=True` (the default), the `NormalizeAction` wrapper (`sheeprl/envs/wrappers.py`) rescales them to the bounds of the action space of the environment.
 
 ## Agent
-The models of the DreamerV2 agent are defined in the `agent.py` file in order to have a clearer definition of the components of the agent. Our implementation of DreamerV2 resizes the images to 64x64 pixels (`env.screen_size` is set to `64` and `env.frame_stack` to `1`), and the recurrent model of the RSSM is composed by a linear layer followed by a ELU activation function (with layer normalization when `algo.world_model.recurrent_model.layer_norm=True`, the default) and a GRU cell with layer normalization. Finally, the agent can work with continuous or discrete control.
+The models of the DreamerV2 agent are defined in the `agent.py` file in order to have a clearer definition of the components of the agent. Our implementation of DreamerV2 reads the images resized to `env.screen_size` pixels and not stacked (its image input, `algo.inputs.image`), and reconstructs 64x64 images, so `env.screen_size` must be `64` (the default); and the recurrent model of the RSSM is composed by a linear layer followed by a ELU activation function (with layer normalization when `algo.world_model.recurrent_model.layer_norm=True`, the default) and a GRU cell with layer normalization. Finally, the agent can work with continuous or discrete control.
 
 ## Packages
 In order to use a broader set of environments of provided by [Gymnasium](https://gymnasium.farama.org/) it is necessary to install optional packages:
@@ -131,7 +131,7 @@ env=atari \
 env.id=AssaultNoFrameskip-v0 \
 env.capture_video=True \
 env.action_repeat=4 \
-env.clip_rewards=True \
+"algo.rewards.transforms=[{_target_:sheeprl.transforms.Tanh}]" \
 env.max_episode_steps=27000 \
 env.num_envs=1 \
 algo.total_steps=200000000 \
@@ -151,7 +151,7 @@ algo.world_model.transition_model.hidden_size=600 \
 algo.world_model.recurrent_model.recurrent_state_size=600 \
 algo.world_model.kl_free_nats=0.0 \
 algo.per_rank_batch_size=50 \
-algo.cnn_keys.encoder=[rgb] \
+algo.inputs.image.keys=[state] \
 buffer.size=2000000 \
 buffer.memmap=True \
 buffer.type=episode \
@@ -162,7 +162,7 @@ checkpoint.every=100000
 ## DMC environments
 It is possible to use the environments provided by the [DeepMind Control suite](https://www.deepmind.com/open-source/deepmind-control-suite). To use such environments it is necessary to specify "dmc", the domain and the task of the environment in the `env`, `env.wrapper.domain_name` and `env.wrapper.task_name` hyper-parameters respectively, e.g., `env=dmc env.wrapper.domain_name=walker env.wrapper.task_name=walk` will create an instance of the walker walk environment. For more information about all the environments, check their [paper](https://arxiv.org/abs/1801.00690).
 
-When running DreamerV2 in a DMC environment on a server (or a PC without a video terminal) it could be necessary to add two variables to the command to launch the script: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa <command>`. For instance, to run walker walk with DreamerV2 on two gpus (0 and 1) it is necessary to run the following command: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa CUDA_VISIBLE_DEVICES="0,1" python sheeprl.py exp=dreamer_v2 fabric.devices=2 fabric.accelerator=gpu env=dmc env.wrapper.domain_name=walker env.wrapper.task_name=walk env.action_repeat=2 env.capture_video=True checkpoint.every=80000 algo.cnn_keys.encoder=[rgb]`. 
+When running DreamerV2 in a DMC environment on a server (or a PC without a video terminal) it could be necessary to add two variables to the command to launch the script: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa <command>`. For instance, to run walker walk with DreamerV2 on two gpus (0 and 1) it is necessary to run the following command: `PYOPENGL_PLATFORM="" MUJOCO_GL=osmesa CUDA_VISIBLE_DEVICES="0,1" python sheeprl.py exp=dreamer_v2 fabric.devices=2 fabric.accelerator=gpu env=dmc env.wrapper.domain_name=walker env.wrapper.task_name=walk env.action_repeat=2 env.capture_video=True checkpoint.every=80000 algo.inputs.image.keys=[rgb]`. 
 Other possibitities for the variable `MUJOCO_GL` are: `GLFW` for rendering to an X11 window or and `EGL` for hardware accelerated headless. (For more information, click [here](https://mujoco.readthedocs.io/en/stable/programming/index.html#using-opengl)).
 Moreover, it could be necessary to decomment two rows in the `sheeprl.algos.dreamer_v2.dreamer_v2.py` file.
 
@@ -177,10 +177,9 @@ env.wrapper.domain_name=walker \
 env.wrapper.task_name=walk \
 env.capture_video=True \
 env.action_repeat=2 \
-env.clip_rewards=False \
 env.max_episode_steps=1000 \
 env.num_envs=1 \
-algo.cnn_keys.encoder=[rgb] \
+algo.inputs.image.keys=[rgb] \
 algo.total_steps=5000000 \
 algo.learning_starts=1000 \
 algo.per_rank_pretrain_steps=100 \
@@ -206,4 +205,4 @@ checkpoint.every=100000
 ```
 
 ## Recommendations
-Since DreamerV2 requires a huge number of steps and consequently a large buffer size, we recommend keeping the buffer on cpu and not moving it to cuda. Furthermore, in order to limit memory usage, we recommend to store the observations in `uint8` format and to normalize the observations just before starting the training one batch at a time. In addition, it is recommended to set the `buffer.memmap` argment to `True` to map the buffer to disk and avoid having it all in RAM. Finally, it is important to remind the user that DreamerV2 works with image observations (`algo.cnn_keys.encoder`), vector observations (`algo.mlp_keys.encoder`) or both, and that the keys to reconstruct (`algo.cnn_keys.decoder` and `algo.mlp_keys.decoder`) must be among the encoded ones.
+Since DreamerV2 requires a huge number of steps and consequently a large buffer size, we recommend keeping the buffer on cpu and not moving it to cuda. Furthermore, in order to limit memory usage, we recommend to store the observations in `uint8` format and to normalize the observations just before starting the training one batch at a time. In addition, it is recommended to set the `buffer.memmap` argment to `True` to map the buffer to disk and avoid having it all in RAM. Finally, it is important to remind the user that DreamerV2 works with image observations (`algo.inputs.image.keys`), vector observations (`algo.inputs.vector.keys`) or both, and that the keys to reconstruct (`algo.outputs.image.keys` and `algo.outputs.vector.keys`, by default the ones of the inputs) must be among the encoded ones.

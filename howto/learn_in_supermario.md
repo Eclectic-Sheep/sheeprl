@@ -17,7 +17,6 @@ defaults:
 
 # Override from `default` config
 id: SuperMarioBros-v0
-frame_stack: 1
 sync_env: False
 action_repeat: 1
 
@@ -52,7 +51,7 @@ The list of selectable algorithms is given below:
 Once you have chosen the algorithm you want to train, you can start the train, for instance, of the ppo agent by running:
 
 ```bash
-python sheeprl.py exp=ppo env=super_mario_bros env.id=SuperMarioBros-v0 algo.cnn_keys.encoder=[rgb] fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2 algo.mlp_keys.encoder=[]
+python sheeprl.py exp=ppo env=super_mario_bros env.id=SuperMarioBros-v0 algo.inputs.image.keys=[rgb] algo.inputs.vector.keys=[] fabric.accelerator=cpu fabric.strategy=ddp fabric.devices=2
 ```
 
 The `sheeprl/configs/exp` folder also contains ready-made Super Mario Bros experiments: `exp=ppo_super_mario_bros` and `exp=dreamer_v3_super_mario_bros`.

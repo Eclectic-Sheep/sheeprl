@@ -578,8 +578,6 @@ class DreamerV3_5(Algorithm):
 
     def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
-        # These arguments cannot be changed
-        cfg.env.frame_stack = -1
         if cfg.algo.replay_context < 0:
             raise ValueError(f"`algo.replay_context` must be non-negative, got: {cfg.algo.replay_context}")
 

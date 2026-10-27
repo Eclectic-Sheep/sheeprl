@@ -236,11 +236,51 @@ learning_starts: 1024
 per_rank_pretrain_steps: 0
 per_rank_sequence_length: ???
 
-# Encoder and decoder keys
-cnn_keys:
-  decoder: ${algo.cnn_keys.encoder}
-mlp_keys:
-  decoder: ${algo.mlp_keys.encoder}
+# Inputs: the images resized and scaled to [-0.5, 0.5] into the CNN of the world model (`stages` convolutions of
+# stride 2: the sides of the images must be divisible by 2 ** stages), the vectors squashed with the symlog into its
+# MLP. Outputs: the same keys reconstructed by the observation model, both scored with the mean squared error to the
+# keys as the encoder reads them (the vectors in the symlog space)
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.CNNEncoder
+      channels_multiplier: 96
+      stages: 4
+      activation: ${algo.cnn_act}
+      layer_norm: ${algo.cnn_layer_norm}
+  vector:
+    keys: []
+    transforms: [{_target_: sheeprl.transforms.Symlog}]
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.MLPEncoder
+      mlp_layers: ${algo.mlp_layers}
+      dense_units: ${algo.dense_units}
+      activation: ${algo.dense_act}
+      layer_norm: ${algo.mlp_layer_norm}
+outputs:
+  image:
+    keys: ${algo.inputs.image.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.CNNDecoder
+      channels_multiplier: ${algo.inputs.image.net.channels_multiplier}
+      stages: ${algo.inputs.image.net.stages}
+      activation: ${algo.cnn_act}
+      layer_norm: ${algo.cnn_layer_norm}
+    likelihood: {_target_: sheeprl.utils.distribution.MSEDistribution, _partial_: true}
+  vector:
+    keys: ${algo.inputs.vector.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.MLPDecoder
+      mlp_layers: ${algo.mlp_layers}
+      dense_units: ${algo.dense_units}
+      activation: ${algo.dense_act}
+      layer_norm: ${algo.mlp_layer_norm}
+    # The squared errors below the tolerance count as zero, as in the symlog likelihood of the official implementation
+    likelihood: {_target_: sheeprl.utils.distribution.MSEDistribution, _partial_: true, tol: 1e-8}
 
 # Model related parameters
 cnn_layer_norm:
@@ -271,16 +311,6 @@ world_model:
   decoupled_rssm: False
   learnable_initial_recurrent_state: True
 
-  # Encoder
-  encoder:
-    cnn_channels_multiplier: 96
-    cnn_act: ${algo.cnn_act}
-    dense_act: ${algo.dense_act}
-    mlp_layers: ${algo.mlp_layers}
-    cnn_layer_norm: ${algo.cnn_layer_norm}
-    mlp_layer_norm: ${algo.mlp_layer_norm}
-    dense_units: ${algo.dense_units}
-
   # Recurrent model
   recurrent_model:
     recurrent_state_size: 4096
@@ -298,16 +328,6 @@ world_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
     layer_norm: ${algo.mlp_layer_norm}
-
-  # Decoder
-  observation_model:
-    cnn_channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
-    cnn_act: ${algo.cnn_act}
-    dense_act: ${algo.dense_act}
-    mlp_layers: ${algo.mlp_layers}
-    cnn_layer_norm: ${algo.cnn_layer_norm}
-    mlp_layer_norm: ${algo.mlp_layer_norm}
-    dense_units: ${algo.dense_units}
 
   # Reward model
   reward_model:
@@ -330,11 +350,19 @@ world_model:
     lr: 1e-4
     eps: 1e-8
     weight_decay: 0
+    # One kernel for the whole update of the weights
+    fused: True
 
 # Actor
 actor:
   cls: sheeprl.algos.dreamer_v3.agent.Actor
   ent_coef: 3e-4
+  # The weight of the REINFORCE gradients in the objective, the rest being the dynamics backpropagation. null: the
+  # dynamics for continuous actions, REINFORCE for discrete ones (`actor_grad_cont: backprop` and `actor_grad_disc:
+  # reinforce` of DreamerV3). The dynamics backpropagation doesn't differentiate the predicted terminations (the mode
+  # of the continue model): set it to 1 when the returns depend on the actions mostly through the terminations, e.g.
+  # a constant reward until the episode ends
+  objective_mix: null
   min_std: 0.1
   max_std: 1.0
   init_std: 2.0
@@ -354,11 +382,13 @@ actor:
       low: 0.05
       high: 0.95
 
-  # Actor optimizer
+  # Actor optimizer (the learning rate of the actor and of the critic of the official implementation of 2023)
   optimizer:
     lr: 3e-5
     eps: 1e-5
     weight_decay: 0
+    # One kernel for the whole update of the weights
+    fused: True
 
 # Critic
 critic:
@@ -376,6 +406,8 @@ critic:
     lr: 3e-5
     eps: 1e-5
     weight_decay: 0
+    # One kernel for the whole update of the weights
+    fused: True
 ```
 
 The `defaults` section contains the list of the default configurations to be "imported" by Hydra during the initialization. For more information check the official Hydra documentation about [group defaults](https://hydra.cc/docs/1.1/tutorials/basic/your_first_app/defaults/). The semantic of the following declaration
@@ -397,23 +429,47 @@ is:
 The default configuration for all the algorithms is the following:
 
 ```yaml
+# sheeprl/configs/algo/default.yaml
 name: ???
 total_steps: ???
 per_rank_batch_size: ???
 run_test: True
 
-# Encoder and decoder keys
-cnn_keys:
-  encoder: []
-mlp_keys:
-  encoder: []
+# The observations the agent reads (`howto/inputs_and_outputs.md`): named inputs, each a group of observation keys
+# with the transforms of every key (`sheeprl/transforms`) and one network on their concatenation. Every algorithm
+# ships the inputs `image` and `vector` without keys: the experiment sets them, and an input without keys is skipped
+inputs: {}
+# The class of the encoder of the inputs (`sheeprl.models.io.build_encoder`): `MultiEncoder` concatenates their features
+encoder:
+  _target_: sheeprl.models.io.MultiEncoder
+# The observations reconstructed from the latent state (the algorithms with a decoder): named outputs, each a group of
+# encoded keys with one network and, for the Dreamers, the likelihood of the reconstructions
+outputs: {}
+# The observation keys stored as they are and never encoded, read by the algorithm (e.g. the action masks of MineDojo)
+extra_keys: []
+# The transforms of the rewards of the environments, applied before they are stored (`sheeprl/transforms/rewards.py`),
+# e.g. `[{_target_: sheeprl.transforms.ScaleByReturnStd, gamma: "${algo.gamma}"}, {_target_: sheeprl.transforms.Tanh}]`
+# for the rewards divided by the std of the discounted return, then squashed. The ones with statistics are for the
+# on-policy algorithms only
+rewards:
+  transforms: []
+
+# Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start (a few minutes the
+# first time, then mostly reused from the cache of PyTorch). `mode` is the one of `torch.compile`: `reduce-overhead`
+# also replays the kernels of every loss with CUDA graphs (with `fabric.precision` `32-true` or `bf16-mixed`; with
+# another precision the default mode is used). `policy` also compiles the step of the policy: faster steps in the
+# environments
+compile:
+  enabled: False
+  mode: reduce-overhead
+  policy: True
 ```
 
 > [!WARNING]
 >
 > Every algorithm config **must** contain the field `name`, the total number of steps `total_steps` and the batch size `per_rank_batch_size`
 
-The `run_test` field specifies whether to test the trained agent at the end of the training.
+The `run_test` field specifies whether to test the trained agent at the end of the training. The `inputs`, `encoder`, `outputs`, `extra_keys` and `rewards` fields say which observations the agent reads and reconstructs, and how the observations and the rewards are transformed: they are explained in the [inputs and outputs howto](./inputs_and_outputs.md).
 
 The DreamerV1, DreamerV2, DreamerV3 and P2E configs set `normalize_actions: True`: the bounded dimensions of a continuous (`Box`) action space are exposed to the agent in $[-1, 1]$ and rescaled to the bounds of the environment by the `sheeprl.envs.wrappers.NormalizeAction` wrapper.
 
@@ -468,28 +524,19 @@ In this way, one can easily try out the overall framework with standard RL envir
 ```yaml
 id: ???
 num_envs: 4
-frame_stack: 1
 sync_env: False
 screen_size: 64
 action_repeat: 1
 grayscale: False
-clip_rewards: False
-# On-policy algorithms only (`sheeprl/envs/normalization.py`): standardize the vector observations
-# (`algo.mlp_keys.encoder`) with their running mean and std, and divide the rewards by the running std of the
-# discounted return (with `algo.gamma`), then clip them. The statistics are saved in the checkpoints
-normalization:
-  obs: False
-  rewards: False
-  clip_obs: 10.0
-  clip_rewards: 10.0
-  epsilon: 1e-8
 capture_video: True
-frame_stack_dilation: 1
 actions_as_observation:
   num_stack: -1
   noop: "You MUST define the NOOP"
   dilation: 1
 max_episode_steps: null
+# The key under which the render of the environment is added to its observations (e.g. `rgb` to play CartPole from
+# pixels), `null` for none
+render_key: null
 reward_as_observation: False
 wrapper: ???
 ```
@@ -500,15 +547,15 @@ wrapper: ???
 
 > [!NOTE]
 >
-> The `normalization` of the observations and of the rewards is the `VecNormalize` of Stable-Baselines3, for the on-policy algorithms (PPO, A2C, recurrent PPO): an off-policy algorithm raises an error, since its replay buffer would keep values normalized with statistics that change during the training. Every process updates the statistics at every step with the observations and the rewards of its environments, and at the end of the rollout of every iteration the processes merge them: from then on they are the same in every process, until the next rollout. They are saved in the checkpoints, and the test episode and `sheeprl-eval` normalize the observations with them, frozen. The logged episode returns are the ones of the environments. The models registered in MLflow don't include the normalization: their inputs must be normalized with the statistics in the checkpoint (`checkpoint["env"]["obs_normalizer"]`).
+> The normalization of the observations and of the rewards (the `VecNormalize` of Stable-Baselines3) is made of transforms: `sheeprl.transforms.Standardize` in the transforms of an input standardizes its observations, `sheeprl.transforms.ScaleByReturnStd` in `algo.rewards.transforms` divides the rewards by the standard deviation of the discounted return (check the [inputs and outputs howto](./inputs_and_outputs.md)). They are for the on-policy algorithms (PPO, A2C, recurrent PPO): an off-policy algorithm raises an error, since its replay buffer would keep values normalized with statistics that change during the training. Every process updates the statistics at every step with the observations and the rewards of its environments, and at the end of the rollout of every iteration the processes merge them: from then on they are the same in every process, until the next rollout. They are saved in the checkpoints, and the test episode and `sheeprl-eval` normalize the observations with them, frozen. The logged episode returns are the ones of the environments. The models registered in MLflow don't include the transforms that run in the environments (`frame` and `rows`): their inputs must be transformed as the environments did, with the statistics in the checkpoint (`checkpoint["env"]["transforms"]`).
 >
 > The other normalizations of SheepRL live where they act, and are configured by the algorithms:
 >
 > | What | Where | Option |
 > |---|---|---|
 > | the bounded actions, exposed as [-1, 1] | `NormalizeAction` (`sheeprl/envs/wrappers.py`) | `algo.normalize_actions` |
-> | the images, scaled to [-0.5, 0.5] | `prepare_obs`, `scale_images` (`sheeprl/utils/obs.py`) | always |
-> | the vector observations of DreamerV3 and DreamerV3.5, squashed by the symlog | `symlog` (`sheeprl/utils/utils.py`) | always (DreamerV3.5: `algo.world_model.encoder.symlog_inputs`) |
+> | the images, scaled to [-0.5, 0.5] | `sheeprl.transforms.Scale` | `algo.inputs.image.transforms` |
+> | the vector observations of DreamerV3 and DreamerV3.5, squashed by the symlog | `sheeprl.transforms.Symlog` | `algo.inputs.vector.transforms` |
 > | the advantages of the on-policy algorithms | `normalize_tensor` (`sheeprl/utils/utils.py`) | `algo.normalize_advantages` |
 > | the returns of DreamerV3 and DreamerV3.5, by their percentiles | `Moments` (`sheeprl/algos/dreamer_v3/utils.py`) | `algo.actor.moments` |
 > | the layers of the networks | `LayerNorm`, `LayerNormChannelLast`, `LayerNormGRUCell` (`sheeprl/models/models.py`), `RMSNorm` (`sheeprl/algos/dreamer_v3_5/agent.py`) | per algorithm (e.g. `algo.layer_norm`) |
