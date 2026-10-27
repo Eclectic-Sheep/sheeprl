@@ -19,7 +19,7 @@ from torch import nn
 
 from sheeprl import ROOT_DIR
 from sheeprl.algos.sac_ae import agent as sac_ae_agent
-from sheeprl.algos.sac_ae.agent import CNNDecoder, CNNEncoder, build_agent, tie_actor_optimizer
+from sheeprl.algos.sac_ae.agent import CNNDecoder, CNNEncoder, build_agent
 from sheeprl.algos.sac_ae.loss import entropy_loss
 from sheeprl.utils.utils import dotdict
 
@@ -52,8 +52,8 @@ def test_the_actor_uses_the_convolutions_of_the_critic():
     # read-only property `model` registered them as an unused module
     cfg, obs_space = small_sac_ae()
     agent, *_ = build_agent(Fabric(accelerator="cpu", devices=1), cfg, obs_space, ACTIONS)
-    actor_encoder = agent.actor.module.encoder.cnn_encoder
-    critic_encoder = agent.critic.module.encoder.cnn_encoder
+    actor_encoder = agent.actor.module.encoder.inputs["image"].net
+    critic_encoder = agent.critic.module.encoder.inputs["image"].net
     assert actor_encoder.model is critic_encoder.model
     assert "model" not in actor_encoder._modules
     # Its own fully-connected layer, as in the official implementation
@@ -65,50 +65,13 @@ def test_the_actor_uses_the_convolutions_of_the_critic():
     assert not torch.allclose(agent.actor.module.encoder(obs), before)
 
 
-def test_an_agent_saved_with_the_untied_convolutions_gets_the_ones_of_the_critic():
-    # The state of an agent saved before: the actor with its own convolutions, and the ones of the critic as `model`
-    cfg, obs_space = small_sac_ae()
-    fabric = Fabric(accelerator="cpu", devices=1)
-    agent, *_ = build_agent(fabric, cfg, obs_space, ACTIONS)
-    state = {}
-    for k, v in agent.state_dict().items():
-        if k.startswith("_actor.") and ".cnn_encoder._model." in k:
-            # The convolutions of the actor, then the ones of the critic
-            state[k] = torch.randn_like(v)
-            state[k.replace("._model.", ".model.")] = agent.state_dict()["_critic." + k[len("_actor.") :]]
-        else:
-            state[k] = v
-    old_actor_params = [k for k in state if k.startswith("_actor.") and not k.endswith(("action_scale", "action_bias"))]
-    loaded, *_ = build_agent(fabric, cfg, obs_space, ACTIONS, agent_state=state)
-    loaded_actor = loaded.actor.module.encoder.cnn_encoder
-    loaded_critic = loaded.critic.module.encoder.cnn_encoder
-    assert loaded_actor.model is loaded_critic.model
-    for k, v in loaded_critic.model.state_dict().items():
-        torch.testing.assert_close(v, state[f"_critic.encoder.cnn_encoder._model.{k}"])
-
-    # The state of its optimizer: one entry per weight of the old actor, with the state of the trained ones (the
-    # convolutions of the actor are detached: they have none)
-    trained = [i for i, k in enumerate(old_actor_params) if ".cnn_encoder." not in k or ".fc." in k]
-    optimizer_state = {
-        "state": {i: {"step": torch.tensor(float(i))} for i in trained},
-        "param_groups": [{"lr": 1e-3, "params": list(range(len(old_actor_params)))}],
-    }
-    optimizer = torch.optim.Adam(loaded.actor.parameters(), lr=1e-3)
-    optimizer.load_state_dict(tie_actor_optimizer(optimizer_state, state))
-    new_names = [n for n, _ in loaded.actor.module.named_parameters()]
-    for i, p in enumerate(loaded.actor.parameters()):
-        if i in optimizer.state_dict()["state"]:
-            assert optimizer.state[p]["step"].item() == old_actor_params.index("_actor." + new_names[i])
-    assert len(optimizer.state) == len(trained)
-
-
 def test_the_decoder_is_initialized_as_the_official_implementation():
     # It had the default initialization of PyTorch: the official one is orthogonal for the linear layers and
     # delta-orthogonal (orthogonal at the center of the kernels, zero elsewhere) for the transposed convolutions
     torch.manual_seed(0)
     cfg, obs_space = small_sac_ae(["algo.encoder.features_dim=50"])
     _, _, decoder, _ = build_agent(Fabric(accelerator="cpu", devices=1), cfg, obs_space, ACTIONS)
-    cnn_decoder = decoder.module.cnn_decoder
+    cnn_decoder = decoder.module.outputs["image"].net
     gain = nn.init.calculate_gain("relu")
     for deconv in [cnn_decoder.model[i] for i in (0, 2, 4)] + [cnn_decoder.to_obs]:
         weight = deconv.weight.detach()
@@ -137,16 +100,15 @@ def test_the_loss_of_the_temperature_is_the_one_of_the_official_implementation()
 
 @pytest.mark.parametrize("screen_size", [64, 84])
 def test_the_decoder_reconstructs_images_of_the_size_of_the_observations(screen_size):
-    encoder = CNNEncoder(9, 8, ["rgb"], screen_size=screen_size)
-    decoder = CNNDecoder(encoder.conv_output_shape, 8, ["rgb"], [9], screen_size=screen_size)
-    reconstructed = decoder(encoder({"rgb": torch.rand(2, 9, screen_size, screen_size)}))["rgb"]
+    encoder = CNNEncoder((9, screen_size, screen_size), features_dim=8)
+    decoder = CNNDecoder(8, (9, screen_size, screen_size))
+    reconstructed = decoder(encoder(torch.rand(2, 9, screen_size, screen_size)))
     assert reconstructed.shape == (2, 9, screen_size, screen_size)
 
 
 def test_the_decoder_rejects_the_odd_sizes():
-    encoder = CNNEncoder(9, 8, ["rgb"], screen_size=63)
     with pytest.raises(ValueError, match="must be even"):
-        CNNDecoder(encoder.conv_output_shape, 8, ["rgb"], [9], screen_size=63)
+        CNNDecoder(8, (9, 63, 63))
 
 
 SAC_AE_ARGS = [

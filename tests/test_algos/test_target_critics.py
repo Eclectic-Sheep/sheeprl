@@ -10,6 +10,7 @@ from hydra import compose, initialize_config_module
 from lightning import Fabric
 from omegaconf import OmegaConf
 
+from sheeprl.models.io import build_encoder
 from sheeprl.utils.utils import dotdict
 
 
@@ -48,12 +49,13 @@ def test_the_agent_of_a_checkpoint_keeps_its_target_critics(algo):
     else:
         cfg = config([f"exp={algo}", "algo.inputs.vector.keys=[state]"])
         obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (3,), np.float32)})
-        agent, _ = build_agent(fabric, cfg, obs_space, action_space)
+        agent, _ = build_agent(fabric, cfg, build_encoder(cfg, obs_space), action_space)
         states = ()
 
     # A checkpoint whose target critics differ from the critics, as after some training
     saved = {k: v + 1 if "target" in k else v.clone() for k, v in agent.state_dict().items()}
-    restored, *_ = build_agent(fabric, cfg, obs_space, action_space, saved, *states)
+    space_or_encoder = obs_space if algo == "sac_ae" else build_encoder(cfg, obs_space)
+    restored, *_ = build_agent(fabric, cfg, space_or_encoder, action_space, saved, *states)
     targets = {k: v for k, v in restored.state_dict().items() if "target" in k}
     assert len(targets) > 0
     for k, v in targets.items():

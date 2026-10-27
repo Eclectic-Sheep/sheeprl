@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from typing import Dict, Iterator, Optional, Tuple
 
@@ -19,8 +18,8 @@ from sheeprl.algos.sac.agent import SACAgent, SACPolicy, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run, transition_store, update
 from sheeprl.data.store import ReplayStore
+from sheeprl.models.io import MultiEncoder, build_encoder
 from sheeprl.utils.compile import compiled, mark_gradient_step
-from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict
@@ -59,16 +58,17 @@ class SACState(TrainState):
 
 
 class SACWriter(Writer):
-    """Writes every step in the replay buffer, with the actions played in the environments.
+    """Writes every step in the replay buffer, with the actions played in the environments: the observations of the
+    keys `keys`, each on its own, and their next ones.
 
     With `dtype`, the observations, rewards and episode flags are written with that dtype; otherwise the observations
     and rewards keep the dtype of the environments and the flags are `uint8`.
     """
 
-    def __init__(self, cfg: dotdict, dtype: Optional[np.dtype] = None) -> None:
+    def __init__(self, cfg: dotdict, keys: Tuple[str, ...], dtype: Optional[np.dtype] = None) -> None:
         self.cfg = cfg
         self.dtype = dtype
-        self.mlp_keys = legacy_keys(cfg).vector_keys
+        self.keys = keys
 
     def cast(self, value: np.ndarray) -> np.ndarray:
         return value if self.dtype is None else value.astype(self.dtype)
@@ -78,10 +78,10 @@ class SACWriter(Writer):
 
         # The observations that follow the actions: for the episodes that have just ended, their last observation,
         # not the first one of the next episode
-        next_obs = {k: step.next_obs[k].copy() for k in self.mlp_keys}
+        next_obs = {k: step.next_obs[k].copy() for k in self.keys}
         ended_envs = np.nonzero(np.logical_or(step.terminated, step.truncated))[0]
         if len(ended_envs) > 0:
-            for k, final_obs in step.stack_final_obs(ended_envs, self.mlp_keys).items():
+            for k, final_obs in step.stack_final_obs(ended_envs, self.keys).items():
                 next_obs[k][ended_envs] = final_obs
 
         flags_dtype = np.uint8 if self.dtype is None else self.dtype
@@ -89,11 +89,10 @@ class SACWriter(Writer):
             "terminated": step.terminated.reshape(1, num_envs, -1).astype(flags_dtype),
             "truncated": step.truncated.reshape(1, num_envs, -1).astype(flags_dtype),
             "actions": act.env_actions.reshape(1, num_envs, -1),
-            "observations": self.cast(np.concatenate([step.obs[k] for k in self.mlp_keys], axis=-1))[np.newaxis],
+            **{k: self.cast(step.obs[k])[np.newaxis] for k in self.keys},
         }
         if not self.cfg.buffer.sample_next_obs:
-            next_obs = np.concatenate([next_obs[k] for k in self.mlp_keys], axis=-1).astype(np.float32)
-            data["next_observations"] = next_obs[np.newaxis]
+            data.update({f"next_{k}": next_obs[k].astype(np.float32)[np.newaxis] for k in self.keys})
         data["rewards"] = self.cast(step.rewards.reshape(num_envs, -1))[np.newaxis]
         buffer.add(data, validate_args=self.cfg.buffer.validate_args)
 
@@ -165,42 +164,43 @@ class SAC(Algorithm):
                 "in order to play correctly the game. "
                 "As an alternative you can use one of the Dreamers' agents."
             )
-        if len(legacy_keys(cfg).image_keys) > 0:
-            warnings.warn(
-                f"{self.name} algorithm cannot allow to use images as observations, the CNN keys will be ignored"
-            )
-            legacy_keys(cfg).image_keys = []
 
-    def make_agent(self, obs_space: gym.spaces.Dict, action_space: gym.spaces.Box) -> Tuple[SACAgent, SACPolicy]:
+    def make_agent(self, encoder: MultiEncoder, action_space: gym.spaces.Box) -> Tuple[SACAgent, SACPolicy]:
         """The actor, the critics and the entropy coefficient set up on the device, and the policy to play with, which
         shares its weights with the actor."""
-        return build_agent(self.fabric, self.cfg, obs_space, action_space)
+        return build_agent(self.fabric, self.cfg, encoder, action_space)
+
+    def encode(self, batch: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        """`batch` with the features of its observations and of its next ones (`observations`, `next_observations`),
+        the inputs of the actor and of the critics."""
+        keys = self.encoder.keys
+        batch = dict(batch)
+        batch["observations"] = self.encoder({k: batch[k] for k in keys})
+        if all(f"next_{k}" in batch for k in keys):
+            batch["next_observations"] = self.encoder({k: batch[f"next_{k}"] for k in keys})
+        return batch
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
     ) -> Tuple[SACState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
-        mlp_keys = legacy_keys(cfg).vector_keys
         if not isinstance(action_space, gym.spaces.Box):
             raise ValueError(f"Only continuous action space is supported for the {self.name} agent")
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
-        if len(mlp_keys) == 0:
-            raise RuntimeError(
-                "You should specify at least one MLP key for the encoder: `algo.inputs.vector.keys=[state]`"
+        # The actor and the critics read the features of the inputs: an encoder with weights would not be trained
+        self.encoder = build_encoder(cfg, obs_space)
+        if any(True for _ in self.encoder.parameters()):
+            raise ValueError(
+                f"The {self.name} agent trains no encoder: the networks of its inputs must have no weights (e.g. "
+                "`sheeprl.models.IdentityEncoder`, the keys concatenated)"
             )
-        for k in mlp_keys:
-            if len(obs_space[k].shape) > 1:
-                raise ValueError(
-                    f"Only environments with vector-only observations are supported by the {self.name} agent. "
-                    f"The observation with key '{k}' has shape {obs_space[k].shape}. "
-                    f"Provided environment: {cfg.env.id}"
-                )
         if cfg.metric.log_level > 0:
-            fabric.print("Encoder MLP keys:", mlp_keys)
+            for name, inp in self.encoder.inputs.items():
+                fabric.print(f"Input `{name}`: {list(inp.keys)}")
 
-        agent, self._policy = self.make_agent(obs_space, action_space)
+        agent, self._policy = self.make_agent(self.encoder, action_space)
 
         qf_optimizer = hydra.utils.instantiate(
             cfg.algo.critic.optimizer, params=agent.qfs.parameters(), _convert_="all"
@@ -217,14 +217,16 @@ class SAC(Algorithm):
             agent=agent, qf_optimizer=qf_optimizer, actor_optimizer=actor_optimizer, alpha_optimizer=alpha_optimizer
         )
         self.schedule = schedule
-        return state, transition_store(fabric, cfg, log_dir)
+        # The keys of the inputs, then the extra keys
+        self.keys = tuple(self.encoder.keys) + tuple(k for k in cfg.algo.extra_keys if k not in self.encoder.keys)
+        return state, transition_store(fabric, cfg, log_dir, obs_keys=self.keys)
 
     def policy(self, state: SACState) -> SACPolicy:
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""
         return self._policy
 
     def writer(self, state: SACState, policy: SACPolicy) -> SACWriter:
-        return SACWriter(self.cfg, dtype=self.buffer_dtype)
+        return SACWriter(self.cfg, self.keys, dtype=self.buffer_dtype)
 
     def batches(
         self, state: SACState, buffer: ReplayStore, n_steps: int, iteration: int
@@ -242,7 +244,7 @@ class SAC(Algorithm):
             state.actor_optimizer,
             state.qf_optimizer,
             state.alpha_optimizer,
-            batch,
+            self.encode(batch),
             self.iteration,
             self.cfg,
             self.schedule.policy_steps_per_iter,

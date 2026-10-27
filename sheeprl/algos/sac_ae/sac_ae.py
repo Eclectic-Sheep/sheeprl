@@ -4,7 +4,7 @@ trained also to reconstruct them through a decoder. Written on the shared traini
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Tuple, Union
+from typing import Dict, Iterator, Tuple, Union
 
 import gymnasium as gym
 import hydra
@@ -17,16 +17,14 @@ from torch import Tensor, nn
 from torch.optim import Optimizer
 
 from sheeprl.algos.sac.loss import critic_loss, policy_loss
-from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPolicy, build_agent, tie_actor_convolutions, tie_actor_optimizer
+from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPolicy, build_agent
 from sheeprl.algos.sac_ae.loss import entropy_loss
 from sheeprl.algos.sac_ae.utils import preprocess_obs
 from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run, transition_store, update
 from sheeprl.data.store import ReplayStore
-from sheeprl.models.models import MultiDecoder, MultiEncoder
+from sheeprl.models.io import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled, mark_gradient_step
-from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope
-from sheeprl.utils.obs import images_as_channels
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict
 
@@ -63,17 +61,16 @@ def reconstruction_loss_fn(
     decoder: Union[MultiDecoder, _FabricModule],
     observations: Dict[str, Tensor],
     targets: Dict[str, Tensor],
-    cnn_keys: Tuple[str, ...],
-    mlp_keys: Tuple[str, ...],
+    keys: Tuple[str, ...],
     l2_lambda: float,
 ) -> Tensor:
-    """The loss of the reconstruction of the observations (the images dequantized), with an L2 penalty on the hidden
-    state."""
+    """The loss of the reconstruction of the keys `keys` of the observations (their `targets`), with an L2 penalty on
+    the hidden state."""
     hidden = encoder(observations)
     reconstruction = decoder(hidden)
     reconstruction_loss = 0
-    for k in cnn_keys + mlp_keys:
-        target = preprocess_obs(targets[k], bits=5) if k in cnn_keys else targets[k]
+    for k in keys:
+        target = targets[k]
         reconstruction_loss += (
             F.mse_loss(target, reconstruction[k])  # Reconstruction
             + l2_lambda * (0.5 * hidden.pow(2).sum(1)).mean()  # L2 penalty on the hidden state
@@ -95,36 +92,26 @@ class SACAEState(TrainState):
     encoder_optimizer: Optimizer
     decoder_optimizer: Optimizer
 
-    def load_state_dict(self, state: Dict[str, Any]) -> None:
-        # The checkpoints saved when the actor kept its own convolutions, never trained (see `SACAEAgent`): the actor
-        # gets the ones of the critic, and its optimizer forgets the others
-        state = dict(state)
-        if "actor_optimizer" in state:
-            state["actor_optimizer"] = tie_actor_optimizer(state["actor_optimizer"], state["agent"])
-        state["agent"] = tie_actor_convolutions(state["agent"])
-        super().load_state_dict(state)
-
 
 class SACAEWriter(Writer):
-    """Writes every step in the replay buffer, with the actions played in the environments. The stacked frames of an
-    image are stored as its channels."""
+    """Writes every step in the replay buffer, with the actions played in the environments: the observations of the
+    keys of the inputs (`keys`) and their next ones."""
 
-    def __init__(self, cfg: dotdict) -> None:
+    def __init__(self, cfg: dotdict, keys: Tuple[str, ...]) -> None:
         self.cfg = cfg
-        self.cnn_keys = legacy_keys(cfg).image_keys
+        self.keys = keys
 
     def write(self, buffer: ReplayStore, step: EnvStep, act: Act) -> None:
         num_envs = len(step.rewards)
-        obs = images_as_channels(step.obs, self.cnn_keys, num_envs)
+        obs = {k: step.obs[k] for k in self.keys}
 
         # The observations that follow the actions: for the episodes that have just ended, their last observation,
         # not the first one of the next episode
-        next_obs = {k: v.copy() for k, v in step.next_obs.items()}
+        next_obs = {k: step.next_obs[k].copy() for k in self.keys}
         ended_envs = np.nonzero(np.logical_or(step.terminated, step.truncated))[0]
         if len(ended_envs) > 0:
             for k, final_obs in step.stack_final_obs(ended_envs, list(next_obs)).items():
                 next_obs[k][ended_envs] = final_obs
-        next_obs = images_as_channels(next_obs, self.cnn_keys, num_envs)
 
         data = {}
         for k in obs:
@@ -153,15 +140,10 @@ def train(
     cfg: dotdict,
 ):
     metrics: Dict[str, Tensor] = {}
-    normalized_next_obs = {}
-    normalized_obs = {}
-    for k in legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys:
-        if k in legacy_keys(cfg).image_keys:
-            normalized_obs[k] = data[k] / 255.0
-            normalized_next_obs[k] = data[f"next_{k}"] / 255.0
-        else:
-            normalized_obs[k] = data[k]
-            normalized_next_obs[k] = data[f"next_{k}"]
+    # The encoder transforms the observations (e.g. the images scaled to [0, 1])
+    keys = encoder.keys
+    obs = {k: data[k] for k in keys}
+    next_obs = {k: data[f"next_{k}"] for k in keys}
 
     # The losses are compiled when `algo.compile.enabled` is set
     mark_gradient_step(fabric, cfg)
@@ -170,8 +152,8 @@ def train(
     with autocast_cache_scope(fabric):
         qf_loss = compiled(critic_loss_fn, fabric, cfg)(
             agent,
-            normalized_obs,
-            normalized_next_obs,
+            obs,
+            next_obs,
             data["actions"],
             data["rewards"],
             data["terminated"],
@@ -188,7 +170,7 @@ def train(
     # Update the actor
     if cumulative_per_rank_gradient_steps % cfg.algo.actor.per_rank_update_freq == 0:
         with autocast_cache_scope(fabric):
-            actor_loss, logprobs = compiled(actor_loss_fn, fabric, cfg)(agent, normalized_obs)
+            actor_loss, logprobs = compiled(actor_loss_fn, fabric, cfg)(agent, obs)
         update(fabric, actor_loss, actor_optimizer)
 
         # Update the entropy value
@@ -200,14 +182,18 @@ def train(
 
     # Update the decoder
     if cumulative_per_rank_gradient_steps % cfg.algo.decoder.per_rank_update_freq == 0:
+        # The targets of the keys of the output `image`, the pixels of the store dequantized (5 bits, in [-0.5, 0.5]);
+        # the ones of the other outputs, the keys as the encoder reads them
+        image_keys = decoder.outputs["image"].keys if "image" in decoder.outputs else ()
+        targets = encoder.targets(data, [k for k in decoder.keys if k not in image_keys])
+        targets.update({k: preprocess_obs(data[k], bits=5) for k in image_keys})
         with autocast_cache_scope(fabric):
             reconstruction_loss = compiled(reconstruction_loss_fn, fabric, cfg)(
                 encoder,
                 decoder,
-                normalized_obs,
-                data,
-                tuple(legacy_keys(cfg).decoder_image_keys),
-                tuple(legacy_keys(cfg).decoder_vector_keys),
+                obs,
+                targets,
+                tuple(decoder.keys),
                 cfg.algo.decoder.l2_lambda,
             )
         # One backward pass for both, then the step of the encoder and the one of the decoder
@@ -252,23 +238,13 @@ class SACAE(Algorithm):
             raise RuntimeError(
                 f"Unexpected action space, should be of type continuous (of type Box), got: {action_space}"
             )
-        legacy = legacy_keys(cfg)
-        keys = (legacy.image_keys, legacy.decoder_image_keys), (legacy.vector_keys, legacy.decoder_vector_keys)
-        if all(len(set(encoder).intersection(set(decoder))) == 0 for encoder, decoder in keys):
-            raise RuntimeError("The image keys or the vector keys of the inputs and outputs must not be disjoint")
-        for kind, (encoder, decoder) in zip(("image", "vector"), keys):
-            if len(set(decoder) - set(encoder)) > 0:
-                raise RuntimeError(
-                    f"The {kind} keys of the outputs must be contained in the inputs ones. "
-                    f"Those keys are decoded without being encoded: {list(set(decoder))}"
-                )
-        if cfg.metric.log_level > 0:
-            fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
-            fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
-            fabric.print("Decoder CNN keys:", legacy_keys(cfg).decoder_image_keys)
-            fabric.print("Decoder MLP keys:", legacy_keys(cfg).decoder_vector_keys)
-
         agent, encoder, decoder, self._policy = build_agent(fabric, cfg, obs_space, action_space)
+        if len(decoder.keys) == 0:
+            raise RuntimeError("SAC-AE reconstructs at least one key: set the keys of an output (`algo.outputs`)")
+        if cfg.metric.log_level > 0:
+            for kind, modules in (("Input", encoder.inputs), ("Output", decoder.outputs)):
+                for name, module in modules.items():
+                    fabric.print(f"{kind} `{name}`: {list(module.keys)}")
 
         optimizers = [
             hydra.utils.instantiate(optimizer_cfg, params=params, _convert_="all")
@@ -295,15 +271,16 @@ class SACAE(Algorithm):
             decoder_optimizer=decoder_optimizer,
         )
         self.schedule = schedule
-        obs_keys = tuple(legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys)
-        return state, transition_store(fabric, cfg, log_dir, obs_keys=obs_keys)
+        # The keys of the inputs, then the extra keys
+        self.keys = tuple(encoder.keys) + tuple(k for k in cfg.algo.extra_keys if k not in encoder.keys)
+        return state, transition_store(fabric, cfg, log_dir, obs_keys=self.keys)
 
     def policy(self, state: SACAEState) -> SACAEPolicy:
         """The policy to play with: it shares its weights with the trained actor (`build_agent`)."""
         return self._policy
 
     def writer(self, state: SACAEState, policy: SACAEPolicy) -> SACAEWriter:
-        return SACAEWriter(self.cfg)
+        return SACAEWriter(self.cfg, self.keys)
 
     def batches(
         self, state: SACAEState, buffer: ReplayStore, n_steps: int, iteration: int

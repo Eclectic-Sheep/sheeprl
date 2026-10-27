@@ -19,6 +19,7 @@ from sheeprl.algos.sac import sac
 from sheeprl.algos.sac.agent import build_agent as sac_build_agent
 from sheeprl.algos.sac_ae import sac_ae
 from sheeprl.algos.sac_ae.agent import build_agent as sac_ae_build_agent
+from sheeprl.models.io import build_encoder
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
 
@@ -49,7 +50,7 @@ def small_agent(algo, overrides=(), accelerator="cpu", precision="32-true"):
     action_space = gym.spaces.Box(-1, 1, (2,), np.float32)
     build_agent = sac_build_agent if algo == "sac" else droq_build_agent
     torch.manual_seed(0)
-    agent, _ = build_agent(fabric, cfg, obs_space, action_space)
+    agent, _ = build_agent(fabric, cfg, build_encoder(cfg, obs_space), action_space)
     optimizers = fabric.setup_optimizers(
         *(
             optimizer(c.optimizer, params)
@@ -208,11 +209,12 @@ def test_the_losses_of_sac_ae_compile_into_single_graphs_without_synchronization
     no_host_reads(monkeypatch)
     # Without the validation of the arguments of the distributions, as in training
     monkeypatch.setattr(torch.distributions.Distribution, "_validate_args", False)
-    obs, next_obs = {"rgb": data["rgb"] / 255}, {"rgb": data["next_rgb"] / 255}
+    # The encoder scales the images
+    obs, next_obs = {"rgb": data["rgb"]}, {"rgb": data["next_rgb"]}
     graph = lambda fn: torch.compile(fn, backend="eager", fullgraph=True)  # noqa: E731
     graph(sac_ae.critic_loss_fn)(agent, obs, next_obs, data["actions"], data["rewards"], data["terminated"], 0.99)
     graph(sac_ae.actor_loss_fn)(agent, obs)
-    graph(sac_ae.reconstruction_loss_fn)(encoder, decoder, obs, data, ("rgb",), (), 1e-6)
+    graph(sac_ae.reconstruction_loss_fn)(encoder, decoder, obs, {"rgb": data["rgb"] / 255 - 0.5}, ("rgb",), 1e-6)
 
 
 def test_the_target_critic_of_sac_ae_moves_as_with_the_loop_over_its_weights():

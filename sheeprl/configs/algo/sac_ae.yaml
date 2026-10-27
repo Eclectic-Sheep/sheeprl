@@ -37,7 +37,6 @@ inputs:
     transforms: []
     net:
       _target_: sheeprl.algos.sac_ae.agent.MLPEncoder
-      features_dim: ${algo.encoder.features_dim}
       dense_units: ${algo.encoder.dense_units}
       mlp_layers: ${algo.encoder.mlp_layers}
       dense_act: ${algo.encoder.dense_act}

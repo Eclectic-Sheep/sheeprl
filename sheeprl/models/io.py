@@ -90,8 +90,10 @@ class Input(nn.Module):
         dtype = torch.get_default_dtype()
         return [p.batch(obs[k], phase).to(dtype) for k, p in zip(self.keys, self.pipelines)]
 
-    def forward(self, obs: Dict[str, Tensor], phase: str = "train") -> Tensor:
-        return self.net(torch.cat(self.transformed(obs, phase), dim=self.cat_dim))
+    def forward(self, obs: Dict[str, Tensor], phase: str = "train", **kwargs: Any) -> Tensor:
+        """The features of the keys of `obs`; the keyword arguments go to the network (e.g. the
+        `detach_encoder_features` of the encoders of SAC-AE)."""
+        return self.net(torch.cat(self.transformed(obs, phase), dim=self.cat_dim), **kwargs)
 
     def batch_space(self, key: str) -> gym.Space:
         """The space of `key` after its `batch` transforms."""
@@ -124,8 +126,8 @@ class MultiEncoder(nn.Module):
             }
         )
 
-    def forward(self, obs: Dict[str, Tensor], phase: str = "train") -> Tensor:
-        features = [inp(obs, phase) for inp in self.inputs.values()]
+    def forward(self, obs: Dict[str, Tensor], phase: str = "train", **kwargs: Any) -> Tensor:
+        features = [inp(obs, phase, **kwargs) for inp in self.inputs.values()]
         return features[0] if len(features) == 1 else torch.cat(features, dim=-1)
 
     def batch_space(self, key: str) -> gym.Space:

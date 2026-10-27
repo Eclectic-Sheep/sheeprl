@@ -12,12 +12,11 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from sheeprl.core.collector import Act, Policy
+from sheeprl.models.io import MultiEncoder, to_device
 from sheeprl.models.models import MLP
 from sheeprl.utils.compile import compiled_policy
-from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ema_
-from sheeprl.utils.obs import prepare_obs
 from sheeprl.utils.utils import dotdict
 
 LOG_STD_MAX = 2
@@ -272,8 +271,9 @@ class SACAgent(nn.Module):
 
 
 class SACPolicy(nn.Module, Policy):
-    """The policy of SAC and DroQ: `forward` samples the actions from the observations as a tensor, `act` plays them in
-    the environments (`Policy`), from the observations `mlp_keys` concatenated on `device`."""
+    """The policy of SAC and DroQ: `forward` samples the actions from the features of the observations, `act` plays them
+    in the environments (`Policy`), from the features `encoder` gives to the observations of its keys moved to
+    `device` (e.g. the keys of the vector input concatenated)."""
 
     def __init__(
         self,
@@ -283,14 +283,15 @@ class SACPolicy(nn.Module, Policy):
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
         device: str | torch.device = "cpu",
-        mlp_keys: Sequence[str] = (),
+        encoder: Optional[MultiEncoder] = None,
     ):
         super().__init__()
         self.model = feature_extractor
         self.fc_mean = fc_mean
         self.fc_logstd = fc_logstd
         self.device = torch.device(device)
-        self.mlp_keys = mlp_keys
+        # The inputs, without weights (the actor and the critics read their features)
+        self.encoder = encoder
 
         # Action rescaling buffers
         self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
@@ -322,9 +323,7 @@ class SACPolicy(nn.Module, Policy):
             return actions
 
     def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
-        num_envs = len(obs[self.mlp_keys[0]])
-        torch_obs = prepare_obs(self.device, {k: obs[k] for k in self.mlp_keys}, num_envs=num_envs)
-        torch_obs = torch.cat([torch_obs[k] for k in self.mlp_keys], dim=-1)
+        torch_obs = self.encoder(to_device({k: obs[k] for k in self.encoder.keys}, self.device), phase="act")
         actions = self.get_actions(torch_obs, greedy=True) if greedy else self(torch_obs)
         return Act(actions.cpu().numpy())
 
@@ -335,12 +334,13 @@ class SACPolicy(nn.Module, Policy):
 def build_agent(
     fabric: Fabric,
     cfg: dotdict,
-    obs_space: gymnasium.spaces.Dict,
+    encoder: MultiEncoder,
     action_space: gymnasium.spaces.Box,
     agent_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[SACAgent, SACPolicy]:
     act_dim = prod(action_space.shape)
-    obs_dim = sum([prod(obs_space[k].shape) for k in legacy_keys(cfg).vector_keys])
+    # The features of the inputs (e.g. the keys of the vector input concatenated, `IdentityEncoder`)
+    obs_dim = encoder.output_dim
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,
@@ -367,7 +367,7 @@ def build_agent(
         action_low=action_space.low,
         action_high=action_space.high,
         device=policy_fabric.device,
-        mlp_keys=legacy_keys(cfg).vector_keys,
+        encoder=encoder,
     )
 
     # Setup training agent. Setting the critics makes the target critics copies of them: the ones of the checkpoint

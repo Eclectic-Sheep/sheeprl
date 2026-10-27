@@ -10,9 +10,9 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 
 from sheeprl.algos.sac.agent import SACActor, SACPolicy
+from sheeprl.models.io import MultiEncoder
 from sheeprl.models.models import MLP
 from sheeprl.utils.compile import compiled_policy
-from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ema_
 from sheeprl.utils.utils import dotdict
@@ -211,12 +211,13 @@ class DROQAgent(nn.Module):
 def build_agent(
     fabric: Fabric,
     cfg: dotdict,
-    obs_space: gymnasium.spaces.Dict,
+    encoder: MultiEncoder,
     action_space: gymnasium.spaces.Box,
     agent_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[DROQAgent, SACPolicy]:
     act_dim = prod(action_space.shape)
-    obs_dim = sum([prod(obs_space[k].shape) for k in legacy_keys(cfg).vector_keys])
+    # The features of the inputs (e.g. the keys of the vector input concatenated, `IdentityEncoder`)
+    obs_dim = encoder.output_dim
     actor = SACActor(
         observation_dim=obs_dim,
         action_dim=act_dim,
@@ -255,7 +256,7 @@ def build_agent(
         action_low=action_space.low,
         action_high=action_space.high,
         device=policy_fabric.device,
-        mlp_keys=legacy_keys(cfg).vector_keys,
+        encoder=encoder,
     )
 
     # Setup training agent. Setting the critics makes the target critics copies of them: the ones of the checkpoint

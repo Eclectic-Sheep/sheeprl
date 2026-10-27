@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from math import prod
-from typing import Any, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
+from typing import Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
 
 import gymnasium
 import hydra
@@ -16,41 +16,41 @@ from torch import Size, Tensor
 
 from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.core.collector import Act, Policy
-from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
+from sheeprl.models.io import MultiDecoder, MultiEncoder, build_encoder, to_device
+from sheeprl.models.models import CNN, MLP, DeCNN
 from sheeprl.utils.compile import compiled_policy
-from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import cnn_forward, ema_
-from sheeprl.utils.obs import prepare_obs
 from sheeprl.utils.utils import dotdict
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
 
 
+def _activation(activation: Union[str, type]) -> type:
+    return hydra.utils.get_class(activation) if isinstance(activation, str) else activation
+
+
+def conv_output_shape(input_shape: Sequence[int], channels_multiplier: int = 1) -> Tuple[int, int, int]:
+    """The shape of the feature maps of the convolutions of `CNNEncoder` on images of shape `input_shape`: a 3x3
+    convolution with stride 2, then three with stride 1, of 32 * `channels_multiplier` channels each."""
+    _, height, width = input_shape
+    return (32 * channels_multiplier, (height - 3) // 2 + 1 - 6, (width - 3) // 2 + 1 - 6)
+
+
 class CNNEncoder(CNN):
-    """Encoder network from https://arxiv.org/abs/1910.01741
+    """The encoder of the images of SAC-AE (https://arxiv.org/abs/1910.01741), on images of shape `input_shape`: four
+    3x3 convolutions (the first with stride 2) of 32 * `channels_multiplier` channels, then a linear layer to
+    `features_dim` features, normalized and squashed by a tanh. With `detach_encoder_features`, the gradient doesn't
+    reach the convolutions (the actor's loss)."""
 
-    Args:
-        in_channels (int): the input channels to the first convolutional layer
-        features_dim (int): the features dimension in output from the last convolutional layer
-        screen_size (int, optional): the dimension of the input image as a single integer.
-            Needed to extract the features and compute the output dimension after all the
-            convolutional layers.
-            Defaults to 64.
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        features_dim: int,
-        keys: Sequence[str],
-        screen_size: int = 64,
-        cnn_channels_multiplier: int = 1,
-    ):
+    def __init__(self, input_shape: Sequence[int], features_dim: int = 50, channels_multiplier: int = 1):
+        input_shape = tuple(int(d) for d in input_shape)
+        if len(input_shape) != 3:
+            raise ValueError(f"The CNN encoder of SAC-AE takes images (channels, height, width), got {input_shape}")
         super().__init__(
-            in_channels,
-            (np.array([32, 32, 32, 32]) * cnn_channels_multiplier).tolist(),
+            input_shape[0],
+            (np.array([32, 32, 32, 32]) * channels_multiplier).tolist(),
             layer_args=[
                 {"kernel_size": 3, "stride": 2},
                 {"kernel_size": 3, "stride": 1},
@@ -58,12 +58,8 @@ class CNNEncoder(CNN):
                 {"kernel_size": 3, "stride": 1},
             ],
         )
-        self.keys = keys
         with torch.no_grad():
-            x: Tensor = self.model(
-                torch.rand(1, in_channels, screen_size, screen_size, device=self.model[0].weight.device)
-            )
-            self._conv_output_shape = x.shape[1:]
+            x: Tensor = self.model(torch.rand(1, *input_shape, device=self.model[0].weight.device))
             flattened_conv_output_dim = x.flatten(1).shape[1]
         self.fc = MLP(
             input_dims=flattened_conv_output_dim,
@@ -73,144 +69,115 @@ class CNNEncoder(CNN):
             norm_args={"normalized_shape": features_dim},
         )
         self._output_dim = features_dim
-        self.input_dim = in_channels
 
-    @property
-    def conv_output_shape(self) -> Size:
-        return self._conv_output_shape
+    def tie(self, other: CNNEncoder) -> None:
+        """Use the convolutions of `other` (the actor uses the ones of the critic), keeping its own linear layer."""
+        self._model = other._model
 
-    def forward(self, obs: Dict[str, Tensor], *, detach_encoder_features: bool = False, **kwargs) -> Tensor:
-        dtypes = [obs[k].dtype for k in self.keys]
-        if dtypes.count(dtypes[0]) != len(dtypes):
-            raise ValueError("All the tensors must have the same dtype: {}".format(dtypes))
-        x = torch.cat([obs[k] for k in self.keys], dim=-3)
+    def forward(self, x: Tensor, detach_encoder_features: bool = False) -> Tensor:
         x = cnn_forward(self.model, x, x.shape[-3:], (-1,))
         if detach_encoder_features:
             x = x.detach()
-        x = self.fc(x)
-        return x
+        return self.fc(x)
 
 
 class MLPEncoder(nn.Module):
+    """The encoder of the vectors of SAC-AE: `mlp_layers` layers of `dense_units` units on a vector of shape
+    `input_shape`. With `detach_encoder_features`, its features carry no gradient (the actor's loss)."""
+
     def __init__(
         self,
-        input_dim: int,
-        keys: Sequence[str],
+        input_shape: Sequence[int],
         dense_units: int = 1024,
         mlp_layers: int = 3,
-        act: nn.Module = nn.ReLU,
+        dense_act: Union[str, type] = "torch.nn.ReLU",
         layer_norm: bool = False,
     ) -> None:
         super().__init__()
-        self.keys = keys
+        input_shape = tuple(int(d) for d in input_shape)
+        if len(input_shape) != 1:
+            raise ValueError(f"The MLP encoder of SAC-AE takes vectors, got the shape {input_shape}")
         self.model = MLP(
-            input_dims=input_dim,
+            input_dims=input_shape[0],
             hidden_sizes=[dense_units] * mlp_layers,
-            activation=act,
+            activation=_activation(dense_act),
             norm_layer=nn.LayerNorm if layer_norm else None,
             norm_args=[{"normalized_shape": dense_units}] * mlp_layers if layer_norm else None,
         )
         self.output_dim = dense_units
-        self.input_dim = input_dim
 
-    def forward(self, obs: Dict[str, Tensor], *args, detach_encoder_features: bool = False, **kwargs) -> Tensor:
-        dtypes = [obs[k].dtype for k in self.keys]
-        if dtypes.count(dtypes[0]) != len(dtypes):
-            raise ValueError("All the tensors must have the same dtype: {}".format(dtypes))
-        x = torch.cat([obs[k] for k in self.keys], dim=-1)
+    def tie(self, other: MLPEncoder) -> None:
+        """Use the layers of `other` (the actor uses the ones of the critic)."""
+        self.model = other.model
+
+    def forward(self, x: Tensor, detach_encoder_features: bool = False) -> Tensor:
         x = self.model(x)
-        if detach_encoder_features:
-            x = x.detach()
-        return x
+        return x.detach() if detach_encoder_features else x
 
 
 class MLPDecoder(nn.Module):
+    """The decoder of the vectors of SAC-AE: `mlp_layers` layers of `dense_units` units from the latent state, then a
+    linear layer to the vectors of shape `output_shape`."""
+
     def __init__(
         self,
-        input_dim: int,
-        output_dims: Sequence[int],
-        keys: Sequence[str],
+        latent_size: int,
+        output_shape: Sequence[int],
         dense_units: int = 1024,
         mlp_layers: int = 3,
-        act: nn.Module = nn.ReLU,
+        dense_act: Union[str, type] = "torch.nn.ReLU",
         layer_norm: bool = False,
     ) -> None:
         super().__init__()
-        self.keys = keys
-        self.input_dim = input_dim
-        self.output_dims = output_dims
         self.model = MLP(
-            input_dims=input_dim,
+            input_dims=latent_size,
             hidden_sizes=[dense_units] * mlp_layers,
-            activation=act,
+            activation=_activation(dense_act),
             norm_layer=nn.LayerNorm if layer_norm else None,
             norm_args=[{"normalized_shape": dense_units}] * mlp_layers if layer_norm else None,
         )
-        self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
+        self.head = nn.Linear(dense_units, int(output_shape[0]))
 
-    def forward(self, x: Dict[str, Tensor], *args, **kwargs) -> Tensor:
-        reconstructed_obs = {}
-        x = self.model(x)
-        reconstructed_obs.update({k: h(x) for k, h in zip(self.keys, self.heads)})
-        return reconstructed_obs
+    def forward(self, x: Tensor) -> Tensor:
+        return self.head(self.model(x))
 
 
 class CNNDecoder(DeCNN):
-    """Decoder network from https://arxiv.org/abs/1910.01741
+    """The decoder of the images of SAC-AE (https://arxiv.org/abs/1910.01741): a linear layer from the latent state to
+    the feature maps of the encoder (`conv_output_shape`), three 3x3 convolutions of 32 * `channels_multiplier`
+    channels, then a transposed one with stride 2 to the images of shape `output_shape` (whose sides must be even)."""
 
-    Args:
-        encoder_conv_output_shape (Size): the output shape of the encoder convolutional layer
-        features_dim (int): the features dimension in output from the last convolutional layer
-        out_channels (int, optional): the number of channels of the generated image.
-            Defaults to 3
-        screen_size (int, optional): the dimension of the input image as a single integer.
-            Needed to extract the features and compute the output dimension after all the
-            convolutional layers.
-            Defaults to 64
-    """
-
-    def __init__(
-        self,
-        encoder_conv_output_shape: Size,
-        features_dim: int,
-        keys: Sequence[str],
-        channels: Sequence[int],
-        screen_size: int = 64,
-        cnn_channels_multiplier: int = 1,
-    ):
+    def __init__(self, latent_size: int, output_shape: Sequence[int], channels_multiplier: int = 1):
         super().__init__(
-            32 * cnn_channels_multiplier,
-            (np.array([32, 32, 32]) * cnn_channels_multiplier).tolist(),
+            32 * channels_multiplier,
+            (np.array([32, 32, 32]) * channels_multiplier).tolist(),
             layer_args=[
                 {"kernel_size": 3, "stride": 1},
                 {"kernel_size": 3, "stride": 1},
                 {"kernel_size": 3, "stride": 1},
             ],
         )
-        self.cnn_splits = channels
-        out_channels = sum(channels)
-        self.keys = keys
-        self.fc = MLP(input_dims=features_dim, hidden_sizes=(prod(encoder_conv_output_shape),))
+        output_shape = tuple(int(d) for d in output_shape)
+        encoder_conv_output_shape = conv_output_shape(output_shape, channels_multiplier)
+        self.fc = MLP(input_dims=latent_size, hidden_sizes=(prod(encoder_conv_output_shape),))
         self.to_obs = nn.ConvTranspose2d(
-            super().output_dim, out_channels=out_channels, kernel_size=3, stride=2, output_padding=1
+            super().output_dim, out_channels=output_shape[0], kernel_size=3, stride=2, output_padding=1
         )
-        self._output_dim = Size([out_channels, screen_size, screen_size])
+        self._output_dim = Size(output_shape)
         self._encoder_conv_output_shape = encoder_conv_output_shape
         with torch.no_grad():
             reconstructed_size = tuple(self.to_obs(self.model(torch.zeros(1, *encoder_conv_output_shape))).shape[-2:])
-        if reconstructed_size != (screen_size, screen_size):
+        if reconstructed_size != output_shape[1:]:
             raise ValueError(
                 f"The decoder reconstructs images of {reconstructed_size[0]}x{reconstructed_size[1]} pixels from the "
-                f"ones of {screen_size}x{screen_size} (`env.screen_size`): the size must be even"
+                f"ones of {output_shape[1]}x{output_shape[2]}: their sides must be even"
             )
 
-    def forward(self, x: Tensor, *args, **kwargs) -> Dict[str, Tensor]:
-        reconstructed_obs = {}
+    def forward(self, x: Tensor) -> Tensor:
+        leading = x.shape[:-1]
         x = self.fc(x).view(-1, *self._encoder_conv_output_shape)
-        x = self.model(x)
-        x = self.to_obs(x)
-        reconstructed_obs.update({k: rec_obs for k, rec_obs in zip(self.keys, torch.split(x, self.cnn_splits, dim=-3))})
-        return reconstructed_obs
+        x = self.to_obs(self.model(x))
+        return x.view(*leading, *x.shape[-3:])
 
 
 class SACAEQFunction(nn.Module):
@@ -342,13 +309,17 @@ class SACAEAgent(nn.Module):
         device: torch.device = torch.device("cpu"),
     ) -> None:
         super().__init__()
-        # Tie encoder weights between actor and critic: the actor uses the convolutions of the critic, with its own
-        # fully-connected layer (`model` is a read-only property: assigning it registered the convolutions of the critic
-        # as an unused module, and the actor kept its own, never trained)
-        if actor.encoder.cnn_encoder is not None:
-            actor.encoder.cnn_encoder._model = critic.encoder.cnn_encoder._model
-        if actor.encoder.mlp_encoder is not None:
-            actor.encoder.mlp_encoder.model = critic.encoder.mlp_encoder.model
+        # Tie encoder weights between actor and critic: the network of every input of the actor uses the layers of the
+        # critic's (`tie`: the convolutions of the images, with the actor's own linear layer; the layers of the vectors)
+        for name, actor_input in actor.encoder.inputs.items():
+            net, critic_net = actor_input.net, critic.encoder.inputs[name].net
+            if not hasattr(net, "tie"):
+                raise TypeError(
+                    f"The network of the input `{name}` of SAC-AE must share its layers with the one of the critic "
+                    f"(`tie`), as `sheeprl.algos.sac_ae.agent.CNNEncoder` and `MLPEncoder` do: {type(net).__name__} "
+                    "doesn't"
+                )
+            net.tie(critic_net)
 
         # Actor and critics
         self._num_critics = len(critic.qfs)
@@ -460,8 +431,7 @@ class SACAEAgent(nn.Module):
 
 class SACAEPolicy(nn.Module, Policy):
     """The policy of SAC-AE: `forward` samples the actions from the observations as tensors, `act` plays them in the
-    environments (`Policy`), from the observations moved to `device` (the images `cnn_keys` with their stacked frames as
-    channels, scaled to [0, 1])."""
+    environments (`Policy`), from the observations of the keys of the inputs (`keys`) moved to `device`."""
 
     def __init__(
         self,
@@ -472,7 +442,7 @@ class SACAEPolicy(nn.Module, Policy):
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
         device: str | torch.device = "cpu",
-        cnn_keys: Sequence[str] = (),
+        keys: Sequence[str] = (),
     ):
         super().__init__()
         self.encoder = feature_extractor
@@ -480,15 +450,15 @@ class SACAEPolicy(nn.Module, Policy):
         self.fc_mean = fc_mean
         self.fc_logstd = fc_logstd
         self.device = torch.device(device)
-        self.cnn_keys = cnn_keys
+        # The keys of the inputs of the encoder, by default
+        self.keys = tuple(keys) or tuple(feature_extractor.keys)
 
         # Action rescaling buffers
         self.register_buffer("action_scale", torch.tensor((action_high - action_low) / 2.0, dtype=torch.float32))
         self.register_buffer("action_bias", torch.tensor((action_high + action_low) / 2.0, dtype=torch.float32))
 
     def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
-        num_envs = len(next(iter(obs.values())))
-        torch_obs = prepare_obs(self.device, obs, cnn_keys=self.cnn_keys, num_envs=num_envs, image_shift=0)
+        torch_obs = to_device({k: obs[k] for k in self.keys}, self.device)
         actions = self.get_actions(torch_obs, greedy=True) if greedy else self(torch_obs)
         return Act(actions.cpu().numpy())
 
@@ -504,7 +474,7 @@ class SACAEPolicy(nn.Module, Policy):
             tanh-squashed action, rescaled to the environment action bounds
             action log-prob
         """
-        features = self.encoder(obs, detach_encoder_features=False)
+        features = self.encoder(obs, phase="act", detach_encoder_features=False)
         x = self.model(features)
         mean = self.fc_mean(x)
         if greedy:
@@ -524,44 +494,6 @@ class SACAEPolicy(nn.Module, Policy):
         return self(obs, greedy)
 
 
-def untied_actor_convolutions(agent_state: Dict[str, Tensor]) -> List[str]:
-    """The names of the weights of the actor, in the order of its parameters, of the state of an agent saved when the
-    actor didn't use the convolutions of the critic: they are registered as `model`, unused (empty for a newer state).
-    """
-    names = [k for k in agent_state if k.startswith("_actor.") and not k.endswith(("action_scale", "action_bias"))]
-    if not any(".cnn_encoder.model." in k for k in names):
-        return []
-    return names
-
-
-def tie_actor_convolutions(agent_state: Dict[str, Tensor]) -> Dict[str, Tensor]:
-    """The state of an agent saved when the actor didn't use the convolutions of the critic (see `SACAEAgent`), for the
-    agent where it does: the actor gets the convolutions of the critic, the unused ones are dropped. A newer state is
-    returned as it is."""
-    if not untied_actor_convolutions(agent_state):
-        return agent_state
-    state = {k: v for k, v in agent_state.items() if not (k.startswith("_actor.") and ".cnn_encoder.model." in k)}
-    for k in state:
-        if k.startswith("_actor.") and ".cnn_encoder._model." in k:
-            state[k] = agent_state["_critic." + k[len("_actor.") :]]
-    return state
-
-
-def tie_actor_optimizer(optimizer_state: Dict[str, Any], agent_state: Dict[str, Any]) -> Dict[str, Any]:
-    """The state of the optimizer of the actor of the agent `agent_state` (see `tie_actor_convolutions`), for the agent
-    where the actor uses the convolutions of the critic: without the unused ones."""
-    names = untied_actor_convolutions(agent_state)
-    if not names:
-        return optimizer_state
-    keep = [i for i, k in enumerate(names) if ".cnn_encoder.model." not in k]
-    new_index = {old: new for new, old in enumerate(keep)}
-    (group,) = optimizer_state["param_groups"]
-    return {
-        "state": {new_index[i]: v for i, v in optimizer_state["state"].items() if i in new_index},
-        "param_groups": [{**group, "params": list(range(len(keep)))}],
-    }
-
-
 def build_agent(
     fabric: Fabric,
     cfg: dotdict,
@@ -571,64 +503,16 @@ def build_agent(
     encoder_state: Optional[Dict[str, Tensor]] = None,
     decoder_sate: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[SACAEAgent, _FabricModule, _FabricModule, SACAEPolicy]:
+    """The agent of SAC-AE on the inputs of `algo.inputs`, from the spaces of the store (`obs_space`), with the decoder
+    of `algo.outputs`, and its policy, which shares the weights of the actor."""
     act_dim = prod(action_space.shape)
     target_entropy = -act_dim
 
     # Define the encoder and decoder and setup them with fabric.
     # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
     # we do not need it wrapped with the strategy inside actor and critic
-    cnn_channels = [prod(obs_space[k].shape[:-2]) for k in legacy_keys(cfg).image_keys]
-    mlp_dims = [obs_space[k].shape[0] for k in legacy_keys(cfg).vector_keys]
-    cnn_encoder = (
-        CNNEncoder(
-            in_channels=sum(cnn_channels),
-            features_dim=cfg.algo.encoder.features_dim,
-            keys=legacy_keys(cfg).image_keys,
-            screen_size=cfg.env.screen_size,
-            cnn_channels_multiplier=cfg.algo.encoder.cnn_channels_multiplier,
-        )
-        if legacy_keys(cfg).image_keys is not None and len(legacy_keys(cfg).image_keys) > 0
-        else None
-    )
-    mlp_encoder = (
-        MLPEncoder(
-            sum(mlp_dims),
-            legacy_keys(cfg).vector_keys,
-            cfg.algo.encoder.dense_units,
-            cfg.algo.encoder.mlp_layers,
-            hydra.utils.get_class(cfg.algo.encoder.dense_act),
-            cfg.algo.encoder.layer_norm,
-        )
-        if legacy_keys(cfg).vector_keys is not None and len(legacy_keys(cfg).vector_keys) > 0
-        else None
-    )
-    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
-    cnn_decoder = (
-        CNNDecoder(
-            cnn_encoder.conv_output_shape,
-            features_dim=encoder.output_dim,
-            keys=legacy_keys(cfg).decoder_image_keys,
-            channels=cnn_channels,
-            screen_size=cfg.env.screen_size,
-            cnn_channels_multiplier=cfg.algo.decoder.cnn_channels_multiplier,
-        )
-        if legacy_keys(cfg).decoder_image_keys is not None and len(legacy_keys(cfg).decoder_image_keys) > 0
-        else None
-    )
-    mlp_decoder = (
-        MLPDecoder(
-            encoder.output_dim,
-            mlp_dims,
-            legacy_keys(cfg).decoder_vector_keys,
-            cfg.algo.decoder.dense_units,
-            cfg.algo.decoder.mlp_layers,
-            hydra.utils.get_class(cfg.algo.decoder.dense_act),
-            cfg.algo.decoder.layer_norm,
-        )
-        if legacy_keys(cfg).decoder_vector_keys is not None and len(legacy_keys(cfg).decoder_vector_keys) > 0
-        else None
-    )
-    decoder = MultiDecoder(cnn_decoder, mlp_decoder)
+    encoder = build_encoder(cfg, obs_space)
+    decoder = MultiDecoder.from_config(cfg.algo.outputs, encoder, latent_size=encoder.output_dim)
     # The initialization of the official implementation, as the one of the actor and of the critic
     decoder.apply(weight_init)
     if encoder_state:
@@ -666,7 +550,7 @@ def build_agent(
     )
 
     if agent_state:
-        agent.load_state_dict(tie_actor_convolutions(agent_state))
+        agent.load_state_dict(agent_state)
 
     # Setup policy agent
     policy_fabric = get_single_device_fabric(fabric)
@@ -678,7 +562,7 @@ def build_agent(
         action_low=action_space.low,
         action_high=action_space.high,
         device=policy_fabric.device,
-        cnn_keys=legacy_keys(cfg).image_keys,
+        keys=encoder.keys,
     )
 
     # The encoder layers of the actor are tied with the ones of the critic (see `SACAEAgent`): they are trained only

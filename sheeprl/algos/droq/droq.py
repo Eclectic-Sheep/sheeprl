@@ -19,6 +19,7 @@ from sheeprl.algos.sac.sac import SAC, SACState
 from sheeprl.core import autocast, run, update
 from sheeprl.data.samplers import TransitionSampler
 from sheeprl.data.store import ReplayStore
+from sheeprl.models.io import MultiEncoder
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict
@@ -54,8 +55,8 @@ class DroQ(SAC):
     name = "DroQ"
     buffer_dtype = np.float32
 
-    def make_agent(self, obs_space: gym.spaces.Dict, action_space: gym.spaces.Box) -> Tuple[DROQAgent, SACPolicy]:
-        return build_agent(self.fabric, self.cfg, obs_space, action_space)
+    def make_agent(self, encoder: MultiEncoder, action_space: gym.spaces.Box) -> Tuple[DROQAgent, SACPolicy]:
+        return build_agent(self.fabric, self.cfg, encoder, action_space)
 
     def batches(
         self, state: SACState, buffer: ReplayStore, n_steps: int, iteration: int
@@ -68,7 +69,8 @@ class DroQ(SAC):
         for i, batch in enumerate(buffer.batches(n_steps, batch_size)):
             if i == 0:
                 # After the batches of the critics, which `batches` samples (or prefetched) all at once
-                actor_observations = buffer.sample(batch_size, sampler=actor_sampler)["observations"][0].float()
+                actor_sample = buffer.sample(batch_size, sampler=actor_sampler)
+                actor_observations = self.encoder({k: actor_sample[k][0].float() for k in self.encoder.keys})
             if i == n_steps - 1:
                 # The actor and the entropy coefficient are updated once, after the last critic update
                 batch["actor_observations"] = actor_observations
@@ -77,6 +79,7 @@ class DroQ(SAC):
     def train_step(self, state: SACState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         fabric, cfg = self.fabric, self.cfg
         agent = state.agent
+        batch = self.encode(batch)
         # The losses are compiled when `algo.compile.enabled` is set
         mark_gradient_step(fabric, cfg)
 
