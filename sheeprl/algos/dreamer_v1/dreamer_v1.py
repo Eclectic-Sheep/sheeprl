@@ -9,7 +9,7 @@ to finetune, the two phases of a gradient step (`world_model_learning`, `behavio
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Dict, Iterator, Optional, Tuple
 
 import gymnasium as gym
 import hydra
@@ -33,6 +33,7 @@ from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import dotdict
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -340,7 +341,7 @@ def train(
     actor_optimizer: _FabricOptimizer,
     critic_optimizer: _FabricOptimizer,
     data: Dict[str, Tensor],
-    cfg: Dict[str, Any],
+    cfg: dotdict,
 ) -> None:
     """Runs one-step update of the agent.
 
@@ -498,7 +499,7 @@ class DreamerV1(Algorithm):
 
     off_policy = True
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         # These arguments cannot be changed
         cfg.env.screen_size = 64
@@ -571,7 +572,7 @@ class DreamerV1(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = DreamerV1(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

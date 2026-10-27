@@ -5,7 +5,7 @@ from __future__ import annotations
 import warnings
 from typing import Any, Dict, Optional
 
-from sheeprl.utils.utils import Ratio
+from sheeprl.utils.utils import Ratio, dotdict
 
 
 class TrainSchedule:
@@ -31,7 +31,7 @@ class TrainSchedule:
 
     def __init__(
         self,
-        cfg: Dict[str, Any],
+        cfg: dotdict,
         world_size: int,
         steps_per_iteration: int,
         checkpoint: Optional[Dict[str, Any]] = None,

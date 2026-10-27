@@ -24,6 +24,8 @@ import torch
 from lightning import Fabric
 from torch import Tensor, nn
 
+from sheeprl.utils.utils import dotdict
+
 if TYPE_CHECKING:
     from sheeprl.core.collector import Policy, Writer
     from sheeprl.core.schedule import TrainSchedule
@@ -112,7 +114,7 @@ class Algorithm:
     # loop and by `load_trained_state`: the test episode normalizes its observations with it, frozen
     obs_normalizer: Optional[ObsNormalizer] = None
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         self.fabric = fabric
         self.cfg = cfg
 

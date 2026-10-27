@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from functools import partial
-from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
@@ -23,6 +23,7 @@ from sheeprl.algos.dreamer_v2.utils import init_weights as dv2_init_weights
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
+from sheeprl.utils.utils import dotdict
 
 if TYPE_CHECKING:
     from sheeprl.core.schedule import TrainSchedule
@@ -48,7 +49,7 @@ class Actor(DV2Actor):
         latent_state_size: int,
         actions_dim: Sequence[int],
         is_continuous: bool,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         init_std: float = 5.0,
         min_std: float = 1e-4,
         dense_units: int = 400,
@@ -152,7 +153,7 @@ class RSSM(nn.Module):
         transition_model (_FabricModule): the transition model described
             in [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
             The model is composed by a multi-layer perceptron to predict the prior state.
-        distribution_cfg (Dict[str, Any]): the configs of the distribution.
+        distribution_cfg (dotdict): the configs of the distribution.
         min_std (float): the minimum value of the standard deviation computed
             by the representation and transition models.
             Default to 0.1.
@@ -163,7 +164,7 @@ class RSSM(nn.Module):
         recurrent_model: _FabricModule,
         representation_model: _FabricModule,
         transition_model: _FabricModule,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         min_std: float = 0.1,
     ) -> None:
         super().__init__()
@@ -427,7 +428,7 @@ def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
@@ -440,7 +441,7 @@ def build_agent(
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
         is_continuous (bool): whether or not the actions are continuous.
-        cfg (DictConfig): the hyper-parameters of DreamerV1.
+        cfg (dotdict): the hyper-parameters of DreamerV1.
         obs_space (Dict[str, Any]): the observation space.
         world_model_state (Dict[str, Tensor], optional): the state loaded from a previous checkpoint of the world model.
             Default to None.

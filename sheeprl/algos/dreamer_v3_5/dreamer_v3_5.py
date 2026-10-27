@@ -57,7 +57,7 @@ LATENT_KEYS = ("deter", "stoch")
 STEP_ID_KEY = "stepid"
 
 
-def world_model_loss_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
+def world_model_loss_kwargs(cfg: dotdict) -> Dict[str, Any]:
     """The configuration of `world_model_loss`, as plain values."""
     world_model_cfg = cfg.algo.world_model
     scales = cfg.algo.loss_scales
@@ -333,7 +333,7 @@ def actor_critic_loss(
 
 def train(
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     world_model: WorldModel,
     actor: nn.Module,
     critic: nn.Module,
@@ -537,7 +537,7 @@ class DreamerV3_5Writer(DreamerV3Writer):
 
     dtype = np.float32
 
-    def __init__(self, cfg: Dict[str, Any], actions_dim: Sequence[int]) -> None:
+    def __init__(self, cfg: dotdict, actions_dim: Sequence[int]) -> None:
         super().__init__(cfg, actions_dim)
         self.stochastic_size = cfg.algo.world_model.stochastic_size
         self.stoch_dtype = np.uint8 if cfg.algo.world_model.discrete_size <= 256 else np.int64
@@ -583,7 +583,7 @@ class DreamerV3_5(Algorithm):
     random_warmup = False
     restart_crashed_envs = True
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         # These arguments cannot be changed
         cfg.env.frame_stack = -1
@@ -677,7 +677,7 @@ class DreamerV3_5(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = DreamerV3_5(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

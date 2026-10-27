@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Dict, Iterator, Optional, Tuple
 
 import gymnasium as gym
 import hydra
@@ -35,7 +35,7 @@ from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.obs import images_as_channels, prepare_obs, scale_images
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae_function, normalize_tensor
+from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor
 
 
 @dataclass
@@ -56,7 +56,7 @@ class PPOWriter(Writer):
     def __init__(
         self,
         fabric: Fabric,
-        cfg: Dict[str, Any],
+        cfg: dotdict,
         policy: PPOPolicy,
         clip_rewards: bool,
         rewards_dtype: Optional[np.dtype] = np.float32,
@@ -134,7 +134,7 @@ class PPO(Algorithm):
     """Every iteration plays `algo.rollout_steps` steps, then trains for `algo.update_epochs` epochs of minibatches
     of the rollout with the clipped surrogate objective."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         if "minedojo" in cfg.env.wrapper._target_.lower():
             raise ValueError(
@@ -259,7 +259,7 @@ class PPO(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = PPO(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

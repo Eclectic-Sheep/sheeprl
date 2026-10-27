@@ -1,5 +1,5 @@
 import copy
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
@@ -17,7 +17,7 @@ from sheeprl.algos.dreamer_v2.agent import build_agent as dv2_build_agent
 from sheeprl.algos.dreamer_v2.utils import init_weights
 from sheeprl.models.models import MLP
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
-from sheeprl.utils.utils import unwrap_fabric
+from sheeprl.utils.utils import dotdict, unwrap_fabric
 
 # In order to use the hydra.utils.get_class method, in this way the user can
 # specify in the configs the name of the class without having to know where
@@ -30,7 +30,7 @@ def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, torch.Tensor]] = None,
     ensembles_state: Optional[Dict[str, torch.Tensor]] = None,
@@ -57,7 +57,7 @@ def build_agent(
         fabric (Fabric): the fabric object.
         action_dim (int): the dimension of the actions.
         is_continuous (bool): whether or not the actions are continuous.
-        cfg (DictConfig): the configs of P2E_DV2.
+        cfg (dotdict): the configs of P2E_DV2.
         obs_space (Dict[str, Any]): The observations space of the environment.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
             Default to None.

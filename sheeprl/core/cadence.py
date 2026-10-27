@@ -13,6 +13,7 @@ from sheeprl.core.schedule import TrainSchedule
 from sheeprl.utils import fs
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.timer import timer
+from sheeprl.utils.utils import dotdict
 
 
 class Cadence:
@@ -23,7 +24,7 @@ class Cadence:
     def __init__(
         self,
         fabric: Fabric,
-        cfg: Dict[str, Any],
+        cfg: dotdict,
         log_dir: str,
         aggregator: Optional[MetricAggregator],
         checkpoint: Optional[Dict[str, Any]] = None,

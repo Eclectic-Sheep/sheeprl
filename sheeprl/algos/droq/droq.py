@@ -3,7 +3,7 @@ high replay ratio. Written on the shared training loop of `sheeprl.core`, as `SA
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator, Tuple
+from typing import Dict, Iterator, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -21,6 +21,7 @@ from sheeprl.data.samplers import TransitionSampler
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import dotdict
 
 
 def next_target_fn(
@@ -113,7 +114,7 @@ class DroQ(SAC):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = DroQ(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

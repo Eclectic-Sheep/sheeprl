@@ -26,7 +26,7 @@ from sheeprl.utils.timer import phase_timer, training_timer
 from sheeprl.utils.utils import dotdict, save_configs
 
 
-def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainState, str, int]:
+def run(fabric: Fabric, cfg: dotdict, algo: Algorithm) -> Tuple[TrainState, str, int]:
     """Train `algo` as configured by `cfg`, resuming from `cfg.checkpoint.resume_from` if set.
 
     Every iteration plays `algo.steps_per_iteration` steps in every environment, then trains on the batches of
@@ -111,7 +111,7 @@ def run(fabric: Fabric, cfg: Dict[str, Any], algo: Algorithm) -> Tuple[TrainStat
 
 def load_trained_state(
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     algo: Algorithm,
     checkpoint: Dict[str, Any],
     observation_space: gym.spaces.Dict,

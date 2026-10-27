@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
+from typing import Dict, Iterator, Optional, Sequence, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -44,6 +44,7 @@ from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import dotdict
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -75,7 +76,7 @@ class DreamerV2Writer(Writer):
     # Whether a dry run ends the episodes at every step, for the episode buffer
     dry_run_episodes: bool = True
 
-    def __init__(self, cfg: Dict[str, Any], actions_dim: Sequence[int]) -> None:
+    def __init__(self, cfg: dotdict, actions_dim: Sequence[int]) -> None:
         self.cfg = cfg
         self.actions_dim = actions_dim
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
@@ -413,7 +414,7 @@ def train(
     actor_optimizer: Optimizer,
     critic_optimizer: Optimizer,
     data: Dict[str, Tensor],
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     actions_dim: Sequence[int],
 ) -> None:
     """Runs one-step update of the agent.
@@ -567,7 +568,7 @@ def train(
     return metrics
 
 
-def check_keys(fabric: Fabric, cfg: Dict[str, Any], obs_space: gym.spaces.Dict) -> None:
+def check_keys(fabric: Fabric, cfg: dotdict, obs_space: gym.spaces.Dict) -> None:
     """The observations must be a dictionary, and the keys of the decoder must be among the ones of the encoder."""
     if not isinstance(obs_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
@@ -600,7 +601,7 @@ class DreamerV2(Algorithm):
 
     off_policy = True
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         # These arguments cannot be changed
         cfg.env.screen_size = 64
@@ -675,7 +676,7 @@ class DreamerV2(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = DreamerV2(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

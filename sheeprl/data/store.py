@@ -35,6 +35,7 @@ from sheeprl.data.samplers import (
     TransitionSampler,
 )
 from sheeprl.utils import fs
+from sheeprl.utils.utils import dotdict
 
 if TYPE_CHECKING:
     from sheeprl.core.collector import Act
@@ -262,7 +263,7 @@ class ReplayStore:
         return self
 
 
-def rollout_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, size: int) -> ReplayStore:
+def rollout_store(fabric: Fabric, cfg: dotdict, log_dir: str, size: int) -> ReplayStore:
     """The store of an on-policy algorithm: a rollout of `size` steps of every environment of the process, whose
     minibatches have `algo.per_rank_batch_size` steps (from the rollouts of all the processes with
     `buffer.share_data`)."""
@@ -285,7 +286,7 @@ def rollout_store(fabric: Fabric, cfg: Dict[str, Any], log_dir: str, size: int) 
 
 
 def transition_store(
-    fabric: Fabric, cfg: Dict[str, Any], log_dir: str, obs_keys: Tuple[str, ...] = ("observations",)
+    fabric: Fabric, cfg: dotdict, log_dir: str, obs_keys: Tuple[str, ...] = ("observations",)
 ) -> ReplayStore:
     """The store of an off-policy algorithm trained on single steps (SAC, DroQ, SAC-AE): a replay buffer of
     `buffer.size` steps split among the environments of all the processes (1 in a dry run), sampled one step at a time
@@ -305,7 +306,7 @@ def transition_store(
     return ReplayStore(storage, sampler, fabric.device, cfg.buffer.from_numpy, cfg.buffer.prefetch)
 
 
-def curious_replay(cfg: Dict[str, Any], supported: bool = True) -> Optional[Dict[str, Any]]:
+def curious_replay(cfg: dotdict, supported: bool = True) -> Optional[Dict[str, Any]]:
     """The configuration of Curious Replay (`buffer.curious`) when it is enabled, else `None` (also with a configuration
     saved before it existed). It raises when it is enabled for an algorithm that doesn't train with it (not
     `supported`): its sequences would be drawn with priorities never updated."""
@@ -320,7 +321,7 @@ def curious_replay(cfg: Dict[str, Any], supported: bool = True) -> Optional[Dict
     return curious
 
 
-def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> int:
+def env_buffer_size(fabric: Fabric, cfg: dotdict, dry_run_size: int) -> int:
     """The capacity of the replay buffer of every environment: `buffer.size` split among the environments of all the
     processes, or `dry_run_size` in a dry run. It must hold a sequence of `algo.per_rank_sequence_length` steps (a dry
     run makes it large enough)."""
@@ -338,7 +339,7 @@ def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> i
 
 def sequence_store(
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     log_dir: str,
     buffer_size: int,
     sequence_length: int,

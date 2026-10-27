@@ -1,6 +1,6 @@
 import copy
 from math import prod
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import torch
@@ -14,6 +14,7 @@ from sheeprl.models.models import MLP
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ema_
+from sheeprl.utils.utils import dotdict
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -208,7 +209,7 @@ class DROQAgent(nn.Module):
 
 def build_agent(
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     action_space: gymnasium.spaces.Box,
     agent_state: Optional[Dict[str, Tensor]] = None,

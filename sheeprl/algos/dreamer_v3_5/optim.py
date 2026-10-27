@@ -65,6 +65,20 @@ class LaProp(Optimizer):
         )
         super().__init__(params, defaults)
 
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        """Restore the moments in at least float32, also for low-precision parameters."""
+        super().load_state_dict(state_dict)
+        # Optimizer.load_state_dict casts floating-point state to the dtype of the parameter. Read the original
+        # checkpoint tensors again: casting the downcast moments back to float32 would already have lost precision.
+        for group, saved_group in zip(self.param_groups, state_dict["param_groups"]):
+            for param, saved_id in zip(group["params"], saved_group["params"]):
+                saved_state = state_dict["state"].get(saved_id)
+                if not saved_state:
+                    continue
+                dtype = torch.promote_types(param.dtype, torch.float32)
+                for name in ("exp_avg", "exp_avg_sq"):
+                    self.state[param][name] = saved_state[name].to(device=param.device, dtype=dtype, copy=True)
+
     @torch.no_grad()
     def step(self, closure: Optional[Callable[[], Any]] = None) -> Optional[Any]:
         loss = None

@@ -21,6 +21,7 @@ from sheeprl.envs.wrappers import (
 )
 from sheeprl.utils import fs
 from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE
+from sheeprl.utils.utils import dotdict
 
 if _IS_ATARI_AVAILABLE:
     import ale_py
@@ -94,7 +95,7 @@ class UploadedRecordVideo(gym.wrappers.RecordVideo):
 
 
 def make_env(
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     seed: int,
     rank: int,
     run_name: Optional[str] = None,
@@ -107,7 +108,7 @@ def make_env(
     gymnasium.spaces.Dict.
 
     Args:
-        cfg (Dict[str, Any]): the configs of the environment to initialize.
+        cfg (dotdict): the configs of the environment to initialize.
         seed (int): the seed to use.
         rank (int): the rank of the process.
         run_name (str, optional): the name of the run.

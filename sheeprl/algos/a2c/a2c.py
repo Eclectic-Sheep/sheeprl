@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import gymnasium as gym
 import hydra
@@ -32,7 +32,7 @@ from sheeprl.utils.compile import compiled
 from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.obs import prepare_obs, scale_images
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae_function, normalize_tensor
+from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor
 
 
 @dataclass
@@ -72,7 +72,7 @@ class A2C(Algorithm):
     """Every iteration plays `algo.rollout_steps` steps, then does one optimizer step on the whole rollout: the
     gradients of its minibatches are accumulated."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         if "minedojo" in cfg.env.wrapper._target_.lower():
             raise ValueError(
@@ -206,7 +206,7 @@ class A2C(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = A2C(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

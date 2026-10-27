@@ -8,7 +8,7 @@ the exploration actor (`algo.policy.actor_type`) until the training starts, then
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Dict, Iterator, Optional, Tuple
 
 import gymnasium as gym
 import hydra
@@ -28,7 +28,7 @@ from sheeprl.utils import fs
 from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import unwrap_fabric
+from sheeprl.utils.utils import dotdict, unwrap_fabric
 
 
 @dataclass
@@ -50,7 +50,7 @@ class P2EDV1Finetuning(Algorithm):
     # No random actions: the policy trained by the exploration plays from the first step
     random_warmup = False
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict, exploration_cfg: Optional[dotdict] = None) -> None:
         """`exploration_cfg` is the configuration of the exploration to start from. Without it the algorithm only
         rebuilds the models of a finetuning from its own configuration, which already holds the values of the
         exploration (e.g. to evaluate a finetuning checkpoint)."""
@@ -61,7 +61,6 @@ class P2EDV1Finetuning(Algorithm):
             cfg.algo.gamma = exploration_cfg.algo.gamma
             cfg.algo.lmbda = exploration_cfg.algo.lmbda
             cfg.algo.horizon = exploration_cfg.algo.horizon
-            cfg.algo.layer_norm = exploration_cfg.algo.layer_norm
             cfg.algo.dense_units = exploration_cfg.algo.dense_units
             cfg.algo.mlp_layers = exploration_cfg.algo.mlp_layers
             cfg.algo.dense_act = exploration_cfg.algo.dense_act
@@ -104,7 +103,7 @@ class P2EDV1Finetuning(Algorithm):
             fabric, self.actions_dim, self.is_continuous, cfg, obs_space, schedule=schedule
         )
 
-        def optimizer(optimizer_cfg: Dict[str, Any], module: nn.Module) -> Optimizer:
+        def optimizer(optimizer_cfg: dotdict, module: nn.Module) -> Optimizer:
             return fabric.setup_optimizers(
                 hydra.utils.instantiate(optimizer_cfg, params=module.parameters(), _convert_="all")
             )
@@ -186,7 +185,7 @@ class P2EDV1Finetuning(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict, exploration_cfg: dotdict):
     algo = P2EDV1Finetuning(fabric, cfg, exploration_cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

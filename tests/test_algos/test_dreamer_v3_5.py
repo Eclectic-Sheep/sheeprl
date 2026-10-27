@@ -165,6 +165,43 @@ def test_laprop_is_the_optimizer_of_the_official_implementation():
     assert restored.param_groups[0]["step"] == 6
 
 
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32, torch.float64])
+def test_laprop_resumes_without_changing_the_updates(dtype, tmp_path):
+    weights = [nn.Parameter(torch.tensor([1.0, -2.0], dtype=dtype)), nn.Parameter(torch.ones(3, dtype=torch.float64))]
+    unused = nn.Parameter(torch.ones(2, dtype=dtype))
+    optimizer = LaProp([{"params": [weights[0], unused], "lr": 0.01}, {"params": [weights[1]], "lr": 0.02}], warmup=2)
+    for step in range(3):
+        for weight in weights:
+            weight.grad = torch.full_like(weight, 0.1234567 * (step + 1))
+        optimizer.step()
+
+    checkpoint_path = tmp_path / "optimizer.pt"
+    torch.save(optimizer.state_dict(), checkpoint_path)
+    # Checkpoints may be read on the CPU before loading into an optimizer on an accelerator.
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    resumed_weights = [nn.Parameter(weight.detach().clone()) for weight in weights]
+    resumed_unused = nn.Parameter(unused.detach().clone())
+    resumed = LaProp([{"params": [resumed_weights[0], resumed_unused]}, {"params": [resumed_weights[1]]}])
+    resumed.load_state_dict(checkpoint)
+
+    # Match the next updates of uninterrupted training, also when a parameter gets its first gradient after loading.
+    for step in range(3, 6):
+        for original, restored in zip([*weights, unused], [*resumed_weights, resumed_unused]):
+            original.grad = torch.full_like(original, 0.1234567 * (step + 1))
+            restored.grad = original.grad.clone()
+        optimizer.step()
+        resumed.step()
+        for original, restored in zip([*weights, unused], [*resumed_weights, resumed_unused]):
+            torch.testing.assert_close(restored, original, rtol=0, atol=0)
+            for name in ("exp_avg", "exp_avg_sq"):
+                torch.testing.assert_close(
+                    resumed.state[restored][name], optimizer.state[original][name], rtol=0, atol=0
+                )
+    # The checkpoint tensors must not have been downcast in place during loading.
+    for saved_state in checkpoint["state"].values():
+        assert saved_state["exp_avg"].dtype in (torch.float32, torch.float64)
+
+
 def test_the_block_linear_layer_has_block_diagonal_weights():
     torch.manual_seed(0)
     layer = BlockLinear(12, 8, blocks=4)

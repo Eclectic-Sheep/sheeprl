@@ -17,6 +17,7 @@ from lightning.pytorch.loggers.mlflow import MLFlowLogger
 
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
+from sheeprl.utils.utils import dotdict
 
 if not _IS_MLFLOW_AVAILABLE:
     raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
@@ -336,10 +337,10 @@ class MlflowModelManager(AbstractModelManager):
 
 def register_model_from_checkpoint(
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     state: Dict[str, Any],
     log_models_from_checkpoint: Callable[
-        [Fabric, gym.Env | gym.Wrapper, Dict[str, Any], Dict[str, Any]], Dict[str, ModelInfo]
+        [Fabric, gym.Env | gym.Wrapper, dotdict, Dict[str, Any]], Dict[str, ModelInfo]
     ],
 ):
     tracking_uri = getattr(cfg, "tracking_uri", None) or os.getenv("MLFLOW_TRACKING_URI", None)
@@ -391,9 +392,9 @@ def register_model_from_checkpoint(
 def register_model(
     fabric: Fabric,
     log_models: Callable[
-        [Dict[str, Any], Dict[str, torch.nn.Module | _FabricModule], str, str | None, str | None], Dict[str, ModelInfo]
+        [dotdict, Dict[str, torch.nn.Module | _FabricModule], str, str | None, str | None], Dict[str, ModelInfo]
     ],
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     models_to_log: Dict[str, torch.nn.Module | _FabricModule],
 ):
     if len(fabric.loggers) == 0:

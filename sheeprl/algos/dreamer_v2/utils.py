@@ -11,6 +11,7 @@ from torch import Tensor
 from torch.distributions import Independent, OneHotCategoricalStraightThrough
 
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
+from sheeprl.utils.utils import dotdict
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -78,7 +79,7 @@ def init_weights(m: nn.Module, mode: str = "uniform"):
             nn.init.constant_(m.bias.data, 0)
 
 
-def build_optimizer(optimizer_cfg: Dict[str, Any], params: Any) -> torch.optim.Optimizer:
+def build_optimizer(optimizer_cfg: dotdict, params: Any) -> torch.optim.Optimizer:
     """The optimizer of `optimizer_cfg` for `params`, with the weight decay of DreamerV2: before every step the weights
     are multiplied by `1 - weight_decay`, whatever the learning rate (`Optimizer._apply_weight_decay` of
     https://github.com/danijar/dreamerv2). Adam is built as AdamW with the weight decay divided by the learning rate,
@@ -141,7 +142,7 @@ def compute_lambda_values(
 
 
 def log_models_from_checkpoint(
-    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: dotdict, state: Dict[str, Any]
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))

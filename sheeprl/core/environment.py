@@ -14,6 +14,7 @@ from lightning import Fabric
 from sheeprl.envs.normalization import ObsNormalizer, RewardNormalizer
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
+from sheeprl.utils.utils import dotdict
 
 
 @dataclass
@@ -124,7 +125,7 @@ class GymEnvironment(Environment):
 
     @classmethod
     def from_config(
-        cls, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, restart_on_exception: bool = False
+        cls, fabric: Fabric, cfg: dotdict, log_dir: str, restart_on_exception: bool = False
     ) -> GymEnvironment:
         """The `cfg.env.num_envs` environments of the process (`make_env`), seeded differently on every process.
 

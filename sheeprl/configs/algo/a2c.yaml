@@ -12,6 +12,7 @@ gae_lambda: 0.95
 # with PyTorch on the device (the same results but for the last bits)
 gae_method: loop
 loss_reduction: sum
+normalize_advantages: False
 vf_coef: 1.0
 rollout_steps: 128
 dense_units: 64
@@ -29,6 +30,8 @@ encoder:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  # Orthogonal weights (gain 1) and zero biases for the linear layers
+  ortho_init: False
 
 # Actor
 actor:
@@ -36,6 +39,8 @@ actor:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  # Orthogonal weights and zero biases: gain sqrt(2) for the hidden layers, 0.01 for the heads
+  ortho_init: False
 
 # Critic
 critic:
@@ -43,6 +48,8 @@ critic:
   mlp_layers: ${algo.mlp_layers}
   dense_act: ${algo.dense_act}
   layer_norm: ${algo.layer_norm}
+  # Orthogonal weights and zero biases: gain sqrt(2) for the hidden layers, 1 for the output
+  ortho_init: False
 
 # Single optimizer for both actor and critic
 optimizer:

@@ -6,7 +6,7 @@ from __future__ import annotations
 import copy
 import warnings
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import gymnasium as gym
 import hydra
@@ -36,7 +36,7 @@ from sheeprl.utils.compile import compile_enabled, compiled, mark_gradient_step
 from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.obs import images_as_channels, prepare_obs
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import gae_function, normalize_tensor
+from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor
 
 
 @dataclass
@@ -51,7 +51,7 @@ class RecurrentPPOWriter(Writer):
     state and the actions that preceded it (the input of the LSTM). The rewards of the episodes truncated by the time
     limit are bootstrapped with the values of `policy`."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any], policy: RecurrentPPOPolicy) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict, policy: RecurrentPPOPolicy) -> None:
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
@@ -215,7 +215,7 @@ class PPORecurrent(Algorithm):
     epochs of `algo.per_rank_num_batches` minibatches of sequences, each starting from the recurrent state stored at
     its first step."""
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         if "minedojo" in cfg.env.wrapper._target_.lower():
             raise ValueError(
@@ -415,7 +415,7 @@ class PPORecurrent(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = PPORecurrent(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

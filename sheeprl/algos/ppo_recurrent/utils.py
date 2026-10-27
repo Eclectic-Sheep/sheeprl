@@ -8,6 +8,7 @@ from lightning import Fabric
 from sheeprl.algos.ppo.utils import AGGREGATOR_KEYS as ppo_aggregator_keys
 from sheeprl.algos.ppo.utils import MODELS_TO_REGISTER as ppo_models_to_register
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
+from sheeprl.utils.utils import dotdict
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -18,7 +19,7 @@ MODELS_TO_REGISTER = ppo_models_to_register
 
 
 def log_models_from_checkpoint(
-    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: dotdict, state: Dict[str, Any]
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))

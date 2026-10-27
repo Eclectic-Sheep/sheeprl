@@ -1,6 +1,6 @@
 import copy
 from math import prod
-from typing import Any, Dict, Optional, Sequence, SupportsFloat, Tuple, Union
+from typing import Dict, Optional, Sequence, SupportsFloat, Tuple, Union
 
 import gymnasium
 import numpy as np
@@ -17,6 +17,7 @@ from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ema_
 from sheeprl.utils.obs import prepare_obs
+from sheeprl.utils.utils import dotdict
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -64,7 +65,7 @@ class SACActor(nn.Module):
         self,
         observation_dim: int,
         action_dim: int,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         hidden_size: int = 256,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
@@ -75,7 +76,7 @@ class SACActor(nn.Module):
             observation_dim (int): the input dimensions. Can be either an integer
                 or a sequence of integers.
             action_dim (int): the action dimension.
-            distribution_cfg (Dict[str, Any]): the configs of the distributions.
+            distribution_cfg (dotdict): the configs of the distributions.
             hidden_size (int): the hidden sizes for both of the two-layer MLP.
                 Defaults to 256.
             action_low (Union[SupportsFloat, NDArray], optional): the action lower bound.
@@ -332,7 +333,7 @@ class SACPolicy(nn.Module, Policy):
 
 def build_agent(
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     action_space: gymnasium.spaces.Box,
     agent_state: Optional[Dict[str, Tensor]] = None,

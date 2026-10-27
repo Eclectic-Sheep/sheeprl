@@ -8,7 +8,7 @@ the same experience (zero-shot). The writer is the one of Dreamer-V2 (`sheeprl.a
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
+from typing import Dict, Iterator, Optional, Sequence, Tuple
 
 import gymnasium as gym
 import torch
@@ -34,7 +34,7 @@ from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric,
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import unwrap_fabric
+from sheeprl.utils.utils import dotdict, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -292,7 +292,7 @@ def train(
     actor_task_optimizer: _FabricOptimizer,
     critic_task_optimizer: _FabricOptimizer,
     data: Dict[str, Tensor],
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     ensembles: _FabricModule,
     ensemble_optimizer: _FabricOptimizer,
     actor_exploration: _FabricModule,
@@ -495,7 +495,7 @@ class P2EDV2Exploration(Algorithm):
 
     off_policy = True
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         # These arguments cannot be changed
         cfg.env.screen_size = 64
@@ -522,7 +522,7 @@ class P2EDV2Exploration(Algorithm):
             self._policy,
         ) = build_agent(fabric, self.actions_dim, self.is_continuous, cfg, obs_space)
 
-        def optimizer(optimizer_cfg: Dict[str, Any], module: nn.Module) -> Optimizer:
+        def optimizer(optimizer_cfg: dotdict, module: nn.Module) -> Optimizer:
             return fabric.setup_optimizers(build_optimizer(optimizer_cfg, module.parameters()))
 
         state = P2EDV2ExplorationState(
@@ -616,7 +616,7 @@ class P2EDV2Exploration(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = P2EDV2Exploration(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

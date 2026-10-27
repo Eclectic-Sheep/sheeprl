@@ -1,7 +1,7 @@
 import importlib
 import os
 import warnings
-from typing import Any, Callable, Dict
+from typing import Callable
 
 import hydra
 import torch
@@ -78,11 +78,11 @@ def resume_from_checkpoint(cfg: DictConfig) -> DictConfig:
     return cfg
 
 
-def run_algorithm(cfg: Dict[str, Any]):
+def run_algorithm(cfg: dotdict):
     """Run the algorithm specified in the configuration.
 
     Args:
-        cfg (Dict[str, Any]): the loaded configuration.
+        cfg (dotdict): the loaded configuration.
     """
 
     # Torch settings
@@ -187,7 +187,7 @@ def run_algorithm(cfg: Dict[str, Any]):
     # when multiprocessing is used with a `spawn` method (default with DDP strategy).
     # https://github.com/Lightning-AI/pytorch-lightning/blob/f23b3b1e7fdab1d325f79f69a28706d33144f27e/src/lightning/fabric/strategies/launchers/multiprocessing.py#L112
     def reproducible(func):
-        def wrapper(fabric: Fabric, cfg: Dict[str, Any], *args, **kwargs):
+        def wrapper(fabric: Fabric, cfg: dotdict, *args, **kwargs):
             if cfg.cublas_workspace_config is not None:
                 os.environ["CUBLAS_WORKSPACE_CONFIG"] = cfg.cublas_workspace_config
             fabric.seed_everything(cfg.seed)
@@ -270,11 +270,11 @@ def eval_algorithm(cfg: DictConfig):
     fabric.launch(finalizing_loggers(command), cfg, state)
 
 
-def check_configs(cfg: Dict[str, Any]):
+def check_configs(cfg: dotdict):
     """Check the validity of the configuration.
 
     Args:
-        cfg (Dict[str, Any]): the loaded configuration to check.
+        cfg (dotdict): the loaded configuration to check.
     """
     if cfg.float32_matmul_precision not in {"medium", "high", "highest"}:
         raise ValueError(
@@ -314,7 +314,9 @@ def check_configs(cfg: Dict[str, Any]):
             UserWarning,
         )
         cfg.model_manager.disabled = True
-    if cfg.algo.learning_starts is not None and cfg.algo.learning_starts < 0:
+    # The on-policy algorithms have no `learning_starts`
+    learning_starts = cfg.algo.get("learning_starts")
+    if learning_starts is not None and learning_starts < 0:
         raise ValueError("The `algo.learning_starts` parameter must be greater or equal to zero.")
     if cfg.algo.get("compile") is not None and not isinstance(cfg.algo.compile, dict):
         raise ValueError(

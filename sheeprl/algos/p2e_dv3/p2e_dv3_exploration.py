@@ -16,7 +16,6 @@ import hydra
 import torch
 from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule, _FabricOptimizer
-from omegaconf import DictConfig
 from torch import Tensor, nn
 from torch.distributions import Independent
 from torch.optim import Optimizer
@@ -43,7 +42,7 @@ from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
-from sheeprl.utils.utils import unwrap_fabric
+from sheeprl.utils.utils import dotdict, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -159,7 +158,7 @@ def train(
     actor_task_optimizer: _FabricOptimizer,
     critic_task_optimizer: _FabricOptimizer,
     data: Dict[str, Tensor],
-    cfg: DictConfig,
+    cfg: dotdict,
     ensembles: _FabricModule,
     ensemble_optimizer: _FabricOptimizer,
     actor_exploration: _FabricModule,
@@ -412,7 +411,7 @@ class P2EDV3Exploration(Algorithm):
     # The test episode samples the actions of the policy
     greedy_test = False
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         # These arguments cannot be changed
         cfg.env.frame_stack = 1
@@ -482,7 +481,7 @@ class P2EDV3Exploration(Algorithm):
             self._policy,
         ) = build_agent(fabric, self.actions_dim, self.is_continuous, cfg, obs_space)
 
-        def optimizer(optimizer_cfg: Dict[str, Any], module: nn.Module) -> Optimizer:
+        def optimizer(optimizer_cfg: dotdict, module: nn.Module) -> Optimizer:
             return fabric.setup_optimizers(
                 hydra.utils.instantiate(optimizer_cfg, params=module.parameters(), _convert_="all")
             )
@@ -590,7 +589,7 @@ class P2EDV3Exploration(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = P2EDV3Exploration(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

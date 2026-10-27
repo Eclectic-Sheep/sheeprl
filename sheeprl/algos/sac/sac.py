@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Dict, Iterator, Optional, Tuple
 
 import gymnasium as gym
 import hydra
@@ -22,6 +22,7 @@ from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import dotdict
 
 
 def critic_loss_fn(
@@ -63,7 +64,7 @@ class SACWriter(Writer):
     and rewards keep the dtype of the environments and the flags are `uint8`.
     """
 
-    def __init__(self, cfg: Dict[str, Any], dtype: Optional[np.dtype] = None) -> None:
+    def __init__(self, cfg: dotdict, dtype: Optional[np.dtype] = None) -> None:
         self.cfg = cfg
         self.dtype = dtype
         self.mlp_keys = cfg.algo.mlp_keys.encoder
@@ -104,7 +105,7 @@ def train(
     alpha_optimizer: Optimizer,
     data: Dict[str, Tensor],
     iteration: int,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     policy_steps_per_iter: int,
 ):
     metrics: Dict[str, Tensor] = {}
@@ -154,7 +155,7 @@ class SAC(Algorithm):
     # The dtype of the values written in the replay buffer (`SACWriter`)
     buffer_dtype: Optional[np.dtype] = None
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         if "minedojo" in cfg.env.wrapper._target_.lower():
             raise ValueError(
@@ -247,7 +248,7 @@ class SAC(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = SAC(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

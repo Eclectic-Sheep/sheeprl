@@ -12,7 +12,7 @@ from torch import Tensor
 from torch.distributions import Distribution, Independent, Normal
 
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
-from sheeprl.utils.utils import unwrap_fabric
+from sheeprl.utils.utils import dotdict, unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -108,7 +108,7 @@ def compute_stochastic_state(
 
 
 def log_models(
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     models_to_log: Dict[str, torch.nn.Module | _FabricModule],
     run_id: str,
     experiment_id: str | None = None,
@@ -132,7 +132,7 @@ def log_models(
 
 
 def log_models_from_checkpoint(
-    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: dotdict, state: Dict[str, Any]
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))

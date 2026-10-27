@@ -51,6 +51,7 @@ from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import dotdict
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -87,7 +88,7 @@ class DreamerV3Writer(Writer):
     # keeps the ones of the environments
     dtype: Optional[np.dtype] = None
 
-    def __init__(self, cfg: Dict[str, Any], actions_dim: Sequence[int]) -> None:
+    def __init__(self, cfg: dotdict, actions_dim: Sequence[int]) -> None:
         self.cfg = cfg
         self.actions_dim = actions_dim
         self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
@@ -163,7 +164,7 @@ class DreamerV3Writer(Writer):
         return {}
 
 
-def world_model_loss_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
+def world_model_loss_kwargs(cfg: dotdict) -> Dict[str, Any]:
     """The configuration of `world_model_loss`, as plain values."""
     world_model_cfg = cfg.algo.world_model
     return {
@@ -336,7 +337,7 @@ def world_model_loss(
 
 def world_model_learning(
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     world_model: WorldModel,
     world_optimizer: Optimizer,
     data: Dict[str, Tensor],
@@ -569,7 +570,7 @@ def critic_loss(
 
 def behaviour_learning(
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     world_model: WorldModel,
     actor: nn.Module,
     critic: nn.Module,
@@ -656,7 +657,7 @@ def train(
     actor_optimizer: Optimizer,
     critic_optimizer: Optimizer,
     data: Dict[str, Tensor],
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     is_continuous: bool,
     actions_dim: Sequence[int],
     moments: Moments,
@@ -731,7 +732,7 @@ class DreamerV3(Algorithm):
     greedy_test = False
     restart_crashed_envs = True
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         # These arguments cannot be changed
         cfg.env.frame_stack = -1
@@ -857,7 +858,7 @@ class DreamerV3(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = DreamerV3(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 

@@ -15,7 +15,7 @@ from sheeprl.core.loop import load_trained_state
 from sheeprl.envs.normalization import ObsNormalizer
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
-from sheeprl.utils.utils import unwrap_fabric
+from sheeprl.utils.utils import dotdict, unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 def run_test(
     policy: Policy,
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     log_dir: str,
     policy_step: int = 0,
     greedy: bool = True,
@@ -64,7 +64,7 @@ def run_test(
     return cumulative_rew
 
 
-def evaluate(fabric: Fabric, cfg: Dict[str, Any], checkpoint: Dict[str, Any], algo: Algorithm) -> None:
+def evaluate(fabric: Fabric, cfg: dotdict, checkpoint: Dict[str, Any], algo: Algorithm) -> None:
     """Test the policy of `algo` trained in `checkpoint` (`Algorithm.test`): the evaluation of `sheeprl-eval`."""
     logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
@@ -83,7 +83,7 @@ def evaluate(fabric: Fabric, cfg: Dict[str, Any], checkpoint: Dict[str, Any], al
 def log_models_from_checkpoint(
     fabric: Fabric,
     env: gym.Env | gym.Wrapper,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     checkpoint: Dict[str, Any],
     algo: Algorithm,
     models: Callable[[TrainState], Dict[str, Any]],

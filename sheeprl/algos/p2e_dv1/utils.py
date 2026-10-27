@@ -7,6 +7,7 @@ from lightning import Fabric
 
 from sheeprl.algos.dreamer_v1.utils import AGGREGATOR_KEYS as AGGREGATOR_KEYS_DV1
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
+from sheeprl.utils.utils import dotdict
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -51,7 +52,7 @@ MODELS_TO_REGISTER = {
 
 
 def log_models_from_checkpoint(
-    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: dotdict, state: Dict[str, Any]
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))

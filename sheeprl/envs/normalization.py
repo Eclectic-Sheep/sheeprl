@@ -30,6 +30,8 @@ import gymnasium as gym
 import numpy as np
 import torch
 
+from sheeprl.utils.utils import dotdict
+
 if TYPE_CHECKING:
     from lightning import Fabric
 
@@ -129,7 +131,7 @@ class ObsNormalizer:
         self.epsilon = epsilon
 
     @classmethod
-    def from_config(cls, cfg: Dict[str, Any], observation_space: gym.spaces.Dict) -> Optional[ObsNormalizer]:
+    def from_config(cls, cfg: dotdict, observation_space: gym.spaces.Dict) -> Optional[ObsNormalizer]:
         """The normalization of the vector observations the agent encodes (`algo.mlp_keys.encoder`), if
         `env.normalization.obs` is set; `None` otherwise (also for the configurations saved before the option)."""
         normalization = cfg.env.get("normalization") or {}
@@ -177,7 +179,7 @@ class RewardNormalizer:
         self.epsilon = epsilon
 
     @classmethod
-    def from_config(cls, cfg: Dict[str, Any], num_envs: int) -> Optional[RewardNormalizer]:
+    def from_config(cls, cfg: dotdict, num_envs: int) -> Optional[RewardNormalizer]:
         """The normalization of the rewards of `num_envs` environments with the discount factor of the algorithm
         (`algo.gamma`), if `env.normalization.rewards` is set; `None` otherwise (also for the configurations saved
         before the option)."""

@@ -27,6 +27,7 @@ from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.obs import images_as_channels
 from sheeprl.utils.registry import register_algorithm
+from sheeprl.utils.utils import dotdict
 
 # The most gradient steps whose batches are sampled (and moved to the device) at once
 MAX_SAMPLED_BATCHES = 16
@@ -107,7 +108,7 @@ class SACAEWriter(Writer):
     """Writes every step in the replay buffer, with the actions played in the environments. The stacked frames of an
     image are stored as its channels."""
 
-    def __init__(self, cfg: Dict[str, Any]) -> None:
+    def __init__(self, cfg: dotdict) -> None:
         self.cfg = cfg
         self.cnn_keys = cfg.algo.cnn_keys.encoder
 
@@ -148,7 +149,7 @@ def train(
     decoder_optimizer: Optimizer,
     data: Dict[str, Tensor],
     cumulative_per_rank_gradient_steps: int,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
 ):
     metrics: Dict[str, Tensor] = {}
     normalized_next_obs = {}
@@ -229,7 +230,7 @@ class SACAE(Algorithm):
 
     off_policy = True
 
-    def __init__(self, fabric: Fabric, cfg: Dict[str, Any]) -> None:
+    def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         if "minedojo" in cfg.env.wrapper._target_.lower():
             raise ValueError(
@@ -328,7 +329,7 @@ class SACAE(Algorithm):
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     algo = SACAE(fabric, cfg)
     state, log_dir, policy_step = run(fabric, cfg, algo)
 
