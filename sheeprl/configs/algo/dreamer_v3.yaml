@@ -21,11 +21,49 @@ learning_starts: 1024
 per_rank_pretrain_steps: 0
 per_rank_sequence_length: ???
 
-# Encoder and decoder keys
-cnn_keys:
-  decoder: ${algo.cnn_keys.encoder}
-mlp_keys:
-  decoder: ${algo.mlp_keys.encoder}
+# Inputs: the images resized and scaled to [-0.5, 0.5] into the CNN of the world model, the vectors squashed with the
+# symlog into its MLP. Outputs: the same keys reconstructed by the observation model, the images scored with the
+# mean squared error, the vectors with the one of their symlog
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.CNNEncoder
+      channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
+      stages: 4
+      activation: ${algo.world_model.encoder.cnn_act}
+      layer_norm: ${algo.world_model.encoder.cnn_layer_norm}
+  vector:
+    keys: []
+    transforms: [{_target_: sheeprl.transforms.Symlog}]
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.MLPEncoder
+      mlp_layers: ${algo.world_model.encoder.mlp_layers}
+      dense_units: ${algo.world_model.encoder.dense_units}
+      activation: ${algo.world_model.encoder.dense_act}
+      layer_norm: ${algo.world_model.encoder.mlp_layer_norm}
+outputs:
+  image:
+    keys: ${algo.inputs.image.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.CNNDecoder
+      channels_multiplier: ${algo.world_model.observation_model.cnn_channels_multiplier}
+      stages: 4
+      activation: ${algo.world_model.observation_model.cnn_act}
+      layer_norm: ${algo.world_model.observation_model.cnn_layer_norm}
+    likelihood: {_target_: sheeprl.utils.distribution.MSEDistribution, _partial_: true}
+  vector:
+    keys: ${algo.inputs.vector.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.MLPDecoder
+      mlp_layers: ${algo.world_model.observation_model.mlp_layers}
+      dense_units: ${algo.world_model.observation_model.dense_units}
+      activation: ${algo.world_model.observation_model.dense_act}
+      layer_norm: ${algo.world_model.observation_model.mlp_layer_norm}
+    likelihood: {_target_: sheeprl.utils.distribution.SymlogDistribution, _partial_: true}
 
 # Model related parameters
 cnn_layer_norm:

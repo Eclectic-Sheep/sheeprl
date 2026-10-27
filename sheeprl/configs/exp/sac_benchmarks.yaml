@@ -29,8 +29,9 @@ algo:
   optimier:
     lr: 3e-4
     eps: 1e-5
-  mlp_keys: 
-    encoder: [state]
+  inputs:
+    vector:
+      keys: [state]
 
 # Buffer
 buffer:

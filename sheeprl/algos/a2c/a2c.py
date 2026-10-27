@@ -29,7 +29,7 @@ from sheeprl.core import (
     run,
 )
 from sheeprl.utils.compile import compiled
-from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.obs import prepare_obs, scale_images
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor
@@ -81,7 +81,7 @@ class A2C(Algorithm):
                 "in order to play correctly the game. "
                 "As an alternative you can use one of the Dreamers' agents."
             )
-        if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
+        if legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys == []:
             raise RuntimeError(
                 "You should specify at least one CNN keys or MLP keys from the cli: "
                 "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
@@ -102,8 +102,8 @@ class A2C(Algorithm):
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
         if cfg.metric.log_level > 0:
-            self.fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
-            self.fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+            self.fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
+            self.fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
         actions_dim, is_continuous = actions_dim_of(action_space)
 
         # The agent of PPO
@@ -137,7 +137,7 @@ class A2C(Algorithm):
             next_obs = prepare_obs(
                 self.fabric.device,
                 rollout.last_step.next_obs,
-                cnn_keys=cfg.algo.cnn_keys.encoder,
+                cnn_keys=legacy_keys(cfg).image_keys,
                 num_envs=cfg.env.num_envs,
             )
             next_values = self.policy(state).get_values(next_obs)
@@ -176,7 +176,8 @@ class A2C(Algorithm):
         state.optimizer.zero_grad(set_to_none=True)
         policy_losses, value_losses = [], []
         for batch in minibatches:
-            obs = scale_images(batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder)
+            keys = legacy_keys(self.cfg)
+            obs = scale_images(batch, keys.image_keys, keys.vector_keys + keys.image_keys)
             # Compiled with `algo.compile.enabled`, without CUDA graphs: the gradients are accumulated
             with autocast(self.fabric):
                 loss, pg_loss, v_loss = compiled(a2c_loss, self.fabric, self.cfg, cuda_graphs=False)(

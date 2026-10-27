@@ -29,8 +29,8 @@ def test_the_agent_of_a_checkpoint_keeps_its_target_critics(algo):
         cfg = config(
             [
                 "exp=sac_ae",
-                "algo.cnn_keys.encoder=[rgb]",
-                "algo.mlp_keys.encoder=[state]",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[state]",
                 "algo.hidden_size=8",
                 "algo.dense_units=8",
                 "algo.cnn_channels_multiplier=1",
@@ -46,7 +46,7 @@ def test_the_agent_of_a_checkpoint_keeps_its_target_critics(algo):
         agent, encoder, decoder, _ = build_agent(fabric, cfg, obs_space, action_space)
         states = (encoder.state_dict(), decoder.state_dict())
     else:
-        cfg = config([f"exp={algo}", "algo.mlp_keys.encoder=[state]"])
+        cfg = config([f"exp={algo}", "algo.inputs.vector.keys=[state]"])
         obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (3,), np.float32)})
         agent, _ = build_agent(fabric, cfg, obs_space, action_space)
         states = ()

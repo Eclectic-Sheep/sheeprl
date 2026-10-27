@@ -35,6 +35,7 @@ from sheeprl.data.samplers import (
     TransitionSampler,
 )
 from sheeprl.utils import fs
+from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.utils import dotdict
 
 if TYPE_CHECKING:
@@ -273,7 +274,7 @@ def rollout_store(fabric: Fabric, cfg: dotdict, log_dir: str, size: int) -> Repl
         cfg.env.num_envs,
         memmap=cfg.buffer.memmap,
         memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
-        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+        obs_keys=legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys,
     )
     sampler = EpochSampler(
         cfg.algo.per_rank_batch_size,
@@ -363,7 +364,7 @@ def sequence_store(
     storage = ReplayBuffer(
         buffer_size,
         n_envs=cfg.env.num_envs,
-        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
+        obs_keys=legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys,
         memmap=cfg.buffer.memmap and not cfg.buffer.on_device,
         memmap_dir=fs.memmap_dir(cfg, log_dir, fabric.global_rank),
         device=fabric.device if cfg.buffer.on_device else None,

@@ -15,6 +15,12 @@ replay_ratio: 1.0
 learning_starts: 100
 per_rank_pretrain_steps: 0
 
+# Inputs: the vectors, concatenated as they are (the actor and the critics are MLPs on them)
+inputs:
+  vector:
+    keys: []
+    transforms: []
+    net: {_target_: sheeprl.models.IdentityEncoder}
 
 # Model related parameters
 # Actor

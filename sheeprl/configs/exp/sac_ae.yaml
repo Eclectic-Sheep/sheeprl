@@ -9,10 +9,16 @@ defaults:
 # Algorithm
 algo:
   per_rank_batch_size: 128
+  inputs:
+    image:
+      # The images stacked with the previous ones: the list replaces the one of the algorithm
+      transforms:
+        - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+        - {_target_: sheeprl.transforms.FrameStack, n: 3}
+        - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0}
 
 # Environmment
 env:
-  frame_stack: 3
   # The images of the official implementation (the size must be even)
   screen_size: 84
 

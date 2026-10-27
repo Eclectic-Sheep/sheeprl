@@ -38,11 +38,11 @@ PPO_ARGS = [
     "exp=ppo",
     "env=dummy",
     "env.id=continuous_dummy",
-    "algo.cnn_keys.encoder=[]",
-    "algo.mlp_keys.encoder=[state]",
+    "algo.inputs.image.keys=[]",
+    "algo.inputs.vector.keys=[state]",
     "algo.rollout_steps=4",
     "algo.per_rank_batch_size=4",
-    "env.normalization.obs=True",
+    "algo.inputs.vector.transforms=[{_target_:sheeprl.transforms.Standardize}]",
     "env.normalization.rewards=True",
 ]
 
@@ -222,7 +222,7 @@ def test_off_policy_algorithms_reject_the_normalization():
         "exp=sac",
         "env.id=Pendulum-v1",
         "dry_run=True",
-        "env.normalization.obs=True",
+        "algo.inputs.vector.transforms=[{_target_:sheeprl.transforms.Standardize}]",
         "root_dir=pytest_env_normalization_sac",
     ]
     try:

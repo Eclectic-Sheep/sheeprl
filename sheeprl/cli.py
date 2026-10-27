@@ -130,12 +130,10 @@ def run_algorithm(cfg: dotdict):
             )
         kwargs["exploration_cfg"] = exploration_cfg
         # Take environment configs from exploration
-        cfg.env.frame_stack = exploration_cfg.env.frame_stack
         cfg.env.screen_size = exploration_cfg.env.screen_size
         cfg.env.action_repeat = exploration_cfg.env.action_repeat
         cfg.env.grayscale = exploration_cfg.env.grayscale
         cfg.env.clip_rewards = exploration_cfg.env.clip_rewards
-        cfg.env.frame_stack_dilation = exploration_cfg.env.frame_stack_dilation
         cfg.env.max_episode_steps = exploration_cfg.env.max_episode_steps
         cfg.env.reward_as_observation = exploration_cfg.env.reward_as_observation
         _env_target = cfg.env.wrapper._target_.lower()

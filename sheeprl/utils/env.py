@@ -3,7 +3,7 @@ import shutil
 import tempfile
 import warnings
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Type
 
 import cv2
 import gymnasium as gym
@@ -156,20 +156,21 @@ def make_env(
             env = MaskVelocityWrapper(env)
 
         if not (
-            isinstance(cfg.algo.mlp_keys.encoder, list)
-            and isinstance(cfg.algo.cnn_keys.encoder, list)
-            and len(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder) > 0
+            isinstance(legacy_keys(cfg).vector_keys, list)
+            and isinstance(legacy_keys(cfg).image_keys, list)
+            and len(legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys) > 0
         ):
             raise ValueError(
-                "`algo.cnn_keys.encoder` and `algo.mlp_keys.encoder` must be lists of strings, got: "
-                f"cnn encoder keys `{cfg.algo.cnn_keys.encoder}` of type `{type(cfg.algo.cnn_keys.encoder)}` "
-                f"and mlp encoder keys `{cfg.algo.mlp_keys.encoder}` of type `{type(cfg.algo.mlp_keys.encoder)}`. "
+                "`algo.inputs.image.keys` and `algo.inputs.vector.keys` must be lists of strings, got: "
+                f"cnn encoder keys `{legacy_keys(cfg).image_keys}` of type `{type(legacy_keys(cfg).image_keys)}` "
+                f"and mlp encoder keys `{legacy_keys(cfg).vector_keys}` "
+                f"of type `{type(legacy_keys(cfg).vector_keys)}`. "
                 "Both must be non-empty lists."
             )
 
         # Create observation dict
-        encoder_cnn_keys_length = len(cfg.algo.cnn_keys.encoder)
-        encoder_mlp_keys_length = len(cfg.algo.mlp_keys.encoder)
+        encoder_cnn_keys_length = len(legacy_keys(cfg).image_keys)
+        encoder_mlp_keys_length = len(legacy_keys(cfg).vector_keys)
         if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) < 2:
             # Vector only observation
             if encoder_cnn_keys_length > 0:
@@ -177,12 +178,12 @@ def make_env(
                     warnings.warn(
                         "Multiple cnn keys have been specified and only one pixel observation "
                         f"is allowed in {cfg.env.id}, "
-                        f"only the first one is kept: {cfg.algo.cnn_keys.encoder[0]}"
+                        f"only the first one is kept: {legacy_keys(cfg).image_keys[0]}"
                     )
-                cnn_key = cfg.algo.cnn_keys.encoder[0]
+                cnn_key = legacy_keys(cfg).image_keys[0]
                 if encoder_mlp_keys_length > 0:
                     env = gym.wrappers.AddRenderObservation(
-                        env, render_only=False, render_key=cnn_key, obs_key=cfg.algo.mlp_keys.encoder[0]
+                        env, render_only=False, render_key=cnn_key, obs_key=legacy_keys(cfg).vector_keys[0]
                     )
                 else:
                     env = gym.wrappers.AddRenderObservation(env, render_only=True)
@@ -194,9 +195,9 @@ def make_env(
                     warnings.warn(
                         "Multiple mlp keys have been specified and only one pixel observation "
                         f"is allowed in {cfg.env.id}, "
-                        f"only the first one is kept: {cfg.algo.mlp_keys.encoder[0]}"
+                        f"only the first one is kept: {legacy_keys(cfg).vector_keys[0]}"
                     )
-                mlp_key = cfg.algo.mlp_keys.encoder[0]
+                mlp_key = legacy_keys(cfg).vector_keys[0]
                 env = gym.wrappers.TransformObservation(
                     env, lambda obs: {mlp_key: obs}, gym.spaces.Dict({mlp_key: env.observation_space})
                 )
@@ -206,14 +207,14 @@ def make_env(
                 warnings.warn(
                     "Multiple cnn keys have been specified and only one pixel observation "
                     f"is allowed in {cfg.env.id}, "
-                    f"only the first one is kept: {cfg.algo.cnn_keys.encoder[0]}"
+                    f"only the first one is kept: {legacy_keys(cfg).image_keys[0]}"
                 )
             elif encoder_cnn_keys_length == 0:
                 raise ValueError(
                     "You have selected a pixel observation but no cnn key has been specified. "
-                    "Please set at least one cnn key in the config file: `algo.cnn_keys.encoder=[your_cnn_key]`"
+                    "Please set at least one image key in the config file: `algo.inputs.image.keys=[your_image_key]`"
                 )
-            cnn_key = cfg.algo.cnn_keys.encoder[0]
+            cnn_key = legacy_keys(cfg).image_keys[0]
             env = gym.wrappers.TransformObservation(
                 env, lambda obs: {cnn_key: obs}, gym.spaces.Dict({cnn_key: env.observation_space})
             )
@@ -221,13 +222,13 @@ def make_env(
         if (
             len(
                 set(k for k in env.observation_space.keys()).intersection(
-                    set(cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder)
+                    set(legacy_keys(cfg).vector_keys + legacy_keys(cfg).image_keys)
                 )
             )
             == 0
         ):
             raise ValueError(
-                f"The user specified keys `{cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder}` "
+                f"The user specified keys `{legacy_keys(cfg).vector_keys + legacy_keys(cfg).image_keys}` "
                 "are not a subset of the "
                 f"environment `{env.observation_space.keys()}` observation keys. Please check your config file."
             )
@@ -235,7 +236,7 @@ def make_env(
         env_cnn_keys = set(
             [k for k in env.observation_space.spaces.keys() if len(env.observation_space[k].shape) in {2, 3}]
         )
-        cnn_keys = env_cnn_keys.intersection(set(cfg.algo.cnn_keys.encoder))
+        cnn_keys = env_cnn_keys.intersection(set(legacy_keys(cfg).image_keys))
 
         def transform_obs(obs: Dict[str, Any]):
             for k in cnn_keys:
@@ -285,12 +286,13 @@ def make_env(
             ),
         )
 
-        if cnn_keys is not None and len(cnn_keys) > 0 and cfg.env.frame_stack > 1:
-            if cfg.env.frame_stack_dilation <= 0:
+        frame_stack, frame_stack_dilation = legacy_frame_stack(cfg)
+        if cnn_keys is not None and len(cnn_keys) > 0 and frame_stack > 1:
+            if frame_stack_dilation <= 0:
                 raise ValueError(
-                    f"The frame stack dilation argument must be greater than zero, got: {cfg.env.frame_stack_dilation}"
+                    f"The frame stack dilation argument must be greater than zero, got: {frame_stack_dilation}"
                 )
-            env = FrameStack(env, cfg.env.frame_stack, cnn_keys, cfg.env.frame_stack_dilation)
+            env = FrameStack(env, frame_stack, cnn_keys, frame_stack_dilation)
 
         if cfg.env.actions_as_observation.num_stack > 0 and "diambra" not in cfg.env.wrapper._target_:
             env = ActionsAsObservationWrapper(env, **cfg.env.actions_as_observation)
@@ -332,6 +334,49 @@ def get_dummy_env(id: str):
     else:
         raise ValueError(f"Unrecognized dummy environment: {id}")
     return env
+
+
+class LegacyKeys(NamedTuple):
+    image_keys: List[str]
+    vector_keys: List[str]
+    decoder_image_keys: List[str]
+    decoder_vector_keys: List[str]
+
+
+def legacy_keys(cfg: dotdict) -> LegacyKeys:
+    """Transitional, removed once every algorithm builds its inputs from `algo.inputs` (`sheeprl.models.io`): the keys
+    of the inputs `image` and `vector` and of the outputs `image` and `vector`, for the code written for the former
+    `algo.cnn_keys` and `algo.mlp_keys`."""
+
+    def keys(section: Any, name: str) -> List[str]:
+        return list(((section or {}).get(name) or {}).get("keys") or [])
+
+    inputs, outputs = cfg.algo.get("inputs"), cfg.algo.get("outputs")
+    return LegacyKeys(keys(inputs, "image"), keys(inputs, "vector"), keys(outputs, "image"), keys(outputs, "vector"))
+
+
+def _legacy_transform(cfg: dotdict, input_name: str, cls_name: str) -> Optional[Dict[str, Any]]:
+    from sheeprl import transforms
+
+    cls = getattr(transforms, cls_name)
+    for transform in ((cfg.algo.get("inputs") or {}).get(input_name) or {}).get("transforms") or []:
+        if issubclass(hydra.utils.get_class(transform["_target_"]), cls):
+            return transform
+    return None
+
+
+def legacy_frame_stack(cfg: dotdict) -> Tuple[int, int]:
+    """Transitional, removed with the `FrameStack` wrapper: the frames and the dilation of the `FrameStack` transform of
+    the input `image`, `(1, 1)` without one."""
+    transform = _legacy_transform(cfg, "image", "FrameStack")
+    return (1, 1) if transform is None else (transform["n"], transform.get("dilation", 1))
+
+
+def legacy_standardize(cfg: dotdict) -> Optional[Tuple[float, float]]:
+    """Transitional, removed with `ObsNormalizer`: the `clip` and `epsilon` of the `Standardize` transform of the input
+    `vector`, `None` without one."""
+    transform = _legacy_transform(cfg, "vector", "Standardize")
+    return None if transform is None else (transform.get("clip", 10.0), transform.get("epsilon", 1e-8))
 
 
 def actions_dim_of(action_space: gym.Space) -> Tuple[Tuple[int, ...], bool]:

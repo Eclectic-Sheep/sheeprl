@@ -15,7 +15,7 @@ from sheeprl.utils.utils import dotdict
 
 CFG = dotdict(
     {
-        "algo": {"cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
+        "algo": {"inputs": {"vector": {"keys": ["state"]}}},
         "buffer": {"validate_args": False, "type": "sequential"},
         "env": {"clip_rewards": False},
         "dry_run": False,

@@ -277,8 +277,8 @@ def small_dreamer_v3_5(overrides=(), accelerator="cpu", precision="32-true", act
     rounding of the sum of bins as large as 4.85e8, which depends on the order of the sum (e.g. compiled or not)."""
     cfg = compose_cfg(
         [
-            "algo.cnn_keys.encoder=[rgb]",
-            "algo.mlp_keys.encoder=[state]",
+            "algo.inputs.image.keys=[rgb]",
+            "algo.inputs.vector.keys=[state]",
             "algo.dense_units=8",
             "algo.cnn_channels_multiplier=2",
             "algo.world_model.recurrent_model.recurrent_state_size=16",

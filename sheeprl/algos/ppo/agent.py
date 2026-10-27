@@ -17,6 +17,7 @@ from torch.distributions import Distribution, Independent, Normal, OneHotCategor
 from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
 from sheeprl.utils.compile import compiled_policy
+from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import per_layer_ortho_init_weights
 from sheeprl.utils.obs import prepare_obs
@@ -400,8 +401,8 @@ def build_agent(
         encoder_cfg=cfg.algo.encoder,
         actor_cfg=cfg.algo.actor,
         critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
-        mlp_keys=cfg.algo.mlp_keys.encoder,
+        cnn_keys=legacy_keys(cfg).image_keys,
+        mlp_keys=legacy_keys(cfg).vector_keys,
         screen_size=cfg.env.screen_size,
         distribution_cfg=cfg.distribution,
         is_continuous=is_continuous,
@@ -416,8 +417,8 @@ def build_agent(
         copy.deepcopy(agent.actor),
         copy.deepcopy(agent.critic),
         device=policy_fabric.device,
-        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
+        obs_keys=legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys,
+        cnn_keys=legacy_keys(cfg).image_keys,
     )
 
     # Setup training agent

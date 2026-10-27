@@ -12,9 +12,12 @@ algo:
   total_steps: 5000000
   per_rank_batch_size: 16
   per_rank_sequence_length: 64
-  cnn_keys:
-    encoder: [rgb]
-    decoder: [rgb]
+  inputs:
+    image:
+      keys: [rgb]
+  outputs:
+    image:
+      keys: [rgb]
 
 # Checkpoint
 checkpoint:

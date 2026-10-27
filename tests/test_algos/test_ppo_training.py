@@ -171,8 +171,8 @@ def small_on_policy(algo, actions, overrides=(), accelerator="cpu", tmp_path="."
             config_name="config",
             overrides=[
                 f"exp={algo}",
-                "algo.mlp_keys.encoder=[state]",
-                "algo.cnn_keys.encoder=[]",
+                "algo.inputs.vector.keys=[state]",
+                "algo.inputs.image.keys=[]",
                 "algo.dense_units=8",
                 *(["algo.normalize_advantages=True"] if algo == "ppo" else []),
                 *overrides,

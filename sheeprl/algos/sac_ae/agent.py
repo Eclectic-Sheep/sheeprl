@@ -18,6 +18,7 @@ from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
+from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import cnn_forward, ema_
 from sheeprl.utils.obs import prepare_obs
@@ -576,29 +577,29 @@ def build_agent(
     # Define the encoder and decoder and setup them with fabric.
     # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
     # we do not need it wrapped with the strategy inside actor and critic
-    cnn_channels = [prod(obs_space[k].shape[:-2]) for k in cfg.algo.cnn_keys.encoder]
-    mlp_dims = [obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder]
+    cnn_channels = [prod(obs_space[k].shape[:-2]) for k in legacy_keys(cfg).image_keys]
+    mlp_dims = [obs_space[k].shape[0] for k in legacy_keys(cfg).vector_keys]
     cnn_encoder = (
         CNNEncoder(
             in_channels=sum(cnn_channels),
             features_dim=cfg.algo.encoder.features_dim,
-            keys=cfg.algo.cnn_keys.encoder,
+            keys=legacy_keys(cfg).image_keys,
             screen_size=cfg.env.screen_size,
             cnn_channels_multiplier=cfg.algo.encoder.cnn_channels_multiplier,
         )
-        if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
+        if legacy_keys(cfg).image_keys is not None and len(legacy_keys(cfg).image_keys) > 0
         else None
     )
     mlp_encoder = (
         MLPEncoder(
             sum(mlp_dims),
-            cfg.algo.mlp_keys.encoder,
+            legacy_keys(cfg).vector_keys,
             cfg.algo.encoder.dense_units,
             cfg.algo.encoder.mlp_layers,
             hydra.utils.get_class(cfg.algo.encoder.dense_act),
             cfg.algo.encoder.layer_norm,
         )
-        if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
+        if legacy_keys(cfg).vector_keys is not None and len(legacy_keys(cfg).vector_keys) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
@@ -606,25 +607,25 @@ def build_agent(
         CNNDecoder(
             cnn_encoder.conv_output_shape,
             features_dim=encoder.output_dim,
-            keys=cfg.algo.cnn_keys.decoder,
+            keys=legacy_keys(cfg).decoder_image_keys,
             channels=cnn_channels,
             screen_size=cfg.env.screen_size,
             cnn_channels_multiplier=cfg.algo.decoder.cnn_channels_multiplier,
         )
-        if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
+        if legacy_keys(cfg).decoder_image_keys is not None and len(legacy_keys(cfg).decoder_image_keys) > 0
         else None
     )
     mlp_decoder = (
         MLPDecoder(
             encoder.output_dim,
             mlp_dims,
-            cfg.algo.mlp_keys.decoder,
+            legacy_keys(cfg).decoder_vector_keys,
             cfg.algo.decoder.dense_units,
             cfg.algo.decoder.mlp_layers,
             hydra.utils.get_class(cfg.algo.decoder.dense_act),
             cfg.algo.decoder.layer_norm,
         )
-        if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
+        if legacy_keys(cfg).decoder_vector_keys is not None and len(legacy_keys(cfg).decoder_vector_keys) > 0
         else None
     )
     decoder = MultiDecoder(cnn_decoder, mlp_decoder)
@@ -677,7 +678,7 @@ def build_agent(
         action_low=action_space.low,
         action_high=action_space.high,
         device=policy_fabric.device,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
+        cnn_keys=legacy_keys(cfg).image_keys,
     )
 
     # The encoder layers of the actor are tied with the ones of the critic (see `SACAEAgent`): they are trained only

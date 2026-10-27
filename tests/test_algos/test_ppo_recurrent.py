@@ -109,7 +109,7 @@ def test_the_policy_follows_the_updates_of_the_agent(accelerator):
     from sheeprl.algos.ppo_recurrent.agent import build_agent as build_agents
 
     cfg = config(
-        ["exp=ppo_recurrent", "env.num_envs=2", "algo.mlp_keys.encoder=[state]", "algo.rnn.lstm.hidden_size=8"]
+        ["exp=ppo_recurrent", "env.num_envs=2", "algo.inputs.vector.keys=[state]", "algo.rnn.lstm.hidden_size=8"]
     )
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (8,), np.float32)})
     fabric = Fabric(accelerator=accelerator, devices=1)
@@ -139,8 +139,8 @@ def small_ppo_recurrent(overrides=(), accelerator="cpu"):
             config_name="config",
             overrides=[
                 "exp=ppo_recurrent",
-                "algo.mlp_keys.encoder=[state]",
-                "algo.cnn_keys.encoder=[]",
+                "algo.inputs.vector.keys=[state]",
+                "algo.inputs.image.keys=[]",
                 "algo.rnn.lstm.hidden_size=8",
                 "algo.dense_units=8",
                 "algo.normalize_advantages=True",
@@ -303,7 +303,7 @@ def test_the_refreshed_recurrent_states_are_the_ones_of_the_policy_with_its_weig
     from sheeprl.algos.ppo_recurrent.agent import build_agent as build_agents
 
     cfg = config(
-        ["exp=ppo_recurrent", "env.num_envs=3", "algo.mlp_keys.encoder=[state]", "algo.rnn.lstm.hidden_size=8"]
+        ["exp=ppo_recurrent", "env.num_envs=3", "algo.inputs.vector.keys=[state]", "algo.rnn.lstm.hidden_size=8"]
     )
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (5,), np.float32)})
     torch.manual_seed(0)

@@ -46,7 +46,7 @@ from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import SAMPLED_STEPS, CuriousSequenceSampler
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
-from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -62,10 +62,10 @@ def world_model_loss_kwargs(cfg: dotdict) -> Dict[str, Any]:
     world_model_cfg = cfg.algo.world_model
     scales = cfg.algo.loss_scales
     return {
-        "cnn_keys": tuple(cfg.algo.cnn_keys.encoder),
-        "mlp_keys": tuple(cfg.algo.mlp_keys.encoder),
-        "cnn_decoder_keys": tuple(cfg.algo.cnn_keys.decoder),
-        "mlp_decoder_keys": tuple(cfg.algo.mlp_keys.decoder),
+        "cnn_keys": tuple(legacy_keys(cfg).image_keys),
+        "mlp_keys": tuple(legacy_keys(cfg).vector_keys),
+        "cnn_decoder_keys": tuple(legacy_keys(cfg).decoder_image_keys),
+        "mlp_decoder_keys": tuple(legacy_keys(cfg).decoder_vector_keys),
         "kl_free_nats": float(world_model_cfg.kl_free_nats),
         "continue_target": float(cfg.algo.gamma) if world_model_cfg.continue_discount else 1.0,
         "reward_grad": bool(world_model_cfg.reward_grad),
@@ -374,7 +374,7 @@ def train(
         # Every sequence starts an episode: the world model starts from zeros
         is_first = data["is_first"].float().clone()
         is_first[0] = 1
-    obs = {k: data[k] for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder}
+    obs = {k: data[k] for k in legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys}
     rewards = data["rewards"].float()
     terminated = data["terminated"].float()
     last = torch.maximum(terminated, data["truncated"].float())

@@ -1,22 +1,18 @@
 id: ???
 num_envs: 4
-frame_stack: 1
 sync_env: False
 screen_size: 64
 action_repeat: 1
 grayscale: False
 clip_rewards: False
-# On-policy algorithms only (`sheeprl/envs/normalization.py`): standardize the vector observations
-# (`algo.mlp_keys.encoder`) with their running mean and std, and divide the rewards by the running std of the
-# discounted return (with `algo.gamma`), then clip them. The statistics are saved in the checkpoints
+# On-policy algorithms only (`sheeprl/envs/normalization.py`): divide the rewards by the running std of the
+# discounted return (with `algo.gamma`), then clip them. The statistics are saved in the checkpoints. The observations
+# are standardized by the `sheeprl.transforms.Standardize` transform of an input
 normalization:
-  obs: False
   rewards: False
-  clip_obs: 10.0
   clip_rewards: 10.0
   epsilon: 1e-8
 capture_video: True
-frame_stack_dilation: 1
 actions_as_observation:
   num_stack: -1
   noop: "You MUST define the NOOP"

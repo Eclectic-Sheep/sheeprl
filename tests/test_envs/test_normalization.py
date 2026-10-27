@@ -18,11 +18,12 @@ OBS_SPACE = gym.spaces.Dict(
 )
 
 
-def normalization_cfg(**normalization):
+def normalization_cfg(obs=False, **normalization):
+    transforms = [{"_target_": "sheeprl.transforms.Standardize", "clip": 10.0, "epsilon": 1e-8}] if obs else []
     return dotdict(
         {
-            "env": {"normalization": {"clip_obs": 10.0, "clip_rewards": 10.0, "epsilon": 1e-8, **normalization}},
-            "algo": {"gamma": 0.9, "mlp_keys": {"encoder": ["state", "missing"]}},
+            "env": {"normalization": {"clip_rewards": 10.0, "epsilon": 1e-8, **normalization}},
+            "algo": {"gamma": 0.9, "inputs": {"vector": {"keys": ["state", "missing"], "transforms": transforms}}},
         }
     )
 

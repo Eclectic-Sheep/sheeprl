@@ -10,8 +10,9 @@ defaults:
 algo:
   total_steps: 65536
   per_rank_batch_size: 64
-  mlp_keys:
-    encoder: [state]
+  inputs:
+    vector:
+      keys: [state]
 
 # Distribution
 distribution:

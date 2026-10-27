@@ -24,10 +24,11 @@ algo:
   normalize_advantages: True
   vf_coef: 0.5
   max_grad_norm: 0.5
-  mlp_keys:
-    encoder: [state]
-  cnn_keys:
-    encoder: []
+  inputs:
+    image:
+      keys: []
+    vector:
+      keys: [state]
 
   # No shared encoder: the actor and the critic have their own networks
   encoder:

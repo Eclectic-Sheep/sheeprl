@@ -86,7 +86,7 @@ def test_the_buffer_holds_buffer_size_steps_of_the_process(buffer_type, tmp_path
                 "on_device": False,
             },
             "env": {"num_envs": 4},
-            "algo": {"per_rank_sequence_length": 5, "cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
+            "algo": {"per_rank_sequence_length": 5, "inputs": {"vector": {"keys": ["state"]}}},
         }
     )
     fabric = SimpleNamespace(world_size=2, global_rank=0, device="cpu")
@@ -152,10 +152,10 @@ DREAMER_ARGS = [
     "metric.log_level=0",
     "checkpoint.save_last=True",
     "algo.run_test=False",
-    "algo.cnn_keys.encoder=[]",
-    "algo.cnn_keys.decoder=[]",
-    "algo.mlp_keys.encoder=[state]",
-    "algo.mlp_keys.decoder=[state]",
+    "algo.inputs.image.keys=[]",
+    "algo.outputs.image.keys=[]",
+    "algo.inputs.vector.keys=[state]",
+    "algo.outputs.vector.keys=[state]",
     "algo.dense_units=8",
     "algo.world_model.recurrent_model.recurrent_state_size=8",
     "algo.world_model.representation_model.hidden_size=8",
@@ -345,8 +345,8 @@ def small_dreamer_v2(overrides=(), actions_dim=(3,), continuous=False, accelerat
             overrides=[
                 "exp=dreamer_v2",
                 "env=dummy",
-                "algo.cnn_keys.encoder=[rgb]",
-                "algo.mlp_keys.encoder=[state]",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[state]",
                 "algo.dense_units=8",
                 "algo.mlp_layers=2",
                 "algo.world_model.encoder.cnn_channels_multiplier=2",

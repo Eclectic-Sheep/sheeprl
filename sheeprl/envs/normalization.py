@@ -30,6 +30,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 
+from sheeprl.utils.env import legacy_keys, legacy_standardize
 from sheeprl.utils.utils import dotdict
 
 if TYPE_CHECKING:
@@ -132,13 +133,14 @@ class ObsNormalizer:
 
     @classmethod
     def from_config(cls, cfg: dotdict, observation_space: gym.spaces.Dict) -> Optional[ObsNormalizer]:
-        """The normalization of the vector observations the agent encodes (`algo.mlp_keys.encoder`), if
-        `env.normalization.obs` is set; `None` otherwise (also for the configurations saved before the option)."""
-        normalization = cfg.env.get("normalization") or {}
-        if not normalization.get("obs", False):
+        """The normalization of the vector observations the agent encodes (`algo.inputs.vector.keys`), if their input
+        has a `Standardize` transform; `None` otherwise."""
+        standardize = legacy_standardize(cfg)
+        if standardize is None:
             return None
-        keys = [k for k in cfg.algo.mlp_keys.encoder if k in observation_space.spaces]
-        return cls(observation_space, keys, clip=normalization.clip_obs, epsilon=normalization.epsilon)
+        clip, epsilon = standardize
+        keys = [k for k in legacy_keys(cfg).vector_keys if k in observation_space.spaces]
+        return cls(observation_space, keys, clip=clip, epsilon=epsilon)
 
     def update(self, obs: Dict[str, np.ndarray]) -> None:
         """Add `obs`, one row per environment, to the statistics."""

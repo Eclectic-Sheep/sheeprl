@@ -33,7 +33,7 @@ from sheeprl.core import (
     update,
 )
 from sheeprl.utils.compile import compile_enabled, compiled, mark_gradient_step
-from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.obs import images_as_channels, prepare_obs
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor
@@ -55,8 +55,8 @@ class RecurrentPPOWriter(Writer):
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
-        self.cnn_keys = cfg.algo.cnn_keys.encoder
-        self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+        self.cnn_keys = legacy_keys(cfg).image_keys
+        self.obs_keys = legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys
 
     def write(self, rollout: ReplayStore, step: EnvStep, act: Act) -> None:
         cfg = self.cfg
@@ -224,10 +224,10 @@ class PPORecurrent(Algorithm):
                 "in order to play correctly the game. "
                 "As an alternative you can use one of the Dreamers' agents."
             )
-        if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
+        if legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys == []:
             raise RuntimeError(
                 "You should specify at least one CNN keys or MLP keys from the cli: "
-                "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
+                "`algo.inputs.image.keys=[rgb]` or `algo.inputs.vector.keys=[state]`"
             )
         if not cfg.algo.per_rank_sequence_length or cfg.algo.per_rank_sequence_length <= 0:
             raise ValueError(f"The sequence length must be greater than zero, got: {cfg.algo.per_rank_sequence_length}")
@@ -249,8 +249,8 @@ class PPORecurrent(Algorithm):
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
         if cfg.metric.log_level > 0:
-            self.fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
-            self.fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+            self.fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
+            self.fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
         actions_dim, is_continuous = actions_dim_of(action_space)
         agent, self._policy = build_agent(self.fabric, actions_dim, is_continuous, cfg, obs_space)
 
@@ -285,14 +285,14 @@ class PPORecurrent(Algorithm):
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
             next_obs = {}
-            for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder:
+            for k in legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys:
                 next_obs[k] = rollout.last_step.next_obs[k]
-                if k in cfg.algo.cnn_keys.encoder:
+                if k in legacy_keys(cfg).image_keys:
                     next_obs[k] = next_obs[k].reshape(cfg.env.num_envs, -1, *next_obs[k].shape[-2:])
             next_obs = prepare_obs(
                 self.fabric.device,
                 next_obs,
-                cnn_keys=cfg.algo.cnn_keys.encoder,
+                cnn_keys=legacy_keys(cfg).image_keys,
                 num_envs=cfg.env.num_envs,
                 time_dim=True,
             )
@@ -343,8 +343,8 @@ class PPORecurrent(Algorithm):
                 # every epoch after the first one unrolls them again with the current weights, from the state before
                 # the first step of the rollout
                 # As the sequences, in single precision (`split_in_sequences`)
-                obs = {k: data[k].float() / 255.0 - 0.5 for k in cfg.algo.cnn_keys.encoder}
-                obs.update({k: data[k].float() for k in cfg.algo.mlp_keys.encoder})
+                obs = {k: data[k].float() / 255.0 - 0.5 for k in legacy_keys(cfg).image_keys}
+                obs.update({k: data[k].float() for k in legacy_keys(cfg).vector_keys})
                 with autocast(self.fabric):
                     prev_hx, prev_cx = recurrent_states(
                         state.agent,
@@ -371,9 +371,10 @@ class PPORecurrent(Algorithm):
     def train_step(self, state: PPORecurrentState, batch: Dict[str, Tensor], step: int) -> Dict[str, Tensor]:
         cfg = self.cfg.algo
         batch = dict(batch)
-        for k in cfg.cnn_keys.encoder:
+        keys = legacy_keys(self.cfg)
+        for k in keys.image_keys:
             batch[k] = batch[k] / 255.0 - 0.5
-        obs = {k: batch[k] for k in set(cfg.cnn_keys.encoder + cfg.mlp_keys.encoder)}
+        obs = {k: batch[k] for k in set(keys.image_keys + keys.vector_keys)}
         states = (batch["prev_hx"][:1], batch["prev_cx"][:1])
         mask = batch["mask"].unsqueeze(-1)
         if compile_enabled(self.fabric, self.cfg):

@@ -29,11 +29,44 @@ per_rank_sequence_length: 64
 # sequence; 0 to start the sequences from zeros (the `replay_context` of the official configuration)
 replay_context: 1
 
-# Encoder and decoder keys
-cnn_keys:
-  decoder: ${algo.cnn_keys.encoder}
-mlp_keys:
-  decoder: ${algo.mlp_keys.encoder}
+# Inputs: the images resized and scaled to [-0.5, 0.5] into the CNN of the world model, the vectors squashed with the
+# symlog into its MLP. Outputs: the same keys reconstructed by the observation model, the images scored with the
+# mean squared error, the vectors with the one of their symlog
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    net:
+      _target_: sheeprl.algos.dreamer_v3_5.agent.CNNEncoder
+      channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
+      stages: ${algo.world_model.encoder.cnn_stages}
+      kernel_size: ${algo.world_model.encoder.cnn_kernel_size}
+  vector:
+    keys: []
+    transforms: [{_target_: sheeprl.transforms.Symlog}]
+    net:
+      _target_: sheeprl.algos.dreamer_v3_5.agent.MLPEncoder
+      mlp_layers: ${algo.world_model.encoder.mlp_layers}
+      dense_units: ${algo.world_model.encoder.dense_units}
+outputs:
+  image:
+    keys: ${algo.inputs.image.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v3_5.agent.CNNDecoder
+      channels_multiplier: ${algo.world_model.observation_model.cnn_channels_multiplier}
+      stages: ${algo.world_model.observation_model.cnn_stages}
+      kernel_size: ${algo.world_model.observation_model.cnn_kernel_size}
+      block_space: ${algo.world_model.observation_model.block_space}
+    likelihood: {_target_: sheeprl.utils.distribution.MSEDistribution, _partial_: true}
+  vector:
+    keys: ${algo.inputs.vector.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v3_5.agent.MLPDecoder
+      mlp_layers: ${algo.world_model.observation_model.mlp_layers}
+      dense_units: ${algo.world_model.observation_model.dense_units}
+    likelihood: {_target_: sheeprl.utils.distribution.SymlogDistribution, _partial_: true}
 
 # Model related parameters
 dense_units: 1024

@@ -482,7 +482,7 @@ def test_a_rollout_is_a_store_whose_epoch_sampler_draws_the_minibatches(tmp_path
             "seed": 0,
             "env": {"num_envs": 2},
             "buffer": {"memmap": False, "from_numpy": False, "share_data": False},
-            "algo": {"per_rank_batch_size": 3, "cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
+            "algo": {"per_rank_batch_size": 3, "inputs": {"vector": {"keys": ["state"]}}},
         }
     )
     fabric = Fabric(accelerator="cpu", devices=1)

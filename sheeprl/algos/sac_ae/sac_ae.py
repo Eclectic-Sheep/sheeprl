@@ -24,6 +24,7 @@ from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Wri
 from sheeprl.data.store import ReplayStore
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled, mark_gradient_step
+from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.obs import images_as_channels
 from sheeprl.utils.registry import register_algorithm
@@ -110,7 +111,7 @@ class SACAEWriter(Writer):
 
     def __init__(self, cfg: dotdict) -> None:
         self.cfg = cfg
-        self.cnn_keys = cfg.algo.cnn_keys.encoder
+        self.cnn_keys = legacy_keys(cfg).image_keys
 
     def write(self, buffer: ReplayStore, step: EnvStep, act: Act) -> None:
         num_envs = len(step.rewards)
@@ -154,8 +155,8 @@ def train(
     metrics: Dict[str, Tensor] = {}
     normalized_next_obs = {}
     normalized_obs = {}
-    for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder:
-        if k in cfg.algo.cnn_keys.encoder:
+    for k in legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys:
+        if k in legacy_keys(cfg).image_keys:
             normalized_obs[k] = data[k] / 255.0
             normalized_next_obs[k] = data[f"next_{k}"] / 255.0
         else:
@@ -205,8 +206,8 @@ def train(
                 decoder,
                 normalized_obs,
                 data,
-                tuple(cfg.algo.cnn_keys.decoder),
-                tuple(cfg.algo.mlp_keys.decoder),
+                tuple(legacy_keys(cfg).decoder_image_keys),
+                tuple(legacy_keys(cfg).decoder_vector_keys),
                 cfg.algo.decoder.l2_lambda,
             )
         # One backward pass for both, then the step of the encoder and the one of the decoder
@@ -251,20 +252,21 @@ class SACAE(Algorithm):
             raise RuntimeError(
                 f"Unexpected action space, should be of type continuous (of type Box), got: {action_space}"
             )
-        keys = cfg.algo.cnn_keys, cfg.algo.mlp_keys
-        if all(len(set(k.encoder).intersection(set(k.decoder))) == 0 for k in keys):
-            raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjoint")
-        for kind, k in zip(("CNN", "MLP"), keys):
-            if len(set(k.decoder) - set(k.encoder)) > 0:
+        legacy = legacy_keys(cfg)
+        keys = (legacy.image_keys, legacy.decoder_image_keys), (legacy.vector_keys, legacy.decoder_vector_keys)
+        if all(len(set(encoder).intersection(set(decoder))) == 0 for encoder, decoder in keys):
+            raise RuntimeError("The image keys or the vector keys of the inputs and outputs must not be disjoint")
+        for kind, (encoder, decoder) in zip(("image", "vector"), keys):
+            if len(set(decoder) - set(encoder)) > 0:
                 raise RuntimeError(
-                    f"The {kind} keys of the decoder must be contained in the encoder ones. "
-                    f"Those keys are decoded without being encoded: {list(set(k.decoder))}"
+                    f"The {kind} keys of the outputs must be contained in the inputs ones. "
+                    f"Those keys are decoded without being encoded: {list(set(decoder))}"
                 )
         if cfg.metric.log_level > 0:
-            fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
-            fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
-            fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
-            fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
+            fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
+            fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
+            fabric.print("Decoder CNN keys:", legacy_keys(cfg).decoder_image_keys)
+            fabric.print("Decoder MLP keys:", legacy_keys(cfg).decoder_vector_keys)
 
         agent, encoder, decoder, self._policy = build_agent(fabric, cfg, obs_space, action_space)
 
@@ -293,7 +295,7 @@ class SACAE(Algorithm):
             decoder_optimizer=decoder_optimizer,
         )
         self.schedule = schedule
-        obs_keys = tuple(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder)
+        obs_keys = tuple(legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys)
         return state, transition_store(fabric, cfg, log_dir, obs_keys=obs_keys)
 
     def policy(self, state: SACAEState) -> SACAEPolicy:

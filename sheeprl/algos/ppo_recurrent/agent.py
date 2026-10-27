@@ -14,6 +14,7 @@ from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor, ortho_init
 from sheeprl.core.collector import Act, Policy
 from sheeprl.models.models import MLP, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
+from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.obs import prepare_obs
 from sheeprl.utils.utils import dotdict
@@ -501,8 +502,8 @@ def build_agent(
         rnn_cfg=cfg.algo.rnn,
         actor_cfg=cfg.algo.actor,
         critic_cfg=cfg.algo.critic,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
-        mlp_keys=cfg.algo.mlp_keys.encoder,
+        cnn_keys=legacy_keys(cfg).image_keys,
+        mlp_keys=legacy_keys(cfg).vector_keys,
         is_continuous=is_continuous,
         distribution_cfg=cfg.distribution,
         screen_size=cfg.env.screen_size,
@@ -528,8 +529,8 @@ def build_agent(
         cfg.algo.rnn.lstm.hidden_size,
         actions_dim,
         device=policy_fabric.device,
-        obs_keys=cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
+        obs_keys=legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys,
+        cnn_keys=legacy_keys(cfg).image_keys,
         reset_recurrent_state_on_done=cfg.algo.reset_recurrent_state_on_done,
     )
     # The step of the policy, compiled with `algo.compile` (`compiled_policy`)

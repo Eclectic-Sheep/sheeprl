@@ -3,11 +3,15 @@ total_steps: ???
 per_rank_batch_size: ???
 run_test: True
 
-# Encoder and decoder keys
-cnn_keys:
-  encoder: []
-mlp_keys:
-  encoder: []
+# The observations the agent reads (`howto/inputs_and_outputs.md`): named inputs, each a group of observation keys
+# with the transforms of every key (`sheeprl/transforms`) and one network on their concatenation. Every algorithm
+# ships the inputs `image` and `vector` without keys: the experiment sets them, and an input without keys is skipped
+inputs: {}
+# The observations reconstructed from the latent state (the algorithms with a decoder): named outputs, each a group of
+# encoded keys with one network and, for the Dreamers, the likelihood of the reconstructions
+outputs: {}
+# The observation keys stored as they are and never encoded, read by the algorithm (e.g. the action masks of MineDojo)
+extra_keys: []
 
 # Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start (a few minutes the
 # first time, then mostly reused from the cache of PyTorch). `mode` is the one of `torch.compile`: `reduce-overhead`

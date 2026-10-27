@@ -20,11 +20,42 @@ mlp_layers: 2
 dense_act: torch.nn.ReLU
 layer_norm: False
 
-# Encoder and decoder keys
-cnn_keys:
-  decoder: ${algo.cnn_keys.encoder}
-mlp_keys:
-  decoder: ${algo.mlp_keys.encoder}
+# Inputs: the images resized and scaled to [0, 1] into the CNN of SAC-AE, the vectors into an MLP; outputs: the same
+# keys reconstructed by the decoder (scored with the mean squared error by SAC-AE: no likelihood)
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0}
+    net:
+      _target_: sheeprl.algos.sac_ae.agent.CNNEncoder
+      features_dim: ${algo.encoder.features_dim}
+      channels_multiplier: ${algo.encoder.cnn_channels_multiplier}
+  vector:
+    keys: []
+    transforms: []
+    net:
+      _target_: sheeprl.algos.sac_ae.agent.MLPEncoder
+      features_dim: ${algo.encoder.features_dim}
+      dense_units: ${algo.encoder.dense_units}
+      mlp_layers: ${algo.encoder.mlp_layers}
+      dense_act: ${algo.encoder.dense_act}
+      layer_norm: ${algo.encoder.layer_norm}
+outputs:
+  image:
+    keys: ${algo.inputs.image.keys}
+    net:
+      _target_: sheeprl.algos.sac_ae.agent.CNNDecoder
+      channels_multiplier: ${algo.decoder.cnn_channels_multiplier}
+  vector:
+    keys: ${algo.inputs.vector.keys}
+    net:
+      _target_: sheeprl.algos.sac_ae.agent.MLPDecoder
+      dense_units: ${algo.decoder.dense_units}
+      mlp_layers: ${algo.decoder.mlp_layers}
+      dense_act: ${algo.decoder.dense_act}
+      layer_norm: ${algo.decoder.layer_norm}
 
 # Encoder
 encoder:

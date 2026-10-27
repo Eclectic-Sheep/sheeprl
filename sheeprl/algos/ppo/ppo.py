@@ -32,7 +32,7 @@ from sheeprl.core import (
     update,
 )
 from sheeprl.utils.compile import compiled, mark_gradient_step
-from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.obs import images_as_channels, prepare_obs, scale_images
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor
@@ -66,8 +66,8 @@ class PPOWriter(Writer):
         self.policy = policy
         self.clip_rewards = clip_rewards
         self.rewards_dtype = rewards_dtype
-        self.cnn_keys = cfg.algo.cnn_keys.encoder
-        self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+        self.cnn_keys = legacy_keys(cfg).image_keys
+        self.obs_keys = legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys
 
     def write(self, rollout: ReplayStore, step: EnvStep, act: Act) -> None:
         cfg = self.cfg
@@ -143,7 +143,7 @@ class PPO(Algorithm):
                 "in order to play correctly the game. "
                 "As an alternative you can use one of the Dreamers' agents."
             )
-        if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
+        if legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys == []:
             raise RuntimeError(
                 "You should specify at least one CNN keys or MLP keys from the cli: "
                 "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
@@ -167,8 +167,8 @@ class PPO(Algorithm):
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
         if cfg.metric.log_level > 0:
-            self.fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
-            self.fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
+            self.fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
+            self.fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
         actions_dim, is_continuous = actions_dim_of(action_space)
         agent, self._policy = build_agent(self.fabric, actions_dim, is_continuous, cfg, obs_space)
 
@@ -201,9 +201,11 @@ class PPO(Algorithm):
 
         # Estimate returns with GAE (https://arxiv.org/abs/1506.02438)
         with torch.inference_mode():
-            next_obs = {k: rollout.last_step.next_obs[k] for k in cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder}
+            next_obs = {
+                k: rollout.last_step.next_obs[k] for k in legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys
+            }
             next_obs = prepare_obs(
-                self.fabric.device, next_obs, cnn_keys=cfg.algo.cnn_keys.encoder, num_envs=cfg.env.num_envs
+                self.fabric.device, next_obs, cnn_keys=legacy_keys(cfg).image_keys, num_envs=cfg.env.num_envs
             )
             next_values = self.policy(state).get_values(next_obs)
             returns, advantages = self.gae(
@@ -232,7 +234,8 @@ class PPO(Algorithm):
         cfg = self.cfg.algo
         # The loss is compiled when `algo.compile.enabled` is set
         mark_gradient_step(self.fabric, self.cfg)
-        obs = scale_images(batch, cfg.cnn_keys.encoder, cfg.mlp_keys.encoder + cfg.cnn_keys.encoder)
+        keys = legacy_keys(self.cfg)
+        obs = scale_images(batch, keys.image_keys, keys.vector_keys + keys.image_keys)
         with autocast(self.fabric):
             loss, pg_loss, v_loss, ent_loss = compiled(ppo_loss, self.fabric, self.cfg)(
                 state.agent,

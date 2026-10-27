@@ -163,9 +163,9 @@ def small_sac_ae(overrides=(), accelerator="cpu"):
             overrides=[
                 "exp=sac_ae",
                 "env.screen_size=64",
-                "algo.cnn_keys.encoder=[rgb]",
-                "algo.mlp_keys.encoder=[]",
-                "algo.mlp_keys.decoder=[]",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[]",
+                "algo.outputs.vector.keys=[]",
                 "algo.hidden_size=8",
                 "algo.cnn_channels_multiplier=1",
                 "algo.encoder.features_dim=8",

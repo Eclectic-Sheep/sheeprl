@@ -36,6 +36,7 @@ from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.core.collector import Act
 from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_policy
+from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
 from sheeprl.utils.utils import dotdict, symlog
@@ -849,8 +850,8 @@ def build_agent(
     stochastic_size = world_model_cfg.stochastic_size * world_model_cfg.discrete_size
     latent_state_size = stochastic_size + recurrent_state_size
 
-    cnn_keys = cfg.algo.cnn_keys.encoder
-    mlp_keys = cfg.algo.mlp_keys.encoder
+    cnn_keys = legacy_keys(cfg).image_keys
+    mlp_keys = legacy_keys(cfg).vector_keys
     encoder_cfg = world_model_cfg.encoder
     cnn_encoder = (
         CNNEncoder(
@@ -916,8 +917,8 @@ def build_agent(
     )
 
     decoder_cfg = world_model_cfg.observation_model
-    cnn_decoder_keys = cfg.algo.cnn_keys.decoder
-    mlp_decoder_keys = cfg.algo.mlp_keys.decoder
+    cnn_decoder_keys = legacy_keys(cfg).decoder_image_keys
+    mlp_decoder_keys = legacy_keys(cfg).decoder_vector_keys
     cnn_decoder = (
         CNNDecoder(
             keys=cnn_decoder_keys,
@@ -1021,7 +1022,7 @@ def build_agent(
         recurrent_state_size,
         fabric.device,
         discrete_size=world_model_cfg.discrete_size,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
+        cnn_keys=legacy_keys(cfg).image_keys,
     )
     # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes

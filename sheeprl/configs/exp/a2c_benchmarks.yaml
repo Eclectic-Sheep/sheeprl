@@ -36,8 +36,9 @@ algo:
   # If you want to run this benchmark with older versions,
   # you need to move the `total_steps` and the `mlp_keys` config from `algo` to the root.
   total_steps: 65536
-  mlp_keys:
-    encoder: [state]
+  inputs:
+    vector:
+      keys: [state]
 
 # Buffer
 buffer:

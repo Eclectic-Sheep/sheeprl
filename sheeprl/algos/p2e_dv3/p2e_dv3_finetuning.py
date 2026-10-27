@@ -26,7 +26,7 @@ from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, 
 from sheeprl.core.evaluation import run_test
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import fs
-from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
@@ -88,12 +88,12 @@ class P2EDV3Finetuning(Algorithm):
             #   - With more environments, you will raise an exception when you add new experienves.
             if cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint:
                 cfg.env.num_envs = exploration_cfg.env.num_envs
-            # There must be the same cnn and mlp keys during exploration and finetuning
-            cfg.algo.cnn_keys = exploration_cfg.algo.cnn_keys
-            cfg.algo.mlp_keys = exploration_cfg.algo.mlp_keys
+            # The observations are read and reconstructed as during the exploration
+            cfg.algo.inputs = exploration_cfg.algo.inputs
+            cfg.algo.outputs = exploration_cfg.algo.outputs
+            cfg.algo.extra_keys = exploration_cfg.algo.extra_keys
 
         # These arguments cannot be changed
-        cfg.env.frame_stack = 1
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
@@ -104,25 +104,25 @@ class P2EDV3Finetuning(Algorithm):
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
         if (
-            len(set(cfg.algo.cnn_keys.encoder).intersection(set(cfg.algo.cnn_keys.decoder))) == 0
-            and len(set(cfg.algo.mlp_keys.encoder).intersection(set(cfg.algo.mlp_keys.decoder))) == 0
+            len(set(legacy_keys(cfg).image_keys).intersection(set(legacy_keys(cfg).decoder_image_keys))) == 0
+            and len(set(legacy_keys(cfg).vector_keys).intersection(set(legacy_keys(cfg).decoder_vector_keys))) == 0
         ):
             raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjointed")
-        if len(set(cfg.algo.cnn_keys.decoder) - set(cfg.algo.cnn_keys.encoder)) > 0:
+        if len(set(legacy_keys(cfg).decoder_image_keys) - set(legacy_keys(cfg).image_keys)) > 0:
             raise RuntimeError(
                 "The CNN keys of the decoder must be contained in the encoder ones. "
-                f"Those keys are decoded without being encoded: {list(set(cfg.algo.cnn_keys.decoder))}"
+                f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_image_keys))}"
             )
-        if len(set(cfg.algo.mlp_keys.decoder) - set(cfg.algo.mlp_keys.encoder)) > 0:
+        if len(set(legacy_keys(cfg).decoder_vector_keys) - set(legacy_keys(cfg).vector_keys)) > 0:
             raise RuntimeError(
                 "The MLP keys of the decoder must be contained in the encoder ones. "
-                f"Those keys are decoded without being encoded: {list(set(cfg.algo.mlp_keys.decoder))}"
+                f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_vector_keys))}"
             )
         if cfg.metric.log_level > 0:
-            fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
-            fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
-            fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
-            fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
+            fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
+            fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
+            fabric.print("Decoder CNN keys:", legacy_keys(cfg).decoder_image_keys)
+            fabric.print("Decoder MLP keys:", legacy_keys(cfg).decoder_vector_keys)
 
         # The exploration critics and the ensembles are not used: they are built to initialize the models in the same
         # order as the exploration did

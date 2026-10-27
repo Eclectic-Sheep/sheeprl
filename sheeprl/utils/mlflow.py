@@ -29,6 +29,8 @@ from mlflow.exceptions import RestException  # noqa
 from mlflow.models.model import ModelInfo  # noqa
 from mlflow.tracking import MlflowClient  # noqa
 
+from sheeprl.utils.env import legacy_keys
+
 VERSION_MD_TEMPLATE = "## **Version {}**\n"
 DESCRIPTION_MD_TEMPLATE = "### Description: \n{}\n"
 
@@ -361,10 +363,10 @@ def register_model_from_checkpoint(
     observation_space = env.observation_space
     if not isinstance(observation_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {observation_space}")
-    if cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder == []:
+    if legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys == []:
         raise RuntimeError(
             "You should specify at least one CNN keys or MLP keys from the cli: "
-            "`cnn_keys.encoder=[rgb]` or `mlp_keys.encoder=[state]`"
+            "`algo.inputs.image.keys=[rgb]` or `algo.inputs.vector.keys=[state]`"
         )
 
     mlflow.set_tracking_uri(tracking_uri)

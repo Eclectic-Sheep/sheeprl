@@ -20,6 +20,7 @@ from sheeprl.core.schedule import TrainSchedule
 from sheeprl.data.store import load_replay_buffer
 from sheeprl.envs.normalization import ObsNormalizer
 from sheeprl.utils import fs
+from sheeprl.utils.env import legacy_standardize
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.timer import phase_timer, training_timer
@@ -53,10 +54,11 @@ def run(fabric: Fabric, cfg: dotdict, algo: Algorithm) -> Tuple[TrainState, str,
         aggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(fabric.device)
 
     normalization = cfg.env.get("normalization") or {}
-    if algo.off_policy and (normalization.get("obs") or normalization.get("rewards")):
+    if algo.off_policy and (legacy_standardize(cfg) is not None or normalization.get("rewards")):
         raise ValueError(
-            "`env.normalization` is supported only by on-policy algorithms: the replay buffer of an off-policy "
-            "algorithm would keep observations and rewards normalized with statistics that change during the training"
+            "`Standardize` and `env.normalization` are supported only by on-policy algorithms: the replay buffer of an "
+            "off-policy algorithm would keep observations and rewards normalized with statistics that change during "
+            "the training"
         )
     schedule = TrainSchedule(cfg, fabric.world_size, algo.steps_per_iteration, checkpoint, algo.off_policy)
     env = GymEnvironment.from_config(fabric, cfg, log_dir, restart_on_exception=algo.restart_crashed_envs)
@@ -121,7 +123,7 @@ def load_trained_state(
 
     The state is built by `algo.build`, as for training. The store of the collected data is not needed: it is built in
     a temporary directory and discarded. The normalization of the observations the policy was trained with
-    (`env.normalization.obs`) is restored in `algo.obs_normalizer`, for the test.
+    (`Standardize`) is restored in `algo.obs_normalizer`, for the test.
     """
     with warnings.catch_warnings():
         # The warnings of the schedule are about the logging and checkpoint intervals of a training

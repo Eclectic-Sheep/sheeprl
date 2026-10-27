@@ -39,7 +39,7 @@ from sheeprl.core import (
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
-from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.model import ema_
@@ -79,7 +79,7 @@ class DreamerV2Writer(Writer):
     def __init__(self, cfg: dotdict, actions_dim: Sequence[int]) -> None:
         self.cfg = cfg
         self.actions_dim = actions_dim
-        self.obs_keys = cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder
+        self.obs_keys = legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys
         # The row written at the last step; created, and written, from the first observations of the environments
         self.step_data: Optional[Dict[str, np.ndarray]] = None
 
@@ -489,8 +489,8 @@ def train(
         rec_loss, posteriors, recurrent_states, losses = compiled(world_model_loss, fabric, cfg)(
             world_model,
             data,
-            cnn_keys=tuple(cfg.algo.cnn_keys.encoder),
-            mlp_keys=tuple(cfg.algo.mlp_keys.encoder),
+            cnn_keys=tuple(legacy_keys(cfg).image_keys),
+            mlp_keys=tuple(legacy_keys(cfg).vector_keys),
             stochastic_size=world_model_cfg.stochastic_size,
             discrete_size=world_model_cfg.discrete_size,
             recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
@@ -573,25 +573,25 @@ def check_keys(fabric: Fabric, cfg: dotdict, obs_space: gym.spaces.Dict) -> None
     if not isinstance(obs_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
     if (
-        len(set(cfg.algo.cnn_keys.encoder).intersection(set(cfg.algo.cnn_keys.decoder))) == 0
-        and len(set(cfg.algo.mlp_keys.encoder).intersection(set(cfg.algo.mlp_keys.decoder))) == 0
+        len(set(legacy_keys(cfg).image_keys).intersection(set(legacy_keys(cfg).decoder_image_keys))) == 0
+        and len(set(legacy_keys(cfg).vector_keys).intersection(set(legacy_keys(cfg).decoder_vector_keys))) == 0
     ):
         raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjointed")
-    if len(set(cfg.algo.cnn_keys.decoder) - set(cfg.algo.cnn_keys.encoder)) > 0:
+    if len(set(legacy_keys(cfg).decoder_image_keys) - set(legacy_keys(cfg).image_keys)) > 0:
         raise RuntimeError(
             "The CNN keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(cfg.algo.cnn_keys.decoder))}"
+            f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_image_keys))}"
         )
-    if len(set(cfg.algo.mlp_keys.decoder) - set(cfg.algo.mlp_keys.encoder)) > 0:
+    if len(set(legacy_keys(cfg).decoder_vector_keys) - set(legacy_keys(cfg).vector_keys)) > 0:
         raise RuntimeError(
             "The MLP keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(cfg.algo.mlp_keys.decoder))}"
+            f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_vector_keys))}"
         )
     if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
-        fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
-        fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
-        fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
+        fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
+        fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
+        fabric.print("Decoder CNN keys:", legacy_keys(cfg).decoder_image_keys)
+        fabric.print("Decoder MLP keys:", legacy_keys(cfg).decoder_vector_keys)
 
 
 class DreamerV2(Algorithm):
@@ -605,7 +605,6 @@ class DreamerV2(Algorithm):
         super().__init__(fabric, cfg)
         # These arguments cannot be changed
         cfg.env.screen_size = 64
-        cfg.env.frame_stack = 1
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str

@@ -174,8 +174,8 @@ def test_sac_ae(standard_args, start_time):
         "algo.replay_ratio=1",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.cnn_keys.encoder=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.inputs.image.keys=[rgb]",
         "env.screen_size=64",
         "algo.hidden_size=4",
         "algo.dense_units=4",
@@ -200,8 +200,8 @@ def test_a2c(standard_args, start_time, gae_method):
         "algo.per_rank_batch_size=1",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
-        "algo.cnn_keys.encoder=[]",
-        "algo.mlp_keys.encoder=[state]",
+        "algo.inputs.image.keys=[]",
+        "algo.inputs.vector.keys=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -221,8 +221,8 @@ def test_ppo(standard_args, start_time, env_id):
         f"root_dir={root_dir}",
         f"run_name={run_name}",
         f"env.id={env_id}",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -242,11 +242,11 @@ def test_on_policy_truncated_episodes(standard_args, start_time, algo):
         "env=dummy",
         "env.id=discrete_dummy",
         "env.max_episode_steps=2",
-        "env.frame_stack=2",
+        "algo.inputs.image.transforms=[{_target_:sheeprl.transforms.Image,size:64,grayscale:false},{_target_:sheeprl.transforms.FrameStack,n:2},{_target_:sheeprl.transforms.Scale,divisor:255,shift:0.5}]",
         "algo.rollout_steps=4",
         "algo.per_rank_batch_size=1",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.mlp_keys.encoder=[]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[]",
         f"root_dir={root_dir}",
         f"run_name={run_name}",
     ]
@@ -275,7 +275,7 @@ def test_ppo_recurrent(standard_args, start_time, env_id, gae_method):
         f"run_name={run_name}",
     ]
     if env_id != "CartPole-v1":
-        args += ["env=dummy", f"env.id={env_id}", "algo.mlp_keys.encoder=[state]"]
+        args += ["env=dummy", f"env.id={env_id}", "algo.inputs.vector.keys=[state]"]
 
     with mock.patch.object(sys, "argv", args):
         run()
@@ -303,7 +303,7 @@ def test_the_test_return_is_logged_at_the_last_policy_step(standard_args, start_
             "env.id=discrete_dummy",
             "algo.rollout_steps=4",
             "algo.per_rank_batch_size=4",
-            "algo.mlp_keys.encoder=[state]",
+            "algo.inputs.vector.keys=[state]",
         ]
         last_step = 4 * 2
     elif exp == "sac":
@@ -313,10 +313,10 @@ def test_the_test_return_is_logged_at_the_last_policy_step(standard_args, start_
         args += [
             "env=dummy",
             "env.id=discrete_dummy",
-            "algo.cnn_keys.encoder=[]",
-            "algo.mlp_keys.encoder=[state]",
-            "algo.cnn_keys.decoder=[]",
-            "algo.mlp_keys.decoder=[state]",
+            "algo.inputs.image.keys=[]",
+            "algo.inputs.vector.keys=[state]",
+            "algo.outputs.image.keys=[]",
+            "algo.outputs.vector.keys=[state]",
             "algo.dense_units=8",
             "algo.world_model.recurrent_model.recurrent_state_size=8",
             "algo.world_model.representation_model.hidden_size=8",
@@ -381,8 +381,8 @@ def test_dreamer_dry_run_with_longer_sequences(standard_args, start_time, exp):
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
     ]
     with mock.patch.object(sys, "argv", args):
         run()
@@ -408,10 +408,10 @@ def test_dreamer_v1(standard_args, env_id, start_time):
         "algo.dense_units=8",
         "algo.world_model.encoder.cnn_channels_multiplier=2",
         "algo.world_model.recurrent_model.recurrent_state_size=8",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -447,10 +447,10 @@ def test_p2e_dv1(standard_args, env_id, start_time):
         "algo.world_model.representation_model.hidden_size=2",
         "algo.world_model.transition_model.hidden_size=2",
         "buffer.checkpoint=True",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
         "checkpoint.save_last=True",
     ]
 
@@ -490,10 +490,10 @@ def test_p2e_dv1(standard_args, env_id, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=2",
         "algo.world_model.representation_model.hidden_size=2",
         "algo.world_model.transition_model.hidden_size=2",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
     ]
     with mock.patch.object(sys, "argv", args):
         run()
@@ -521,13 +521,13 @@ def test_dreamer_v2(standard_args, env_id, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
-        "algo.cnn_keys.encoder=[rgb]",
+        "algo.inputs.image.keys=[rgb]",
         "algo.per_rank_pretrain_steps=1",
         "algo.layer_norm=True",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
     ]
 
     with mock.patch.object(sys, "argv", args):
@@ -563,10 +563,10 @@ def test_p2e_dv2(standard_args, env_id, start_time):
         "algo.world_model.representation_model.hidden_size=2",
         "algo.world_model.transition_model.hidden_size=2",
         "buffer.checkpoint=True",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
         "checkpoint.save_last=True",
     ]
 
@@ -606,10 +606,10 @@ def test_p2e_dv2(standard_args, env_id, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=2",
         "algo.world_model.representation_model.hidden_size=2",
         "algo.world_model.transition_model.hidden_size=2",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
     ]
     with mock.patch.object(sys, "argv", args):
         run()
@@ -637,10 +637,10 @@ def test_dreamer_v3(standard_args, env_id, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
         "algo.mlp_layer_norm.cls=sheeprl.models.models.LayerNorm",
         "algo.cnn_layer_norm.cls=sheeprl.models.models.LayerNormChannelLast",
     ]
@@ -698,10 +698,10 @@ def test_dreamer_v3_restart_on_exception(standard_args, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
     ]
 
     with (
@@ -729,8 +729,8 @@ DREAMER_V3_5_ARGS = [
     "algo.world_model.observation_model.block_space=2",
     "algo.world_model.stochastic_size=4",
     "algo.world_model.discrete_size=4",
-    "algo.cnn_keys.encoder=[rgb]",
-    "algo.mlp_keys.encoder=[state]",
+    "algo.inputs.image.keys=[rgb]",
+    "algo.inputs.vector.keys=[state]",
 ]
 
 
@@ -810,8 +810,8 @@ DREAMER_V3_ARGS = [
     "algo.world_model.recurrent_model.recurrent_state_size=8",
     "algo.world_model.representation_model.hidden_size=8",
     "algo.world_model.transition_model.hidden_size=8",
-    "algo.cnn_keys.encoder=[rgb]",
-    "algo.mlp_keys.encoder=[state]",
+    "algo.inputs.image.keys=[rgb]",
+    "algo.inputs.vector.keys=[state]",
 ]
 
 
@@ -872,8 +872,8 @@ SMALL_DREAMER_ARGS = [
     "algo.world_model.recurrent_model.recurrent_state_size=8",
     "algo.world_model.representation_model.hidden_size=8",
     "algo.world_model.transition_model.hidden_size=8",
-    "algo.cnn_keys.encoder=[rgb]",
-    "algo.mlp_keys.encoder=[state]",
+    "algo.inputs.image.keys=[rgb]",
+    "algo.inputs.vector.keys=[state]",
 ]
 
 
@@ -883,8 +883,8 @@ OFF_POLICY_CASES = [
     (
         "sac_ae",
         [
-            "algo.mlp_keys.encoder=[state]",
-            "algo.cnn_keys.encoder=[rgb]",
+            "algo.inputs.vector.keys=[state]",
+            "algo.inputs.image.keys=[rgb]",
             "env.screen_size=64",
             "algo.hidden_size=4",
             "algo.dense_units=4",
@@ -983,10 +983,10 @@ def test_p2e_dv3(standard_args, env_id, objective_mix, start_time):
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
         "buffer.checkpoint=True",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
         "checkpoint.save_last=True",
         "algo.mlp_layer_norm.cls=sheeprl.models.models.LayerNorm",
         "algo.cnn_layer_norm.cls=sheeprl.models.models.LayerNormChannelLast",
@@ -1029,10 +1029,10 @@ def test_p2e_dv3(standard_args, env_id, objective_mix, start_time):
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
         "algo.mlp_layer_norm.cls=sheeprl.models.models.LayerNorm",
         "algo.cnn_layer_norm.cls=sheeprl.models.models.LayerNormChannelLast",
     ]
@@ -1080,10 +1080,10 @@ def test_p2e_intrinsic_reward_is_differentiable(standard_args, start_time, algo)
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
     ]
 
     with mock.patch.object(exploration, "build_agent", build_agent), mock.patch.object(sys, "argv", args):

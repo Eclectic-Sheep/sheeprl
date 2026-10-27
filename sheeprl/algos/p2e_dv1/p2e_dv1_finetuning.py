@@ -78,13 +78,13 @@ class P2EDV1Finetuning(Algorithm):
             #   - With more environments, you will raise an exception when you add new experienves.
             if cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint:
                 cfg.env.num_envs = exploration_cfg.env.num_envs
-            # There must be the same cnn and mlp keys during exploration and finetuning
-            cfg.algo.cnn_keys = exploration_cfg.algo.cnn_keys
-            cfg.algo.mlp_keys = exploration_cfg.algo.mlp_keys
+            # The observations are read and reconstructed as during the exploration
+            cfg.algo.inputs = exploration_cfg.algo.inputs
+            cfg.algo.outputs = exploration_cfg.algo.outputs
+            cfg.algo.extra_keys = exploration_cfg.algo.extra_keys
 
         # These arguments cannot be changed
         cfg.env.screen_size = 64
-        cfg.env.frame_stack = 1
         # The policy steps at the end of the iteration, set for its last gradient step (see `batches`)
         self.exploration_step: Optional[int] = None
 

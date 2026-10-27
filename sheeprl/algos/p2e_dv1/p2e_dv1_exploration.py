@@ -30,7 +30,7 @@ from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, 
 from sheeprl.core.evaluation import run_test
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
-from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -281,8 +281,8 @@ def train(
         rec_loss, posteriors, recurrent_states, embedded_obs, losses = compiled(world_model_loss, fabric, cfg)(
             world_model,
             data,
-            cnn_keys=tuple(cfg.algo.cnn_keys.encoder),
-            mlp_keys=tuple(cfg.algo.mlp_keys.encoder),
+            cnn_keys=tuple(legacy_keys(cfg).image_keys),
+            mlp_keys=tuple(legacy_keys(cfg).vector_keys),
             stochastic_size=world_model_cfg.stochastic_size,
             recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
             use_continues=use_continues,
@@ -424,7 +424,6 @@ class P2EDV1Exploration(Algorithm):
         super().__init__(fabric, cfg)
         # These arguments cannot be changed
         cfg.env.screen_size = 64
-        cfg.env.frame_stack = 1
         cfg.algo.policy.actor_type = "exploration"
         # The policy steps at the end of the iteration, set for its last gradient step (see `batches`)
         self.exploration_step: Optional[int] = None

@@ -79,13 +79,13 @@ class P2EDV2Finetuning(Algorithm):
             #   - With more environments, you will raise an exception when you add new experienves.
             if cfg.buffer.load_from_exploration and exploration_cfg.buffer.checkpoint:
                 cfg.env.num_envs = exploration_cfg.env.num_envs
-            # There must be the same cnn and mlp keys during exploration and finetuning
-            cfg.algo.cnn_keys = exploration_cfg.algo.cnn_keys
-            cfg.algo.mlp_keys = exploration_cfg.algo.mlp_keys
+            # The observations are read and reconstructed as during the exploration
+            cfg.algo.inputs = exploration_cfg.algo.inputs
+            cfg.algo.outputs = exploration_cfg.algo.outputs
+            cfg.algo.extra_keys = exploration_cfg.algo.extra_keys
 
         # These arguments cannot be changed
         cfg.env.screen_size = 64
-        cfg.env.frame_stack = 1
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str

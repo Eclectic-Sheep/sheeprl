@@ -22,8 +22,9 @@ algo:
   dense_units: 64
   encoder:
     cnn_features_dim: 512
-  cnn_keys:
-    encoder: [rgb]
+  inputs:
+    image:
+      keys: [rgb]
 
 # Buffer
 buffer:

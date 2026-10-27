@@ -20,6 +20,7 @@ from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run, transition_store, update
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled, mark_gradient_step
+from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict
@@ -67,7 +68,7 @@ class SACWriter(Writer):
     def __init__(self, cfg: dotdict, dtype: Optional[np.dtype] = None) -> None:
         self.cfg = cfg
         self.dtype = dtype
-        self.mlp_keys = cfg.algo.mlp_keys.encoder
+        self.mlp_keys = legacy_keys(cfg).vector_keys
 
     def cast(self, value: np.ndarray) -> np.ndarray:
         return value if self.dtype is None else value.astype(self.dtype)
@@ -164,11 +165,11 @@ class SAC(Algorithm):
                 "in order to play correctly the game. "
                 "As an alternative you can use one of the Dreamers' agents."
             )
-        if len(cfg.algo.cnn_keys.encoder) > 0:
+        if len(legacy_keys(cfg).image_keys) > 0:
             warnings.warn(
                 f"{self.name} algorithm cannot allow to use images as observations, the CNN keys will be ignored"
             )
-            cfg.algo.cnn_keys.encoder = []
+            legacy_keys(cfg).image_keys = []
 
     def make_agent(self, obs_space: gym.spaces.Dict, action_space: gym.spaces.Box) -> Tuple[SACAgent, SACPolicy]:
         """The actor, the critics and the entropy coefficient set up on the device, and the policy to play with, which
@@ -180,13 +181,15 @@ class SAC(Algorithm):
     ) -> Tuple[SACState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
-        mlp_keys = cfg.algo.mlp_keys.encoder
+        mlp_keys = legacy_keys(cfg).vector_keys
         if not isinstance(action_space, gym.spaces.Box):
             raise ValueError(f"Only continuous action space is supported for the {self.name} agent")
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
         if len(mlp_keys) == 0:
-            raise RuntimeError("You should specify at least one MLP key for the encoder: `mlp_keys.encoder=[state]`")
+            raise RuntimeError(
+                "You should specify at least one MLP key for the encoder: `algo.inputs.vector.keys=[state]`"
+            )
         for k in mlp_keys:
             if len(obs_space[k].shape) > 1:
                 raise ValueError(

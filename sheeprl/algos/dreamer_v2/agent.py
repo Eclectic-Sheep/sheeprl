@@ -30,6 +30,7 @@ from sheeprl.utils.utils import dotdict
 # The epsilon of the LayerNorms: the one of the `LayerNormalization` of Keras, which the official implementation uses
 # (https://github.com/danijar/dreamerv2), also inside its GRU
 LAYER_NORM_EPS = 1e-3
+from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
 
@@ -903,26 +904,26 @@ def build_agent(
     # Define models
     cnn_encoder = (
         CNNEncoder(
-            keys=cfg.algo.cnn_keys.encoder,
-            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.encoder],
-            image_size=obs_space[cfg.algo.cnn_keys.encoder[0]].shape[-2:],
+            keys=legacy_keys(cfg).image_keys,
+            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in legacy_keys(cfg).image_keys],
+            image_size=obs_space[legacy_keys(cfg).image_keys[0]].shape[-2:],
             channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
             layer_norm=world_model_cfg.encoder.layer_norm,
             activation=hydra.utils.get_class(world_model_cfg.encoder.cnn_act),
         )
-        if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
+        if legacy_keys(cfg).image_keys is not None and len(legacy_keys(cfg).image_keys) > 0
         else None
     )
     mlp_encoder = (
         MLPEncoder(
-            keys=cfg.algo.mlp_keys.encoder,
-            input_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder],
+            keys=legacy_keys(cfg).vector_keys,
+            input_dims=[obs_space[k].shape[0] for k in legacy_keys(cfg).vector_keys],
             mlp_layers=world_model_cfg.encoder.mlp_layers,
             dense_units=world_model_cfg.encoder.dense_units,
             activation=hydra.utils.get_class(world_model_cfg.encoder.dense_act),
             layer_norm=world_model_cfg.encoder.layer_norm,
         )
-        if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
+        if legacy_keys(cfg).vector_keys is not None and len(legacy_keys(cfg).vector_keys) > 0
         else None
     )
     encoder = MultiEncoder(cnn_encoder, mlp_encoder)
@@ -967,29 +968,29 @@ def build_agent(
     )
     cnn_decoder = (
         CNNDecoder(
-            keys=cfg.algo.cnn_keys.decoder,
-            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.decoder],
+            keys=legacy_keys(cfg).decoder_image_keys,
+            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in legacy_keys(cfg).decoder_image_keys],
             channels_multiplier=world_model_cfg.observation_model.cnn_channels_multiplier,
             latent_state_size=latent_state_size,
             cnn_encoder_output_dim=cnn_encoder.output_dim,
-            image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
+            image_size=obs_space[legacy_keys(cfg).decoder_image_keys[0]].shape[-2:],
             activation=hydra.utils.get_class(world_model_cfg.observation_model.cnn_act),
             layer_norm=world_model_cfg.observation_model.layer_norm,
         )
-        if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
+        if legacy_keys(cfg).decoder_image_keys is not None and len(legacy_keys(cfg).decoder_image_keys) > 0
         else None
     )
     mlp_decoder = (
         MLPDecoder(
-            keys=cfg.algo.mlp_keys.decoder,
-            output_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.decoder],
+            keys=legacy_keys(cfg).decoder_vector_keys,
+            output_dims=[obs_space[k].shape[0] for k in legacy_keys(cfg).decoder_vector_keys],
             latent_state_size=latent_state_size,
             mlp_layers=world_model_cfg.observation_model.mlp_layers,
             dense_units=world_model_cfg.observation_model.dense_units,
             activation=hydra.utils.get_class(world_model_cfg.observation_model.dense_act),
             layer_norm=world_model_cfg.observation_model.layer_norm,
         )
-        if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
+        if legacy_keys(cfg).decoder_vector_keys is not None and len(legacy_keys(cfg).decoder_vector_keys) > 0
         else None
     )
     observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
@@ -1090,7 +1091,7 @@ def build_agent(
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         policy_fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
-        cnn_keys=cfg.algo.cnn_keys.encoder,
+        cnn_keys=legacy_keys(cfg).image_keys,
     )
 
     # Setup models with Fabric

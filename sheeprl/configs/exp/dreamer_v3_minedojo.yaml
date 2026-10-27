@@ -30,28 +30,13 @@ algo:
   learning_starts: 65536
   actor:
     cls: sheeprl.algos.dreamer_v3.agent.MinedojoActor
-  cnn_keys:
-    encoder:
-      - rgb
-  mlp_keys:
-    encoder:
-      - equipment
-      - inventory
-      - inventory_delta
-      - inventory_max
-      - life_stats
-      - mask_action_type
-      - mask_craft_smelt
-      - mask_destroy
-      - mask_equip_place
-      - reward
-    decoder:
-      - equipment
-      - inventory
-      - inventory_delta
-      - inventory_max
-      - life_stats
-      - mask_action_type
-      - mask_craft_smelt
-      - mask_destroy
-      - mask_equip_place
+  inputs:
+    image:
+      keys: [rgb]
+    vector:
+      keys: [equipment, inventory, inventory_delta, inventory_max, life_stats, mask_action_type, mask_craft_smelt, mask_destroy, mask_equip_place, reward]
+  outputs:
+    vector:
+      keys: [equipment, inventory, inventory_delta, inventory_max, life_stats, mask_action_type, mask_craft_smelt, mask_destroy, mask_equip_place]
+  # The masks of the actions, read by the actor (`MinedojoActor`)
+  extra_keys: [mask_action_type, mask_craft_smelt, mask_destroy, mask_equip_place]

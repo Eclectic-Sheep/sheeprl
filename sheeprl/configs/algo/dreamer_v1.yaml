@@ -20,11 +20,42 @@ per_rank_pretrain_steps: 100
 per_rank_sequence_length: ???
 
 
-# Encoder and decoder keys
-cnn_keys:
-  decoder: ${algo.cnn_keys.encoder}
-mlp_keys:
-  decoder: ${algo.mlp_keys.encoder}
+# Inputs: the images resized and scaled to [-0.5, 0.5] into the CNN of the world model, the vectors into its MLP.
+# Outputs: the same keys reconstructed by the observation model, scored with a unit-variance Normal
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    net:
+      _target_: sheeprl.algos.dreamer_v2.agent.CNNEncoder
+      channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
+      activation: ${algo.world_model.encoder.cnn_act}
+  vector:
+    keys: []
+    transforms: []
+    net:
+      _target_: sheeprl.algos.dreamer_v2.agent.MLPEncoder
+      mlp_layers: ${algo.world_model.encoder.mlp_layers}
+      dense_units: ${algo.world_model.encoder.dense_units}
+      activation: ${algo.world_model.encoder.dense_act}
+outputs:
+  image:
+    keys: ${algo.inputs.image.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v2.agent.CNNDecoder
+      channels_multiplier: ${algo.world_model.observation_model.cnn_channels_multiplier}
+      activation: ${algo.world_model.observation_model.cnn_act}
+    likelihood: {_target_: sheeprl.utils.distribution.UnitNormal, _partial_: true}
+  vector:
+    keys: ${algo.inputs.vector.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v2.agent.MLPDecoder
+      mlp_layers: ${algo.world_model.observation_model.mlp_layers}
+      dense_units: ${algo.world_model.observation_model.dense_units}
+      activation: ${algo.world_model.observation_model.dense_act}
+    likelihood: {_target_: sheeprl.utils.distribution.UnitNormal, _partial_: true}
 
 # Model related parameters
 dense_units: 400

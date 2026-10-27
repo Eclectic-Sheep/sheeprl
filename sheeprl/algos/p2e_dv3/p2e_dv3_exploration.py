@@ -38,7 +38,7 @@ from sheeprl.core.evaluation import run_test
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils.compile import compiled
 from sheeprl.utils.distribution import BernoulliSafeMode, MSEDistribution, TwoHotEncodingDistribution
-from sheeprl.utils.env import actions_dim_of
+from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
@@ -413,8 +413,6 @@ class P2EDV3Exploration(Algorithm):
 
     def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
-        # These arguments cannot be changed
-        cfg.env.frame_stack = 1
         cfg.algo.policy.actor_type = "exploration"
 
         # The metrics of the exploration critics are logged for every critic, under the key `<metric>_<critic>`
@@ -450,25 +448,25 @@ class P2EDV3Exploration(Algorithm):
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
         if (
-            len(set(cfg.algo.cnn_keys.encoder).intersection(set(cfg.algo.cnn_keys.decoder))) == 0
-            and len(set(cfg.algo.mlp_keys.encoder).intersection(set(cfg.algo.mlp_keys.decoder))) == 0
+            len(set(legacy_keys(cfg).image_keys).intersection(set(legacy_keys(cfg).decoder_image_keys))) == 0
+            and len(set(legacy_keys(cfg).vector_keys).intersection(set(legacy_keys(cfg).decoder_vector_keys))) == 0
         ):
             raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjointed")
-        if len(set(cfg.algo.cnn_keys.decoder) - set(cfg.algo.cnn_keys.encoder)) > 0:
+        if len(set(legacy_keys(cfg).decoder_image_keys) - set(legacy_keys(cfg).image_keys)) > 0:
             raise RuntimeError(
                 "The CNN keys of the decoder must be contained in the encoder ones. "
-                f"Those keys are decoded without being encoded: {list(set(cfg.algo.cnn_keys.decoder))}"
+                f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_image_keys))}"
             )
-        if len(set(cfg.algo.mlp_keys.decoder) - set(cfg.algo.mlp_keys.encoder)) > 0:
+        if len(set(legacy_keys(cfg).decoder_vector_keys) - set(legacy_keys(cfg).vector_keys)) > 0:
             raise RuntimeError(
                 "The MLP keys of the decoder must be contained in the encoder ones. "
-                f"Those keys are decoded without being encoded: {list(set(cfg.algo.mlp_keys.decoder))}"
+                f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_vector_keys))}"
             )
         if cfg.metric.log_level > 0:
-            fabric.print("Encoder CNN keys:", cfg.algo.cnn_keys.encoder)
-            fabric.print("Encoder MLP keys:", cfg.algo.mlp_keys.encoder)
-            fabric.print("Decoder CNN keys:", cfg.algo.cnn_keys.decoder)
-            fabric.print("Decoder MLP keys:", cfg.algo.mlp_keys.decoder)
+            fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
+            fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
+            fabric.print("Decoder CNN keys:", legacy_keys(cfg).decoder_image_keys)
+            fabric.print("Decoder MLP keys:", legacy_keys(cfg).decoder_vector_keys)
 
         (
             world_model,
