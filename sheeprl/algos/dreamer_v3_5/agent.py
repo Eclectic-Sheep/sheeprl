@@ -35,7 +35,7 @@ from sheeprl.algos.dreamer_policy import DreamerPolicy
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.core.actions import ActionCodec
 from sheeprl.core.collector import Act
-from sheeprl.models.io import MultiDecoder, build_encoder
+from sheeprl.models.io import build_decoder, build_encoder
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
@@ -845,7 +845,7 @@ def build_agent(
         unimix=world_model_cfg.unimix,
     )
 
-    observation_model = MultiDecoder.from_config(cfg.algo.outputs, encoder, latent_size=latent_state_size)
+    observation_model = build_decoder(cfg, encoder, latent_size=latent_state_size)
 
     def head(cfg_: dotdict, output_size: int, outscale: float) -> nn.Sequential:
         units = cfg_.dense_units if cfg_.mlp_layers > 0 else latent_state_size

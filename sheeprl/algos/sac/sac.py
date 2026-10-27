@@ -18,7 +18,7 @@ from sheeprl.algos.sac.agent import SACAgent, SACPolicy, build_agent
 from sheeprl.algos.sac.loss import critic_loss, entropy_loss, policy_loss
 from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run, transition_store, update
 from sheeprl.data.store import ReplayStore
-from sheeprl.models.io import MultiEncoder, build_encoder
+from sheeprl.models.io import Encoder, build_encoder, log_inputs_and_outputs
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.registry import register_algorithm
@@ -165,7 +165,7 @@ class SAC(Algorithm):
                 "As an alternative you can use one of the Dreamers' agents."
             )
 
-    def make_agent(self, encoder: MultiEncoder, action_space: gym.spaces.Box) -> Tuple[SACAgent, SACPolicy]:
+    def make_agent(self, encoder: Encoder, action_space: gym.spaces.Box) -> Tuple[SACAgent, SACPolicy]:
         """The actor, the critics and the entropy coefficient set up on the device, and the policy to play with, which
         shares its weights with the actor."""
         return build_agent(self.fabric, self.cfg, encoder, action_space)
@@ -196,9 +196,7 @@ class SAC(Algorithm):
                 f"The {self.name} agent trains no encoder: the networks of its inputs must have no weights (e.g. "
                 "`sheeprl.models.IdentityEncoder`, the keys concatenated)"
             )
-        if cfg.metric.log_level > 0:
-            for name, inp in self.encoder.inputs.items():
-                fabric.print(f"Input `{name}`: {list(inp.keys)}")
+        log_inputs_and_outputs(fabric, cfg, self.encoder)
 
         agent, self._policy = self.make_agent(self.encoder, action_space)
 

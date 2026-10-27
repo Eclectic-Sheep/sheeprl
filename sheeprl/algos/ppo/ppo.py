@@ -32,6 +32,7 @@ from sheeprl.core import (
     update,
 )
 from sheeprl.core.actions import ActionCodec
+from sheeprl.models.io import log_inputs_and_outputs
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor
@@ -155,9 +156,7 @@ class PPO(Algorithm):
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
         agent, self._policy = build_agent(self.fabric, ActionCodec.from_space(action_space), cfg, obs_space)
-        if cfg.metric.log_level > 0:
-            for name, inp in agent.feature_extractor.inputs.items():
-                self.fabric.print(f"Input `{name}`: {list(inp.keys)}")
+        log_inputs_and_outputs(self.fabric, cfg, agent.feature_extractor)
 
         optimizer = hydra.utils.instantiate(cfg.algo.optimizer, params=agent.parameters(), _convert_="all")
         optimizer = self.fabric.setup_optimizers(optimizer)

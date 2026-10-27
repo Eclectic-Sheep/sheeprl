@@ -21,7 +21,8 @@ dense_act: torch.nn.ReLU
 layer_norm: False
 
 # Inputs: the images resized and scaled to [0, 1] into the CNN of SAC-AE, the vectors into an MLP; outputs: the same
-# keys reconstructed by the decoder (scored with the mean squared error by SAC-AE: no likelihood)
+# keys reconstructed by the decoder (scored with the mean squared error by SAC-AE: no likelihood), the images as the
+# pixels of the store with 5 bits and a uniform noise, in [-0.5, 0.5]
 inputs:
   image:
     keys: []
@@ -44,6 +45,7 @@ inputs:
 outputs:
   image:
     keys: ${algo.inputs.image.keys}
+    transforms: [{_target_: sheeprl.transforms.Dequantize, bits: 5}]
     net:
       _target_: sheeprl.algos.sac_ae.agent.CNNDecoder
       channels_multiplier: ${algo.decoder.cnn_channels_multiplier}

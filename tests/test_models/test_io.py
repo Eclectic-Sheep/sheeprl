@@ -12,7 +12,7 @@ from torch import nn
 from torch.distributions import Independent, Normal
 
 from sheeprl.models import ConvEncoder, IdentityEncoder, MLPEncoder, NatureCNN
-from sheeprl.models.io import Input, MultiDecoder, MultiEncoder
+from sheeprl.models.io import Input, MultiDecoder, MultiEncoder, build_decoder, build_encoder
 from sheeprl.transforms import check_input, check_net
 from sheeprl.utils.utils import dotdict
 
@@ -179,3 +179,66 @@ def test_a_grid_is_reconstructed_by_an_mlp_and_scored_by_a_bernoulli_likelihood(
     targets = encoder.targets({"fov": torch.randint(0, 2, (3, 2, 5, 5, 5)).float()}, decoder.keys)
     expected = -nn.functional.binary_cross_entropy_with_logits(logits, targets["fov"], reduction="none")
     torch.testing.assert_close(decoder.log_prob({"fov": logits}, targets), expected.sum(dim=(-3, -2, -1)))
+
+
+class RecordingEncoder(MultiEncoder):
+    """An encoder class set by `algo.encoder._target_`."""
+
+
+class RecordingDecoder(MultiDecoder):
+    """A decoder class set by `algo.decoder._target_`."""
+
+
+def hook_cfg(**sections) -> dotdict:
+    net = {"_target_": "sheeprl.models.ConvEncoder", "channels": [4], "features_dim": 4}
+    decoder_net = {"_target_": "tests.test_models.test_io.LinearDecoder"}
+    algo = {
+        "inputs": {"grid": {"keys": ["fov"], "net": net}},
+        "outputs": {"grid": {"keys": ["fov"], "net": decoder_net}},
+    }
+    return dotdict({"algo": {**algo, **sections}})
+
+
+def test_the_encoder_and_the_decoder_are_of_the_configured_classes():
+    # Without the sections, the default classes
+    encoder = build_encoder(hook_cfg(), STORE_SPACE)
+    assert type(encoder) is MultiEncoder and type(build_decoder(hook_cfg(), encoder, 6)) is MultiDecoder
+    cfg = hook_cfg(
+        encoder={"_target_": "tests.test_models.test_io.RecordingEncoder"},
+        decoder={"_target_": "tests.test_models.test_io.RecordingDecoder"},
+    )
+    encoder = build_encoder(cfg, STORE_SPACE)
+    decoder = build_decoder(cfg, encoder, latent_size=6)
+    assert type(encoder) is RecordingEncoder and type(decoder) is RecordingDecoder
+    # The names, the keys and the networks of the inputs and of the outputs, through the contracts
+    assert encoder.named_keys() == {"grid": ("fov",)} and decoder.named_keys() == {"grid": ("fov",)}
+    assert isinstance(encoder.named_nets()["grid"], ConvEncoder)
+    assert isinstance(decoder.named_nets()["grid"], LinearDecoder)
+
+
+def test_the_encoder_and_the_decoder_classes_must_follow_the_contracts():
+    with pytest.raises(TypeError, match="sheeprl.models.io.Encoder"):
+        build_encoder(hook_cfg(encoder={"_target_": "torch.nn.Linear"}), STORE_SPACE)
+    encoder = build_encoder(hook_cfg(), STORE_SPACE)
+    with pytest.raises(TypeError, match="sheeprl.models.io.Decoder"):
+        build_decoder(hook_cfg(decoder={"_target_": "torch.nn.Linear"}), encoder, 6)
+
+
+def test_the_images_of_sac_ae_are_reconstructed_as_their_pixels_with_5_bits():
+    # The output `image` of SAC-AE declares its target transform (`Dequantize`); its encoder reads the images in [0, 1]
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "exp=sac_ae",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[]",
+                "algo.outputs.vector.keys=[]",
+            ],
+        )
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    encoder = build_encoder(cfg, STORE_SPACE)
+    decoder = build_decoder(cfg, encoder, latent_size=encoder.output_dim)
+    pixels = torch.randint(0, 256, (2, 3, 64, 64), dtype=torch.uint8)
+    target = decoder.targets({"rgb": pixels}, encoder)["rgb"]
+    assert torch.equal(torch.floor((target + 0.5) * 32), torch.floor(pixels / 8))

@@ -17,7 +17,7 @@ The models are created by the `build_agent` function of the `agent.py` file. The
 # The encoder of the inputs of `algo.inputs`, from the spaces of the stored observations, and the decoder of the
 # outputs of `algo.outputs`, from the features of the encoder
 encoder = build_encoder(cfg, obs_space)
-decoder = MultiDecoder.from_config(cfg.algo.outputs, encoder, latent_size=encoder.output_dim)
+decoder = build_decoder(cfg, encoder, latent_size=encoder.output_dim)
 
 # Setup actor and critic. Those will initialize with orthogonal weights
 # both the actor and critic
@@ -101,11 +101,9 @@ if step % cfg.actor.per_rank_update_freq == 0:
 # Encoder and decoder: reconstruct the observations (the images with 5 bits per channel), with an L2 penalty
 # on the features, once for every decoded key
 if step % cfg.decoder.per_rank_update_freq == 0:
-    # The targets: the keys of the output `image` as the pixels of the store with 5 bits per channel, in
-    # [-0.5, 0.5]; the keys of the other outputs as the encoder reads them
-    image_keys = state.decoder.outputs["image"].keys if "image" in state.decoder.outputs else ()
-    targets = state.encoder.targets(batch, [k for k in state.decoder.keys if k not in image_keys])
-    targets.update({k: preprocess_obs(batch[k], bits=5) for k in image_keys})
+    # The targets: the keys of the output `image` through its transform `Dequantize` (the pixels of the store with
+    # 5 bits per channel and a uniform noise, in [-0.5, 0.5]); the keys of the other outputs as the encoder reads them
+    targets = state.decoder.targets(batch, state.encoder)
     with autocast(self.fabric):
         hidden = state.encoder(obs)
         reconstruction = state.decoder(hidden)

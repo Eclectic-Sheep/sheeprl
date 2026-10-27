@@ -16,7 +16,7 @@ from torch import Size, Tensor
 
 from sheeprl.algos.sac_ae.utils import weight_init
 from sheeprl.core.collector import Act, Policy
-from sheeprl.models.io import MultiDecoder, MultiEncoder, build_encoder, to_device
+from sheeprl.models.io import Encoder, build_decoder, build_encoder, to_device
 from sheeprl.models.models import CNN, MLP, DeCNN
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
@@ -203,7 +203,7 @@ class SACAEQFunction(nn.Module):
 
 
 class SACAECritic(nn.Module):
-    def __init__(self, encoder: Union[MultiEncoder, _FabricModule], qfs: List[SACAEQFunction]) -> None:
+    def __init__(self, encoder: Union[Encoder, _FabricModule], qfs: List[SACAEQFunction]) -> None:
         super().__init__()
         self.encoder = encoder
         self.qfs = nn.ModuleList(qfs)
@@ -219,7 +219,7 @@ class SACAECritic(nn.Module):
 class SACAEContinuousActor(nn.Module):
     def __init__(
         self,
-        encoder: Union[MultiEncoder, _FabricModule],
+        encoder: Union[Encoder, _FabricModule],
         action_dim: int,
         distribution_cfg: dotdict,
         hidden_size: int = 1024,
@@ -311,8 +311,9 @@ class SACAEAgent(nn.Module):
         super().__init__()
         # Tie encoder weights between actor and critic: the network of every input of the actor uses the layers of the
         # critic's (`tie`: the convolutions of the images, with the actor's own linear layer; the layers of the vectors)
-        for name, actor_input in actor.encoder.inputs.items():
-            net, critic_net = actor_input.net, critic.encoder.inputs[name].net
+        critic_nets = critic.encoder.named_nets()
+        for name, net in actor.encoder.named_nets().items():
+            critic_net = critic_nets[name]
             if not hasattr(net, "tie"):
                 raise TypeError(
                     f"The network of the input `{name}` of SAC-AE must share its layers with the one of the critic "
@@ -435,7 +436,7 @@ class SACAEPolicy(nn.Module, Policy):
 
     def __init__(
         self,
-        feature_extractor: MultiEncoder,
+        feature_extractor: Encoder,
         fc: nn.Module,
         fc_mean: nn.Module,
         fc_logstd: nn.Module,
@@ -512,7 +513,7 @@ def build_agent(
     # Then we will set the critic encoder and actor decoder as the unwrapped encoder module:
     # we do not need it wrapped with the strategy inside actor and critic
     encoder = build_encoder(cfg, obs_space)
-    decoder = MultiDecoder.from_config(cfg.algo.outputs, encoder, latent_size=encoder.output_dim)
+    decoder = build_decoder(cfg, encoder, latent_size=encoder.output_dim)
     # The initialization of the official implementation, as the one of the actor and of the critic
     decoder.apply(weight_init)
     if encoder_state:

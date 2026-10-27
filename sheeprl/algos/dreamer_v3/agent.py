@@ -27,7 +27,7 @@ from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
 from sheeprl.core.actions import ActionCodec
-from sheeprl.models.io import MultiDecoder, MultiEncoder, build_encoder
+from sheeprl.models.io import Encoder, build_decoder, build_encoder
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNorm, LayerNormGRUCell
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.distribution import SafeTanhTransform
@@ -609,7 +609,7 @@ class DreamerV3Policy(nn.Module, DreamerPolicy):
     The model of the Dreamer_v3 policy.
 
     Args:
-        encoder (MultiEncoder): the encoder.
+        encoder (Encoder): the encoder.
         rssm (RSSM | DecoupledRSSM): the RSSM model.
         actor (_FabricModule): the actor.
         codec (ActionCodec): the actions of the agent and of the environments.
@@ -625,7 +625,7 @@ class DreamerV3Policy(nn.Module, DreamerPolicy):
 
     def __init__(
         self,
-        encoder: MultiEncoder | _FabricModule,
+        encoder: Encoder | _FabricModule,
         rssm: RSSM | DecoupledRSSM,
         actor: Actor | MinedojoActor | _FabricModule,
         codec: ActionCodec,
@@ -1069,7 +1069,7 @@ def build_agent(
         learnable_initial_recurrent_state=cfg.algo.world_model.learnable_initial_recurrent_state,
     ).to(fabric.device)
 
-    observation_model = MultiDecoder.from_config(cfg.algo.outputs, encoder, latent_size=latent_state_size)
+    observation_model = build_decoder(cfg, encoder, latent_size=latent_state_size)
 
     reward_ln_cls = hydra.utils.get_class(world_model_cfg.reward_model.layer_norm.cls)
     reward_model = MLP(
@@ -1153,7 +1153,7 @@ def build_agent(
         # The output layers of the decoders: the ones of the vectors, then the ones of the images (whose projection of
         # the latent state to the first feature maps gets the default initializer of the linear layers of the official
         # implementation, which its image decoder doesn't override)
-        decoder_nets = [output.net for output in observation_model.outputs.values()]
+        decoder_nets = list(observation_model.named_nets().values())
         for net in sorted(decoder_nets, key=lambda net: isinstance(net, CNNDecoder)):
             for layer in net.output_layers() if hasattr(net, "output_layers") else ():
                 layer.apply(uniform_init_weights(1.0))

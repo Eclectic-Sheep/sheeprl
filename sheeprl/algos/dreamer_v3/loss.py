@@ -39,7 +39,7 @@ def reconstruction_loss(
 
     Args:
         observation_log_probs (Dict[str, Tensor]): the log-likelihood of every observation key under the
-            distribution of its reconstruction (`MultiDecoder.log_probs`).
+            distribution of its reconstruction (`Decoder.log_probs`).
         pr (Distribution): the reward distribution returned by the reward_model.
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
         priors_logits (Tensor): the logits of the prior.

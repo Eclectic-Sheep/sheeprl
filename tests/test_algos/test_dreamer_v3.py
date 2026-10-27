@@ -532,3 +532,33 @@ def test_the_compiled_policy_plays_as_the_eager_one(monkeypatch):
     for (eager_actions, eager_states), (actions, states) in zip(*played):
         torch.testing.assert_close(actions, eager_actions)
         torch.testing.assert_close(states, eager_states, rtol=1e-4, atol=1e-5)
+
+
+def test_dreamer_v3_builds_its_decoder_of_the_configured_class():
+    # The official initialization of the output layers goes through the networks of the outputs (`named_nets`)
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "exp=dreamer_v3",
+                "env=dummy",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[state]",
+                "algo.dense_units=8",
+                "algo.inputs.image.net.channels_multiplier=2",
+                "algo.world_model.recurrent_model.recurrent_state_size=8",
+                "algo.world_model.representation_model.hidden_size=8",
+                "algo.world_model.transition_model.hidden_size=8",
+                "algo.decoder._target_=tests.test_models.test_io.RecordingDecoder",
+            ],
+        )
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    obs_space = gym.spaces.Dict(
+        {
+            "rgb": gym.spaces.Box(0, 255, shape=(3, 64, 64), dtype=np.uint8),
+            "state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32),
+        }
+    )
+    world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), codec_of([3], False), cfg, obs_space)
+    decoder = getattr(world_model.observation_model, "module", world_model.observation_model)
+    assert type(decoder).__name__ == "RecordingDecoder" and set(decoder.named_keys()) == {"image", "vector"}

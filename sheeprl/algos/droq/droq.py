@@ -19,7 +19,7 @@ from sheeprl.algos.sac.sac import SAC, SACState
 from sheeprl.core import autocast, run, update
 from sheeprl.data.samplers import TransitionSampler
 from sheeprl.data.store import ReplayStore
-from sheeprl.models.io import MultiEncoder
+from sheeprl.models.io import Encoder
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.utils import dotdict
@@ -55,7 +55,7 @@ class DroQ(SAC):
     name = "DroQ"
     buffer_dtype = np.float32
 
-    def make_agent(self, encoder: MultiEncoder, action_space: gym.spaces.Box) -> Tuple[DROQAgent, SACPolicy]:
+    def make_agent(self, encoder: Encoder, action_space: gym.spaces.Box) -> Tuple[DROQAgent, SACPolicy]:
         return build_agent(self.fabric, self.cfg, encoder, action_space)
 
     def batches(

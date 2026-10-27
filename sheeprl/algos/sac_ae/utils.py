@@ -8,7 +8,6 @@ import torch
 import torch.nn as nn
 from lightning import Fabric
 from lightning.fabric.wrappers import _FabricModule
-from torch import Tensor
 
 from sheeprl.algos.sac.utils import AGGREGATOR_KEYS
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
@@ -20,17 +19,6 @@ if TYPE_CHECKING:
 
 AGGREGATOR_KEYS = AGGREGATOR_KEYS.union({"Loss/reconstruction_loss"})
 MODELS_TO_REGISTER = {"agent", "encoder", "decoder"}
-
-
-def preprocess_obs(obs: Tensor, bits: int = 8):
-    """Preprocessing the observations, see https://arxiv.org/abs/1807.03039."""
-    bins = 2**bits
-    if bits < 8:
-        obs = torch.floor(obs / 2 ** (8 - bits))
-    obs = obs / bins
-    obs = obs + torch.rand_like(obs) / bins
-    obs = obs - 0.5
-    return obs
 
 
 def weight_init(m: nn.Module):

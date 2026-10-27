@@ -82,6 +82,9 @@ class P2EDV1Finetuning(Algorithm):
             # The observations are read and reconstructed as during the exploration
             cfg.algo.inputs = exploration_cfg.algo.inputs
             cfg.algo.outputs = exploration_cfg.algo.outputs
+            # Of the same classes (`algo.encoder._target_`, `algo.decoder._target_`)
+            cfg.algo.encoder = exploration_cfg.algo.encoder
+            cfg.algo.decoder = exploration_cfg.algo.decoder
             cfg.algo.extra_keys = exploration_cfg.algo.extra_keys
 
         # The policy steps at the end of the iteration, set for its last gradient step (see `batches`)

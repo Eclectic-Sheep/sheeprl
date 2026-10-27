@@ -24,7 +24,7 @@ from torch.distributions import (
 from sheeprl.algos.dreamer_policy import DreamerPolicy
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
 from sheeprl.core.actions import ActionCodec
-from sheeprl.models.io import MultiDecoder, build_encoder
+from sheeprl.models.io import build_decoder, build_encoder
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.distribution import SafeTanhTransform, TruncatedNormal
@@ -887,7 +887,7 @@ def build_agent(
         distribution_cfg=cfg.distribution,
         discrete=world_model_cfg.discrete_size,
     )
-    observation_model = MultiDecoder.from_config(cfg.algo.outputs, encoder, latent_size=latent_state_size)
+    observation_model = build_decoder(cfg, encoder, latent_size=latent_state_size)
     reward_model = MLP(
         input_dims=latent_state_size,
         output_dim=1,

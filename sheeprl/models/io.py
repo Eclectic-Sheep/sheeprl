@@ -116,7 +116,48 @@ class Input(nn.Module):
         return self.pipeline(key).batch_space
 
 
-class MultiEncoder(nn.Module):
+class Encoder(nn.Module):
+    """What the algorithms use of the encoder of their inputs: the class of `algo.encoder._target_` is a subclass
+    (`MultiEncoder` by default; e.g. one that fuses the inputs other than by concatenating their features).
+
+    `keys` are the observation keys it reads, each once: what the policies move to the device and the writers store.
+    `output_dim` is the size of its features. `forward` takes the observations as stored and returns the features,
+    for the policies in the phase `act` and for the training in the phase `train`.
+    """
+
+    keys: Tuple[str, ...]
+    output_dim: int
+
+    @classmethod
+    def from_config(cls, cfg_inputs: Any, store_space: gym.spaces.Dict) -> Encoder:
+        """The encoder of the inputs configured in `cfg_inputs` (`algo.inputs`), from the spaces of the store."""
+        raise NotImplementedError
+
+    def forward(self, obs: Dict[str, Tensor], phase: str = "train", **kwargs: Any) -> Tensor:
+        raise NotImplementedError
+
+    def targets(self, obs: Dict[str, Tensor], keys: Sequence[str]) -> Dict[str, Tensor]:
+        """The tensors of `keys` as the encoder reads them (in the phase `train`): the targets of the decoders."""
+        raise NotImplementedError
+
+    def store_space(self, key: str) -> gym.Space:
+        """The space of `key` in the store."""
+        raise NotImplementedError
+
+    def batch_space(self, key: str) -> gym.Space:
+        """The space of `key` as the encoder reads it: the shape of its reconstructions."""
+        raise NotImplementedError
+
+    def named_keys(self) -> Dict[str, Tuple[str, ...]]:
+        """The keys of every input, by name (e.g. to log them)."""
+        raise NotImplementedError
+
+    def named_nets(self) -> Dict[str, nn.Module]:
+        """The network of every input, by name (e.g. to initialize or share their layers)."""
+        raise NotImplementedError
+
+
+class MultiEncoder(Encoder):
     """The inputs of an algorithm (`algo.inputs`), their features concatenated in the order of the configuration.
     `keys` are the keys of all of them, each once: what the policies read and the writers store."""
 
@@ -177,12 +218,34 @@ class MultiEncoder(nn.Module):
                 raise KeyError(f"No input reads the key `{k}`: a decoded key must be encoded")
         return targets
 
+    def named_keys(self) -> Dict[str, Tuple[str, ...]]:
+        return {name: inp.keys for name, inp in self._inputs().items()}
 
-def build_encoder(cfg: Any, store_space: gym.spaces.Dict) -> MultiEncoder:
+    def named_nets(self) -> Dict[str, nn.Module]:
+        return {name: inp.net for name, inp in self._inputs().items()}
+
+
+def _configured_class(cfg: Any, section: str, default: type, base: type) -> Any:
+    """The class of `algo.<section>._target_` (`default` if unset), which must be a subclass of `base`."""
+    target = (cfg.algo.get(section) or {}).get("_target_")
+    cls = hydra.utils.get_class(target) if target else default
+    if not (isinstance(cls, type) and issubclass(cls, base)):
+        raise TypeError(
+            f"`algo.{section}._target_` must name a subclass of `{base.__module__}.{base.__name__}`, got {target}"
+        )
+    return cls
+
+
+def build_encoder(cfg: Any, store_space: gym.spaces.Dict) -> Encoder:
     """The encoder of the inputs of `cfg` (`algo.inputs`), of the class `algo.encoder._target_` (`MultiEncoder` by
-    default, for a fusion of the inputs other than the concatenation of their features)."""
-    target = ((cfg.algo.get("encoder") or {}).get("_target_")) or "sheeprl.models.io.MultiEncoder"
-    return hydra.utils.get_class(target).from_config(cfg.algo.inputs, store_space)
+    default), a subclass of `Encoder`."""
+    return _configured_class(cfg, "encoder", MultiEncoder, Encoder).from_config(cfg.algo.inputs, store_space)
+
+
+def build_decoder(cfg: Any, encoder: Encoder, latent_size: int) -> Decoder:
+    """The decoder of the outputs of `cfg` (`algo.outputs`), from the latent states of size `latent_size`, of the class
+    `algo.decoder._target_` (`MultiDecoder` by default), a subclass of `Decoder`."""
+    return _configured_class(cfg, "decoder", MultiDecoder, Decoder).from_config(cfg.algo.outputs, encoder, latent_size)
 
 
 class Output(nn.Module):
@@ -212,7 +275,7 @@ class Output(nn.Module):
         self.split_sizes = [s[axis] for s in self.shapes]
 
     @classmethod
-    def from_config(cls, cfg: Any, encoder: MultiEncoder, latent_size: int) -> Output:
+    def from_config(cls, cfg: Any, encoder: Encoder, latent_size: int) -> Output:
         """The output of `cfg` (`keys`, `net`, optionally `likelihood`, `transforms` of its targets and `cat_dim`): the
         shape of every key is the one the encoder gives it after its `batch` transforms."""
         keys = list(cfg["keys"])
@@ -234,7 +297,7 @@ class Output(nn.Module):
         out = self.net(latent)
         return dict(zip(self.keys, torch.split(out, self.split_sizes, dim=self.cat_dim)))
 
-    def targets(self, obs: Dict[str, Tensor], encoder: MultiEncoder) -> Dict[str, Tensor]:
+    def targets(self, obs: Dict[str, Tensor], encoder: Encoder) -> Dict[str, Tensor]:
         """The targets of the reconstructions of the keys of `obs` (as stored)."""
         if self.target_pipelines is None:
             return encoder.targets(obs, self.keys)
@@ -259,7 +322,44 @@ class Output(nn.Module):
         return cast(Tensor, sum(self.log_probs(reconstructions, targets).values()))
 
 
-class MultiDecoder(nn.Module):
+class Decoder(nn.Module):
+    """What the algorithms use of the decoder of their outputs: the class of `algo.decoder._target_` is a subclass
+    (`MultiDecoder` by default).
+
+    `keys` are the observation keys it reconstructs. `forward` takes the latent states and returns the reconstruction
+    of every key; `targets` the keys of the observations as they must be reconstructed; `log_probs` the log-likelihood
+    of every target under its reconstruction.
+    """
+
+    keys: Tuple[str, ...]
+
+    @classmethod
+    def from_config(cls, cfg_outputs: Any, encoder: Encoder, latent_size: int) -> Decoder:
+        """The decoder of the outputs configured in `cfg_outputs` (`algo.outputs`) of the keys read by `encoder`, from
+        latent states of size `latent_size`."""
+        raise NotImplementedError
+
+    def forward(self, latent: Tensor) -> Dict[str, Tensor]:
+        raise NotImplementedError
+
+    def targets(self, obs: Dict[str, Tensor], encoder: Encoder) -> Dict[str, Tensor]:
+        """The targets of the reconstructions of the keys of `obs` (as stored)."""
+        raise NotImplementedError
+
+    def log_probs(self, reconstructions: Dict[str, Tensor], targets: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        """The log-likelihood of the target of every key under the distribution of its reconstruction."""
+        raise NotImplementedError
+
+    def named_keys(self) -> Dict[str, Tuple[str, ...]]:
+        """The keys of every output, by name (e.g. to log them)."""
+        raise NotImplementedError
+
+    def named_nets(self) -> Dict[str, nn.Module]:
+        """The network of every output, by name, in the order of the outputs (e.g. to initialize them)."""
+        raise NotImplementedError
+
+
+class MultiDecoder(Decoder):
     """The outputs of an algorithm (`algo.outputs`): the reconstructions of all their keys."""
 
     def __init__(self, outputs: Dict[str, Output]) -> None:
@@ -268,7 +368,7 @@ class MultiDecoder(nn.Module):
         self.keys = tuple(k for out in outputs.values() for k in out.keys)
 
     @classmethod
-    def from_config(cls, cfg_outputs: Any, encoder: MultiEncoder, latent_size: int) -> MultiDecoder:
+    def from_config(cls, cfg_outputs: Any, encoder: Encoder, latent_size: int) -> MultiDecoder:
         """The outputs configured in `cfg_outputs` (`algo.outputs`), skipping the ones without keys."""
         return cls(
             {
@@ -288,7 +388,7 @@ class MultiDecoder(nn.Module):
             reconstructions.update(out(latent))
         return reconstructions
 
-    def targets(self, obs: Dict[str, Tensor], encoder: MultiEncoder) -> Dict[str, Tensor]:
+    def targets(self, obs: Dict[str, Tensor], encoder: Encoder) -> Dict[str, Tensor]:
         """The targets of the reconstructions of all the keys of `obs` (as stored)."""
         targets: Dict[str, Tensor] = {}
         for out in self._outputs().values():
@@ -306,19 +406,23 @@ class MultiDecoder(nn.Module):
         # A tensor: the decoders reconstruct at least one key (`check_reconstructs`)
         return cast(Tensor, sum(out.log_prob(reconstructions, targets) for out in self._outputs().values()))
 
+    def named_keys(self) -> Dict[str, Tuple[str, ...]]:
+        return {name: out.keys for name, out in self._outputs().items()}
 
-def log_inputs_and_outputs(
-    fabric: Any, cfg: Any, encoder: MultiEncoder, decoder: Optional[MultiDecoder] = None
-) -> None:
+    def named_nets(self) -> Dict[str, nn.Module]:
+        return {name: out.net for name, out in self._outputs().items()}
+
+
+def log_inputs_and_outputs(fabric: Any, cfg: Any, encoder: Encoder, decoder: Optional[Decoder] = None) -> None:
     """Print the keys of the inputs and of the outputs, with `metric.log_level`."""
     if cfg.metric.log_level > 0:
-        for name, inp in encoder._inputs().items():
-            fabric.print(f"Input `{name}`: {list(inp.keys)}")
-        for name, out in decoder._outputs().items() if decoder is not None else ():
-            fabric.print(f"Output `{name}`: {list(out.keys)}")
+        for name, keys in encoder.named_keys().items():
+            fabric.print(f"Input `{name}`: {list(keys)}")
+        for name, keys in decoder.named_keys().items() if decoder is not None else ():
+            fabric.print(f"Output `{name}`: {list(keys)}")
 
 
-def check_reconstructs(decoder: MultiDecoder, algorithm: str) -> None:
+def check_reconstructs(decoder: Decoder, algorithm: str) -> None:
     """An algorithm with a decoder reconstructs at least one key."""
     if len(decoder.keys) == 0:
         raise RuntimeError(f"{algorithm} reconstructs at least one key: set the keys of an output (`algo.outputs`)")

@@ -223,8 +223,9 @@ algo:
       likelihood: {_target_: sheeprl.utils.distribution.BernoulliLogits, _partial_: true}
 ```
 
-SAC-AE has no likelihood: it reconstructs the keys of its output `image` as the pixels of the store reduced to 5 bits
-and scaled to [-0.5, 0.5], and the other keys as its encoder reads them, with a mean squared error.
+SAC-AE has no likelihood: it scores its reconstructions with a mean squared error. Its output `image` declares its own
+target transform, `sheeprl.transforms.Dequantize`: the pixels of the store reduced to 5 bits, with a uniform noise,
+in [-0.5, 0.5]. Its other outputs reconstruct the keys as its encoder reads them.
 
 ## The algorithms
 
@@ -262,9 +263,19 @@ check_net(MyEncoder(input_shape=(5, 5, 5)), (5, 5, 5))  # `output_dim` and the l
 check_input(cfg.algo.inputs.grid, store_space, compile=True)  # the input runs in both phases, in one compiled graph
 ```
 
-The concatenation of the features of the inputs is the class `sheeprl.models.io.MultiEncoder`, set by
-`algo.encoder._target_`: another class with the same constructor (`from_config(cfg_inputs, store_space)`) fuses the
-inputs another way.
+The encoder of the inputs and the decoder of the outputs are classes too, set by `algo.encoder._target_` and
+`algo.decoder._target_`. By default `sheeprl.models.io.MultiEncoder` concatenates the features of the inputs and
+`sheeprl.models.io.MultiDecoder` reconstructs every output with its own network. Another class must subclass
+`sheeprl.models.io.Encoder` or `sheeprl.models.io.Decoder`, the contracts the algorithms rely on:
+
+- an encoder has `keys` (what the policies read and the writers store), `output_dim`, `forward(obs, phase)`,
+  `targets(obs, keys)`, `store_space(key)`, `batch_space(key)`, and `named_keys()` and `named_nets()`, the keys and
+  the network of every input by name;
+- a decoder has `keys`, `forward(latent)`, which returns the reconstruction of every key, `targets(obs, encoder)`,
+  `log_probs(reconstructions, targets)`, and `named_keys()` and `named_nets()`.
+
+Both are built by their `from_config` class method, from `algo.inputs` and the spaces of the store, or from
+`algo.outputs`, the encoder and the size of the latent state.
 
 ## Checkpoints
 

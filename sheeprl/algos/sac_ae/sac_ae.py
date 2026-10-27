@@ -19,10 +19,9 @@ from torch.optim import Optimizer
 from sheeprl.algos.sac.loss import critic_loss, policy_loss
 from sheeprl.algos.sac_ae.agent import SACAEAgent, SACAEPolicy, build_agent
 from sheeprl.algos.sac_ae.loss import entropy_loss
-from sheeprl.algos.sac_ae.utils import preprocess_obs
 from sheeprl.core import Act, Algorithm, EnvStep, TrainSchedule, TrainState, Writer, run, transition_store, update
 from sheeprl.data.store import ReplayStore
-from sheeprl.models.io import MultiDecoder, MultiEncoder
+from sheeprl.models.io import Decoder, Encoder, log_inputs_and_outputs
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.fabric import autocast_cache_scope
 from sheeprl.utils.registry import register_algorithm
@@ -57,8 +56,8 @@ def actor_loss_fn(agent: SACAEAgent, observations: Dict[str, Tensor]) -> Tuple[T
 
 
 def reconstruction_loss_fn(
-    encoder: Union[MultiEncoder, _FabricModule],
-    decoder: Union[MultiDecoder, _FabricModule],
+    encoder: Union[Encoder, _FabricModule],
+    decoder: Union[Decoder, _FabricModule],
     observations: Dict[str, Tensor],
     targets: Dict[str, Tensor],
     keys: Tuple[str, ...],
@@ -128,8 +127,8 @@ class SACAEWriter(Writer):
 def train(
     fabric: Fabric,
     agent: SACAEAgent,
-    encoder: Union[MultiEncoder, _FabricModule],
-    decoder: Union[MultiDecoder, _FabricModule],
+    encoder: Union[Encoder, _FabricModule],
+    decoder: Union[Decoder, _FabricModule],
     actor_optimizer: Optimizer,
     qf_optimizer: Optimizer,
     alpha_optimizer: Optimizer,
@@ -182,11 +181,8 @@ def train(
 
     # Update the decoder
     if cumulative_per_rank_gradient_steps % cfg.algo.decoder.per_rank_update_freq == 0:
-        # The targets of the keys of the output `image`, the pixels of the store dequantized (5 bits, in [-0.5, 0.5]);
-        # the ones of the other outputs, the keys as the encoder reads them
-        image_keys = decoder.outputs["image"].keys if "image" in decoder.outputs else ()
-        targets = encoder.targets(data, [k for k in decoder.keys if k not in image_keys])
-        targets.update({k: preprocess_obs(data[k], bits=5) for k in image_keys})
+        # The keys as the encoder reads them, or through the transforms of their output (e.g. the pixels with 5 bits)
+        targets = decoder.targets(data, encoder)
         with autocast_cache_scope(fabric):
             reconstruction_loss = compiled(reconstruction_loss_fn, fabric, cfg)(
                 encoder,
@@ -241,10 +237,7 @@ class SACAE(Algorithm):
         agent, encoder, decoder, self._policy = build_agent(fabric, cfg, obs_space, action_space)
         if len(decoder.keys) == 0:
             raise RuntimeError("SAC-AE reconstructs at least one key: set the keys of an output (`algo.outputs`)")
-        if cfg.metric.log_level > 0:
-            for kind, modules in (("Input", encoder.inputs), ("Output", decoder.outputs)):
-                for name, module in modules.items():
-                    fabric.print(f"{kind} `{name}`: {list(module.keys)}")
+        log_inputs_and_outputs(fabric, cfg, encoder, decoder)
 
         optimizers = [
             hydra.utils.instantiate(optimizer_cfg, params=params, _convert_="all")

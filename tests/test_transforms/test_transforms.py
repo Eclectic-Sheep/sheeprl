@@ -9,6 +9,7 @@ from lightning import Fabric
 from sheeprl.transforms import (
     Cast,
     Clip,
+    Dequantize,
     ExpandDims,
     Flatten,
     FrameStack,
@@ -41,6 +42,7 @@ CATALOGUE = {
     "one_hot": (lambda: OneHot(), gym.spaces.Discrete(5, start=2)),
     "standardize": (lambda: Standardize(clip=5.0), gym.spaces.Box(-5, 5, (3,), np.float32)),
     "scale_batch": (lambda: Scale(), gym.spaces.Box(0, 255, (3, 4, 4), U8)),
+    "dequantize": (lambda: Dequantize(bits=5), gym.spaces.Box(0, 255, (3, 4, 4), U8)),
     "scale_frame_no_shift": (lambda: Scale(shift=0, where="frame"), gym.spaces.Box(0, 255, (3, 4, 4), U8)),
     "scale_envs": (lambda: Scale(divisor=10, where="envs"), gym.spaces.Box(-10, 10, (2,), np.float32)),
     "symlog": (lambda: Symlog(), gym.spaces.Box(-100, 100, (4,), np.float32)),
@@ -267,3 +269,13 @@ def test_a_pipeline_is_built_from_the_configuration():
     assert [type(t).__name__ for t in pipeline.transforms("batch")] == ["Scale"]
     with pytest.raises(TypeError, match="Transform"):
         Pipeline.from_config([{"_target_": "torch.nn.Identity"}], gym.spaces.Box(0, 1, (2,), np.float32))
+
+
+def test_dequantize_keeps_the_top_bits_of_the_pixels_and_adds_less_than_one_level_of_noise():
+    torch.manual_seed(0)
+    pixels = torch.randint(0, 256, (2, 3, 8, 8), dtype=torch.uint8)
+    out = Dequantize(bits=5).batch(pixels)
+    assert out.dtype == torch.float32 and out.min() >= -0.5 and out.max() < 0.5
+    # 32 levels: the level of every pixel is its 5 top bits, the noise is below one level
+    assert torch.equal(torch.floor((out + 0.5) * 32), torch.floor(pixels / 8))
+    assert not torch.equal(out, Dequantize(bits=5).batch(pixels))

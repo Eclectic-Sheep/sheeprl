@@ -13,7 +13,7 @@ from torch.distributions import Independent, Normal, OneHotCategorical
 from sheeprl.algos.ppo.agent import PPOActor, ortho_init_linear_layers
 from sheeprl.core.actions import ActionCodec
 from sheeprl.core.collector import Act, Policy
-from sheeprl.models.io import MultiEncoder, build_encoder, to_device
+from sheeprl.models.io import Encoder, build_encoder, to_device
 from sheeprl.models.models import MLP
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
@@ -127,7 +127,7 @@ class RecurrentPPOAgent(nn.Module):
     def __init__(
         self,
         codec: ActionCodec,
-        feature_extractor: MultiEncoder,
+        feature_extractor: Encoder,
         rnn_cfg: dotdict,
         actor_cfg: dotdict,
         critic_cfg: dotdict,
@@ -279,7 +279,7 @@ class RecurrentPPOPolicy(nn.Module, Policy):
 
     def __init__(
         self,
-        feature_extractor: MultiEncoder,
+        feature_extractor: Encoder,
         rnn: RecurrentModel,
         actor: PPOActor,
         critic: nn.Module,

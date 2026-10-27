@@ -10,7 +10,7 @@ from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor
 
 from sheeprl.algos.sac.agent import SACActor, SACPolicy
-from sheeprl.models.io import MultiEncoder
+from sheeprl.models.io import Encoder
 from sheeprl.models.models import MLP
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
@@ -211,7 +211,7 @@ class DROQAgent(nn.Module):
 def build_agent(
     fabric: Fabric,
     cfg: dotdict,
-    encoder: MultiEncoder,
+    encoder: Encoder,
     action_space: gymnasium.spaces.Box,
     agent_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[DROQAgent, SACPolicy]:

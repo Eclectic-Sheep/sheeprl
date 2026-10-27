@@ -1,4 +1,5 @@
-"""The `frame` transforms of the images: resize and color (`Image`), frame stacking (`FrameStack`)."""
+"""The transforms of the images: resize and color (`Image`) and frame stacking (`FrameStack`) at `frame`, the pixels
+with fewer bits and a uniform noise (`Dequantize`) at `batch`."""
 
 from __future__ import annotations
 
@@ -8,6 +9,8 @@ from typing import Any, Dict, Optional, Sequence
 import cv2
 import gymnasium as gym
 import numpy as np
+import torch
+from torch import Tensor
 
 from sheeprl.transforms.base import Transform
 
@@ -119,3 +122,32 @@ class FrameStack(Transform):
 
     def extra_repr(self) -> str:
         return f"n={self.n}, dilation={self.dilation}, refill_on={self.refill_on}"
+
+
+class Dequantize(Transform):
+    """8-bit pixels reduced to `bits` bits, scaled to [0, 1] with a uniform noise of one level of the reduced bits,
+    then shifted to [-0.5, 0.5] (https://arxiv.org/abs/1807.03039), as float: e.g. the targets of the reconstructions
+    of the images of SAC-AE. The noise is drawn at every call."""
+
+    where = "batch"
+
+    def __init__(self, bits: int = 5, where: Optional[str] = None, phases: Optional[Sequence[str]] = None) -> None:
+        super().__init__(where, phases)
+        if not 1 <= bits <= 8:
+            raise ValueError(f"Dequantize keeps from 1 to 8 bits of the pixels, got {bits}")
+        self.bits = bits
+
+    def space(self, space: gym.Space) -> gym.Space:
+        space = _box(space, "Dequantize")
+        return gym.spaces.Box(-0.5, 0.5, space.shape, np.float32)
+
+    def batch(self, x: Tensor) -> Tensor:
+        bins = 2**self.bits
+        if self.bits < 8:
+            x = torch.floor(x / 2 ** (8 - self.bits))
+        x = x / bins
+        x = x + torch.rand_like(x) / bins
+        return x - 0.5
+
+    def extra_repr(self) -> str:
+        return f"bits={self.bits}, where={self.where}"

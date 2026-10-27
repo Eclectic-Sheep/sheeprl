@@ -19,7 +19,7 @@ from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
 from sheeprl.algos.dreamer_v2.utils import init_weights as dv2_init_weights
 from sheeprl.core.actions import ActionCodec
-from sheeprl.models.io import MultiDecoder, MultiEncoder, build_encoder
+from sheeprl.models.io import Encoder, build_decoder, build_encoder
 from sheeprl.models.models import MLP
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
@@ -323,7 +323,7 @@ class DreamerV1Policy(nn.Module, DreamerPolicy):
 
     def __init__(
         self,
-        encoder: MultiEncoder | _FabricModule,
+        encoder: Encoder | _FabricModule,
         recurrent_model: RecurrentModel | _FabricModule,
         representation_model: MLP | _FabricModule,
         actor: Actor | _FabricModule,
@@ -496,7 +496,7 @@ def build_agent(
         distribution_cfg=cfg.distribution,
         min_std=world_model_cfg.min_std,
     )
-    observation_model = MultiDecoder.from_config(cfg.algo.outputs, encoder, latent_size=latent_state_size)
+    observation_model = build_decoder(cfg, encoder, latent_size=latent_state_size)
     reward_model = MLP(
         input_dims=latent_state_size,
         output_dim=1,

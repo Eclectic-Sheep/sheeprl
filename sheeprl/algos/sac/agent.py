@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 from torch import Tensor
 
 from sheeprl.core.collector import Act, Policy
-from sheeprl.models.io import MultiEncoder, to_device
+from sheeprl.models.io import Encoder, to_device
 from sheeprl.models.models import MLP
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
@@ -283,7 +283,7 @@ class SACPolicy(nn.Module, Policy):
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
         device: str | torch.device = "cpu",
-        encoder: Optional[MultiEncoder] = None,
+        encoder: Optional[Encoder] = None,
     ):
         super().__init__()
         self.model = feature_extractor
@@ -334,7 +334,7 @@ class SACPolicy(nn.Module, Policy):
 def build_agent(
     fabric: Fabric,
     cfg: dotdict,
-    encoder: MultiEncoder,
+    encoder: Encoder,
     action_space: gymnasium.spaces.Box,
     agent_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[SACAgent, SACPolicy]:
