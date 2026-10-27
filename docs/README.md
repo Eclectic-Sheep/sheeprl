@@ -153,22 +153,22 @@ An agent reads the observation keys it is given, through declared inputs: groups
 
 
 The actions supported by sheeprl agents are:
-| Algorithm                 | Continuous         | Discrete           | Multi-Discrete     |
-| ------------------------- | ------------------ | ------------------ | ------------------ |
-| A2C                       | ✅ | ✅ | ✅ |
-| A3C                       | ✅ | ✅ | ✅ |
-| PPO                       | ✅ | ✅ | ✅ |
-| PPO Recurrent             | ✅ | ✅ | ✅ |
-| SAC                       | ✅ | ❌                | ❌                |
-| SAC-AE                    | ✅ | ❌                | ❌                |
-| DroQ                      | ✅ | ❌                | ❌                |
-| Dreamer-V1                | ✅ | ✅ | ✅ |
-| Dreamer-V2                | ✅ | ✅ | ✅ |
-| Dreamer-V3                | ✅ | ✅ | ✅ |
-| Dreamer-V3 (Nature)       | ✅ | ✅ | ✅ |
-| Plan2Explore (Dreamer V1) | ✅ | ✅ | ✅ |
-| Plan2Explore (Dreamer V2) | ✅ | ✅ | ✅ |
-| Plan2Explore (Dreamer V3) | ✅ | ✅ | ✅ |
+| Algorithm                 | Continuous         | Discrete           | Multi-Discrete     | Mixed              |
+| ------------------------- | ------------------ | ------------------ | ------------------ | ------------------ |
+| A2C                       | ✅                  | ✅                  | ✅                  | ✅                  |
+| A3C                       | ✅                  | ✅                  | ✅                  | ❌                  |
+| PPO                       | ✅                  | ✅                  | ✅                  | ✅                  |
+| PPO Recurrent             | ✅                  | ✅                  | ✅                  | ✅                  |
+| SAC                       | ✅                  | ❌                  | ❌                  | ❌                  |
+| SAC-AE                    | ✅                  | ❌                  | ❌                  | ❌                  |
+| DroQ                      | ✅                  | ❌                  | ❌                  | ❌                  |
+| Dreamer-V1                | ✅                  | ✅                  | ✅                  | ✅                  |
+| Dreamer-V2                | ✅                  | ✅                  | ✅                  | ✅                  |
+| Dreamer-V3                | ✅                  | ✅                  | ✅                  | ✅                  |
+| Dreamer-V3 (Nature)       | ✅                  | ✅                  | ✅                  | ✅                  |
+| Plan2Explore (Dreamer V1) | ✅                  | ✅                  | ✅                  | ✅                  |
+| Plan2Explore (Dreamer V2) | ✅                  | ✅                  | ✅                  | ✅                  |
+| Plan2Explore (Dreamer V3) | ✅                  | ✅                  | ✅                  | ✅                  |
 
 > **Note**
 >
@@ -177,16 +177,16 @@ The actions supported by sheeprl agents are:
 The environments supported by sheeprl are:
 | Environment        | Installation command         | More info                                       | Status             |
 | ------------------ | ---------------------------- | ----------------------------------------------- | ------------------ |
-| Classic Control    | `pip install sheeprl`           |                                                 | ✅ |
-| Box2D              | `pip install sheeprl[box2d]`    | Please install first `swig` with `pip install swig` | ✅ |
-| Mujoco (Gymnasium) | `pip install sheeprl[mujoco]`   | [how_to/mujoco](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_dmc.md)        | ✅ |
-| Atari              | `pip install sheeprl[atari]`    | [how_to/atari](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_atari.md)       | ✅ |
-| DeepMind Control   | `pip install sheeprl[dmc]`      | [how_to/dmc](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_dmc.md)           | ✅ |
-| MineRL             | `pip install sheeprl[minerl]`   | [how_to/minerl](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_minerl.md)     | ✅ |
-| MineDojo           | `pip install sheeprl[minedojo]` | [how_to/minedojo](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_minedojo.md) | ✅ |
-| DIAMBRA            | `pip install sheeprl[diambra]`  | [how_to/diambra](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_diambra.md)   | ✅ |
-| Crafter            | `pip install sheeprl[crafter]`  | https://github.com/danijar/crafter              | ✅ |
-| Super Mario Bros   | `pip install sheeprl[supermario]` | https://github.com/Kautenja/gym-super-mario-bros/tree/master | ✅ |
+| Classic Control    | `uv pip install sheeprl`           |                                                 | ✅ |
+| Box2D              | `uv pip install "sheeprl[box2d]"`    | Please install first `swig` with `uv pip install swig` | ✅ |
+| Mujoco (Gymnasium) | `uv pip install "sheeprl[mujoco]"`   | [how_to/mujoco](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_dmc.md)        | ✅ |
+| Atari              | `uv pip install "sheeprl[atari]"`    | [how_to/atari](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_atari.md)       | ✅ |
+| DeepMind Control   | `uv pip install "sheeprl[dmc]"`      | [how_to/dmc](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_dmc.md)           | ✅ |
+| MineRL             | `uv pip install "sheeprl[minerl]"`   | [how_to/minerl](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_minerl.md)     | ✅ |
+| MineDojo           | `uv pip install "sheeprl[minedojo]"` | [how_to/minedojo](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_minedojo.md) | ✅ |
+| DIAMBRA            | `uv pip install "sheeprl[diambra]"`  | [how_to/diambra](https://github.com/Eclectic-Sheep/sheeprl/blob/main/howto/learn_in_diambra.md)   | ✅ |
+| Crafter            | `uv pip install "sheeprl[crafter]"`  | https://github.com/danijar/crafter              | ✅ |
+| Super Mario Bros   | `uv pip install "sheeprl[supermario]"` | https://github.com/Kautenja/gym-super-mario-bros/tree/master | ✅ |
 
 
 ## Why
@@ -201,26 +201,42 @@ Moreover, in many RL repositories, the RL algorithm is tightly coupled with the 
 
 ### Installation
 
-Three options exist for installing SheepRL
+SheepRL is installed with [uv](https://docs.astral.sh/uv/), a fast Python package manager. If you don't have it yet, install it with:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then create a virtual environment and activate it: SheepRL and its dependencies are installed there. SheepRL supports Python 3.10 to 3.13.
+
+```bash
+uv venv --python 3.11
+source .venv/bin/activate
+```
+
+Three options exist for installing SheepRL in it:
 
 1. Install the latest version directly from the [PyPi index](https://pypi.org/project/sheeprl/)
 2. Clone the repo and install the local version
-3. pip-install the framework using the GitHub clone URL
+3. Install the framework from its GitHub URL
 
 Instructions for the three methods are shown below.
 
-#### Install SheepRL from PyPi
+> **Note**
+>
+> SheepRL is installed with `uv pip install`, not with `uv sync`: some of its extras cannot be installed together (`minerl` and `minedojo` require different versions of `gym`), so the project has no lockfile. Install only the extras you need.
 
+#### Install SheepRL from PyPi
 
 You can install the latest version of SheepRL with
 
 ```bash
-pip install sheeprl
+uv pip install sheeprl
 ```
 
 > **Note**
 > 
-> To install optional dependencies one can run for example `pip install sheeprl[atari,box2d,dev,mujoco,test]`
+> To install optional dependencies one can run for example `uv pip install "sheeprl[atari,box2d,dev,mujoco,test]"`: the quotes keep shells like zsh from expanding the brackets
 
 For a detailed information about all the optional dependencies you can install please have a look at the [What](https://github.com/Eclectic-Sheep/sheeprl#what) section
 
@@ -233,54 +249,46 @@ git clone https://github.com/Eclectic-Sheep/sheeprl.git
 cd sheeprl
 ```
 
-From inside the newly created folder run
+From inside the newly created folder, with the virtual environment activated, run
 
 ```bash
-pip install .
+uv pip install .
 ```
 
 > **Note**
 > 
-> To install optional dependencies one can run for example `pip install .[atari,box2d,dev,mujoco,test]`
+> To install optional dependencies one can run for example `uv pip install ".[atari,box2d,dev,mujoco,test]"`
 
 #### Installing the framework from the GitHub repo
 
-If you haven't already done so, create an environment with your choice of venv or conda.
-
-> The example will use Python standard's venv module and assumes macOS or Linux.
+With the virtual environment activated:
 
 ```sh
-# create a virtual environment
-python3 -m venv .venv
+# if you do not wish to install extras such as mujoco, atari do
+uv pip install "sheeprl @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 
-# activate the environment
-source .venv/bin/activate
-
-# if you do not wish to install extras such as mujuco, atari do
-pip install "sheeprl @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
-
-# or, to install with atari and mujuco environment support, do
-pip install "sheeprl[atari,mujoco,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+# or, to install with atari and mujoco environment support, do
+uv pip install "sheeprl[atari,mujoco,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 
 # or, to install with box2d environment support, do
-pip install swig
-pip install "sheeprl[box2d] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+uv pip install swig
+uv pip install "sheeprl[box2d] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 
 # or, to install with minedojo environment support, do
-pip install "sheeprl[minedojo,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+uv pip install "sheeprl[minedojo,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 
 # or, to install with minerl environment support, do
-pip install "sheeprl[minerl,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+uv pip install "sheeprl[minerl,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 
 # or, to install with diambra environment support, do
-pip install "sheeprl[diambra,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+uv pip install "sheeprl[diambra,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 
 # or, to install with super mario bros environment support, do
-pip install "sheeprl[supermario,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+uv pip install "sheeprl[supermario,dev] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 
 # or, to install all extras, do
-pip install swig
-pip install "sheeprl[box2d,atari,mujoco,minerl,supermario,dev,test] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+uv pip install swig
+uv pip install "sheeprl[box2d,atari,mujoco,minerl,supermario,dev,test] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 ```
 
 #### Additional: installing on an M-series Mac
@@ -299,8 +307,8 @@ It is recommended to use [homebrew](https://brew.sh/) to install [SWIG](https://
 # then, do
 brew install swig
 
-# then attempt to pip install with the preferred method, such as
-pip install "sheeprl[atari,box2d,mujoco,dev,test] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
+# then attempt to install with the preferred method, such as
+uv pip install "sheeprl[atari,box2d,mujoco,dev,test] @ git+https://github.com/Eclectic-Sheep/sheeprl.git"
 ```
 
 #### Additional: MineRL and MineDojo
@@ -311,7 +319,7 @@ pip install "sheeprl[atari,box2d,mujoco,dev,test] @ git+https://github.com/Eclec
 
 > **Caution**
 >
-> **MineRL** and **MineDojo** environments have **conflicting requirements**, so **DO NOT install them together** with the `pip install sheeprl[minerl,minedojo]` command, but instead **install them individually** with either the command `pip install sheeprl[minerl]` or `pip install sheeprl[minedojo]` before running an experiment with the MineRL or MineDojo environment, respectively. 
+> **MineRL** and **MineDojo** environments have **conflicting requirements**, so **DO NOT install them together** with the `uv pip install "sheeprl[minerl,minedojo]"` command, but instead **install them individually** with either the command `uv pip install "sheeprl[minerl]"` or `uv pip install "sheeprl[minedojo]"` before running an experiment with the MineRL or MineDojo environment, respectively. 
 
 ### Run an experiment with SheepRL
 
