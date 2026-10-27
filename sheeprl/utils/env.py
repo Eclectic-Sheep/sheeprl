@@ -12,11 +12,13 @@ import numpy as np
 from sheeprl.envs.wrappers import (
     ActionRepeat,
     ActionsAsObservationWrapper,
+    FlattenNestedKeys,
     GrayscaleRenderWrapper,
     MaskVelocityWrapper,
     NormalizeAction,
     RewardAsObservationWrapper,
     TransformsWrapper,
+    has_nested_observations,
 )
 from sheeprl.transforms.observations import frame_pipelines
 from sheeprl.utils import fs
@@ -161,6 +163,9 @@ def make_env(
             )
         if cfg.env.get("render_key"):
             env = gym.wrappers.AddRenderObservation(env, render_only=False, render_key=cfg.env.render_key)
+        # The parts of the nested observations as flat keys (`agent.pos`, `sensors.0`)
+        if has_nested_observations(env.observation_space):
+            env = FlattenNestedKeys(env)
 
         if cfg.env.actions_as_observation.num_stack > 0 and "diambra" not in cfg.env.wrapper._target_:
             env = ActionsAsObservationWrapper(env, **cfg.env.actions_as_observation)
@@ -190,7 +195,11 @@ def make_env(
 
 
 def get_dummy_env(id: str):
-    if "grid" in id:
+    if "nested" in id:
+        from sheeprl.envs.dummy import NestedDummyEnv
+
+        env = NestedDummyEnv()
+    elif "grid" in id:
         from sheeprl.envs.dummy import GridDummyEnv
 
         env = GridDummyEnv()

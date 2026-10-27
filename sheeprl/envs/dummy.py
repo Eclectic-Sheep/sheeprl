@@ -146,3 +146,41 @@ class GridDummyEnv(gym.Env):
 
     def render(self):
         pass
+
+
+class NestedDummyEnv(gym.Env):
+    """Nested observations: `agent`, a dictionary of its `position` (3 values) and of its `inventory` (4 counts), and
+    `sensors`, a tuple of two readings of 2 values each, random at every step; a discrete action; episodes of `n_steps`
+    steps, with reward 0."""
+
+    def __init__(self, n_steps: int = 8, seed: Optional[int] = None):
+        self.observation_space = gym.spaces.Dict(
+            {
+                "agent": gym.spaces.Dict(
+                    {
+                        "position": gym.spaces.Box(-1, 1, (3,), np.float32),
+                        "inventory": gym.spaces.Box(0, 10, (4,), np.float32),
+                    }
+                ),
+                "sensors": gym.spaces.Tuple(
+                    (gym.spaces.Box(0, 1, (2,), np.float32), gym.spaces.Box(0, 1, (2,), np.float32))
+                ),
+            }
+        )
+        self.action_space = gym.spaces.Discrete(2)
+        self._n_steps = n_steps
+        self._current_step = 0
+        self.observation_space.seed(seed)
+
+    def reset(self, seed=None, options=None):
+        if seed is not None:
+            self.observation_space.seed(seed)
+        self._current_step = 0
+        return self.observation_space.sample(), {}
+
+    def step(self, action):
+        self._current_step += 1
+        return self.observation_space.sample(), 0.0, self._current_step == self._n_steps, False, {}
+
+    def render(self):
+        pass

@@ -1238,6 +1238,25 @@ def test_ppo_learns_from_grids(standard_args, start_time, inputs):
     remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
 
 
+def test_ppo_reads_the_parts_of_nested_observations(standard_args, start_time):
+    # The parts of the dictionary `agent` and of the tuple `sensors` of the environment as flat keys
+    root_dir = os.path.join(f"pytest_{start_time}", "ppo_nested", os.environ["LT_DEVICES"])
+    args = standard_args + [
+        "exp=ppo",
+        "env=dummy",
+        "env.id=nested_dummy",
+        f"algo.rollout_steps={os.environ['LT_DEVICES']}",
+        "algo.per_rank_batch_size=1",
+        "algo.inputs.image.keys=[]",
+        "algo.inputs.vector.keys=[agent.position,agent.inventory,sensors.0]",
+        f"root_dir={root_dir}",
+        "run_name=test_ppo_nested",
+    ]
+    with mock.patch.object(sys, "argv", args):
+        run()
+    remove_test_dir(os.path.join("logs", "runs", f"pytest_{start_time}"))
+
+
 def test_dreamer_v3_reconstructs_grids_with_a_bernoulli_likelihood(standard_args, start_time):
     # The grid of issue #237 through convolutions and reconstructed by an MLP (125 values reshaped to the grid) whose
     # outputs are the logits of its 0 and 1; the 2D plane flattened into the vector input and output

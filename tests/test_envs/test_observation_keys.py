@@ -81,3 +81,38 @@ def test_a_key_of_two_inputs_is_stored_once_with_the_same_stored_stages():
     assert list(space.spaces) == ["rgb"] and space["rgb"].shape == (3, 16, 16)
     with pytest.raises(ValueError, match="different `frame` or `envs` transforms"):
         first_obs(config([*two_inputs, "+algo.inputs.raw.transforms=[]"]))
+
+
+def test_the_parts_of_nested_observations_are_flat_keys():
+    from sheeprl.envs.dummy import NestedDummyEnv
+    from sheeprl.envs.wrappers import FlattenNestedKeys
+
+    env = FlattenNestedKeys(NestedDummyEnv(seed=0))
+    assert set(env.observation_space.spaces) == {"agent.position", "agent.inventory", "sensors.0", "sensors.1"}
+    nested, _ = env.env.reset(seed=0)
+    flat, _ = env.reset(seed=0)
+    assert np.array_equal(flat["agent.inventory"], nested["agent"]["inventory"])
+    assert np.array_equal(flat["sensors.1"], nested["sensors"][1])
+    assert all(env.observation_space[k].contains(v) for k, v in flat.items())
+
+
+def test_two_parts_with_the_same_flat_key_are_an_error():
+    import gymnasium as gym
+
+    from sheeprl.envs.wrappers import FlattenNestedKeys
+
+    class Clash(gym.Env):
+        observation_space = gym.spaces.Dict(
+            {"a.b": gym.spaces.Discrete(2), "a": gym.spaces.Dict({"b": gym.spaces.Discrete(2)})}
+        )
+        action_space = gym.spaces.Discrete(2)
+
+    with pytest.raises(ValueError, match="flat key `a.b`"):
+        FlattenNestedKeys(Clash())
+
+
+def test_make_env_flattens_the_nested_observations_and_keeps_the_declared_parts():
+    dummy = ["exp=ppo", "env=dummy", "env.id=nested_dummy"]
+    space, obs = first_obs(config([*dummy, "algo.inputs.vector.keys=[agent.position,sensors.1]"]))
+    assert set(space.spaces) == {"agent.position", "sensors.1"}
+    assert obs["agent.position"].shape == (3,) and obs["sensors.1"].shape == (2,)

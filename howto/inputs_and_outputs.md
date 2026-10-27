@@ -135,6 +135,18 @@ python sheeprl.py exp=ppo env=gym env.id=CartPole-v1 algo.inputs.vector.keys=[st
   "algo.inputs.vector.transforms=[{_target_:sheeprl.transforms.Standardize,clip:10.0}]"
 ```
 
+### Nested observations
+
+An environment may return nested observations: dictionaries or tuples inside the dictionary of the observations. Their
+parts become flat keys, joined by `.`: the part `position` of the dictionary `agent` is the key `agent.position`, the
+parts of the tuple `sensors` are `sensors.0` and `sensors.1`. The inputs list the parts they read, and the other parts
+are dropped like any undeclared key:
+
+```bash
+python sheeprl.py exp=ppo env=dummy env.id=nested_dummy algo.inputs.image.keys=[] \
+  algo.inputs.vector.keys=[agent.position,agent.inventory,sensors.0]
+```
+
 ### A new input
 
 An input other than `image` and `vector` is added with `+` from the command line, or in an experiment file. For

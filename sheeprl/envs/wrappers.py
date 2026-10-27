@@ -158,6 +158,54 @@ class RestartOnException(gym.Wrapper):
             return new_obs, info
 
 
+# The separator of the parts of the nested observations in their flat keys (`agent.pos`): not `/`, since the buffers
+# name their memory-mapped files after the keys
+NESTED_KEY_SEPARATOR = "."
+
+
+def _leaves(space: gym.Space, path: Tuple[Any, ...] = ()) -> List[Tuple[Tuple[Any, ...], gym.Space]]:
+    """The parts of `space` that are not `Dict` or `Tuple` spaces, with their paths (keys and indices)."""
+    if isinstance(space, gym.spaces.Dict):
+        return [leaf for key, part in space.spaces.items() for leaf in _leaves(part, (*path, key))]
+    if isinstance(space, gym.spaces.Tuple):
+        return [leaf for i, part in enumerate(space.spaces) for leaf in _leaves(part, (*path, i))]
+    return [(path, space)]
+
+
+def has_nested_observations(space: gym.spaces.Dict) -> bool:
+    """Whether some observations of the dictionary `space` are dictionaries or tuples."""
+    return any(isinstance(part, (gym.spaces.Dict, gym.spaces.Tuple)) for part in space.spaces.values())
+
+
+class FlattenNestedKeys(gym.ObservationWrapper):
+    """The parts of the nested observations as flat keys: the part `pos` of the dictionary `agent` is the key
+    `agent.pos`, the parts of a tuple are numbered (`sensors.0`, `sensors.1`). The observations that are neither
+    dictionaries nor tuples keep their keys. Two parts with the same flat key are an error."""
+
+    def __init__(self, env: Env) -> None:
+        super().__init__(env)
+        if not isinstance(env.observation_space, gym.spaces.Dict):
+            raise TypeError(f"FlattenNestedKeys takes a dictionary of observations, got {env.observation_space}")
+        self._paths: Dict[str, Tuple[Any, ...]] = {}
+        spaces: Dict[str, gym.Space] = {}
+        for path, space in _leaves(env.observation_space):
+            key = NESTED_KEY_SEPARATOR.join(str(part) for part in path)
+            if key in spaces:
+                raise ValueError(f"Two parts of the observations have the flat key `{key}`: rename one of them")
+            self._paths[key] = path
+            spaces[key] = space
+        self.observation_space = gym.spaces.Dict(spaces)
+
+    def observation(self, observation: Dict[str, Any]) -> Dict[str, Any]:
+        flat = {}
+        for key, path in self._paths.items():
+            value: Any = observation
+            for part in path:
+                value = value[part]
+            flat[key] = value
+        return flat
+
+
 class TransformsWrapper(gym.Wrapper):
     """The `frame` stage of the observation keys (`sheeprl.transforms`): every key the agent stores goes through the
     `frame` transforms of its pipeline, once per step of the environment; the other keys are dropped. The transforms get
