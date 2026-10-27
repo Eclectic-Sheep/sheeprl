@@ -19,6 +19,7 @@ from sheeprl.models.models import CNN, MLP, DeCNN, MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import cnn_forward
+from sheeprl.utils.utils import dotdict
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
@@ -250,7 +251,7 @@ class SACAEContinuousActor(nn.Module):
         self,
         encoder: Union[MultiEncoder, _FabricModule],
         action_dim: int,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         hidden_size: int = 1024,
         action_low: Union[SupportsFloat, NDArray] = -1.0,
         action_high: Union[SupportsFloat, NDArray] = 1.0,
@@ -554,7 +555,7 @@ def tie_actor_optimizer(optimizer_state: Dict[str, Any], agent_state: Dict[str, 
 
 def build_agent(
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     action_space: gymnasium.spaces.Box,
     agent_state: Optional[Dict[str, Tensor]] = None,

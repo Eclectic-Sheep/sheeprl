@@ -38,7 +38,7 @@ from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.distribution import SafeTanhTransform
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
-from sheeprl.utils.utils import symlog
+from sheeprl.utils.utils import dotdict, symlog
 
 
 class CNNEncoder(nn.Module):
@@ -393,7 +393,7 @@ class RSSM(nn.Module):
         transition_model (nn.Module): the transition model described in
             [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
             The model is composed by a multi-layer perceptron to predict the stochastic part of the latent state.
-        distribution_cfg (Dict[str, Any]): the configs of the distributions.
+        distribution_cfg (dotdict): the configs of the distributions.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
         unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
@@ -407,7 +407,7 @@ class RSSM(nn.Module):
         recurrent_model: RecurrentModel | _FabricModule,
         representation_model: nn.Module | _FabricModule,
         transition_model: nn.Module | _FabricModule,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         discrete: int = 32,
         unimix: float = 0.01,
         learnable_initial_recurrent_state: bool = True,
@@ -582,7 +582,7 @@ class DecoupledRSSM(RSSM):
         transition_model (nn.Module): the transition model described in
             [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
             The model is composed by a multi-layer perceptron to predict the stochastic part of the latent state.
-        distribution_cfg (Dict[str, Any]): the configs of the distributions.
+        distribution_cfg (dotdict): the configs of the distributions.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
         unimix: (float, optional): the percentage of uniform distribution to inject into the categorical
@@ -596,7 +596,7 @@ class DecoupledRSSM(RSSM):
         recurrent_model: nn.Module | _FabricModule,
         representation_model: nn.Module | _FabricModule,
         transition_model: nn.Module | _FabricModule,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         discrete: int = 32,
         unimix: float = 0.01,
         learnable_initial_recurrent_state: bool = True,
@@ -786,7 +786,7 @@ class Actor(nn.Module):
         actions_dim (Sequence[int]): the dimension in output of the actor.
             The number of actions if continuous, the dimension of the action if discrete.
         is_continuous (bool): whether or not the actions are continuous.
-        distribution_cfg (Dict[str, Any]): The configs of the distributions.
+        distribution_cfg (dotdict): The configs of the distributions.
         init_std (float): the amount to sum to the standard deviation.
             Default to 0.0.
         min_std (float): the minimum standard deviation for the actions.
@@ -817,7 +817,7 @@ class Actor(nn.Module):
         latent_state_size: int,
         actions_dim: Sequence[int],
         is_continuous: bool,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         init_std: float = 0.0,
         min_std: float = 1.0,
         max_std: float = 1.0,
@@ -942,7 +942,7 @@ class MinedojoActor(Actor):
         latent_state_size: int,
         actions_dim: Sequence[int],
         is_continuous: bool,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         init_std: float = 0,
         min_std: float = 0.1,
         max_std: float = 1.0,
@@ -1031,7 +1031,7 @@ def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
@@ -1044,7 +1044,7 @@ def build_agent(
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
         is_continuous (bool): whether or not the actions are continuous.
-        cfg (DictConfig): the configs of DreamerV3.
+        cfg (dotdict): the configs of DreamerV3.
         obs_space (Dict[str, Any]): the observation space.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
             Default to None.

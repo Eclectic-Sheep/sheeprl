@@ -1,6 +1,6 @@
 import os
 import warnings
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import hydra
 from lightning import Fabric
@@ -9,9 +9,10 @@ from lightning.fabric.plugins.collectives import TorchCollective
 from lightning.fabric.utilities.cloud_io import _is_dir, get_filesystem
 
 from sheeprl.utils import fs
+from sheeprl.utils.utils import dotdict
 
 
-def get_logger(fabric: Fabric, cfg: Dict[str, Any]) -> Optional[Logger]:
+def get_logger(fabric: Fabric, cfg: dotdict) -> Optional[Logger]:
     # Set logger only on rank-0 but share the logger directory: since we don't know
     # what is happening during the `fabric.save()` method, at least we assure that all
     # ranks save under the same named folder.

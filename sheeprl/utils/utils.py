@@ -32,19 +32,30 @@ TORCH_TO_NUMPY_DTYPE_DICT = {value: key for key, value in NUMPY_TO_TORCH_DTYPE_D
 
 
 class dotdict(dict):
-    """
-    A dictionary supporting dot notation.
-    """
-
-    __getattr__ = dict.get
-    __setattr__ = dict.__setitem__
-    __delattr__ = dict.__delitem__
+    """A dictionary supporting dot notation: `d.key` is `d["key"]`. A missing key raises `AttributeError`, as for any
+    other attribute (so `getattr(d, key, default)` and `hasattr` work, and a typo in a config key is an error rather
+    than a silent `None`); use `d.get(key)` for a key that may be absent."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for k, v in self.items():
             if isinstance(v, dict):
                 self[k] = dotdict(v)
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"'{type(self).__name__}' object has no key {name!r}") from None
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
+    def __delattr__(self, name: str) -> None:
+        try:
+            del self[name]
+        except KeyError:
+            raise AttributeError(f"'{type(self).__name__}' object has no key {name!r}") from None
 
     def __getstate__(self):
         return self
@@ -385,7 +396,7 @@ class Ratio:
 
 
 def off_policy_schedule(
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     state: Dict[str, Any],
     start_iter: int,
     total_iters: int,
@@ -408,7 +419,7 @@ def off_policy_schedule(
     then trains as a new run.
 
     Args:
-        cfg (Dict[str, Any]): the configuration of the run.
+        cfg (dotdict): the configuration of the run.
         state (Dict[str, Any]): the checkpoint the run resumes from (unused when it doesn't).
         start_iter (int): the first iteration of the run (1, or the one after the checkpoint).
         total_iters (int): the last iteration of the run.

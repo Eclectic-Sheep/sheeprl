@@ -4,7 +4,7 @@ import copy
 import itertools
 import math
 import warnings
-from typing import Any, Dict, Iterator, List
+from typing import Dict, Iterator, List
 
 import gymnasium as gym
 import hydra
@@ -26,7 +26,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import phase_timer, timer, training_timer
-from sheeprl.utils.utils import gae_function, normalize_tensor, save_configs
+from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor, save_configs
 
 
 def train(
@@ -35,7 +35,7 @@ def train(
     optimizer: torch.optim.Optimizer,
     data: Dict[str, Tensor],
     aggregator: MetricAggregator | None,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
 ) -> int:
     """Train the agent on the sequences of the rollout and return the gradient steps it did."""
     num_sequences = data[next(iter(data.keys()))].shape[1]
@@ -122,7 +122,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     initial_ent_coef = copy.deepcopy(cfg.algo.ent_coef)
     initial_clip_coef = copy.deepcopy(cfg.algo.clip_coef)
     clip_rewards_fn = lambda r: np.tanh(r) if cfg.env.clip_rewards else r

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
@@ -24,6 +24,7 @@ from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weight
 from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.distribution import SafeTanhTransform, TruncatedNormal
+from sheeprl.utils.utils import dotdict
 
 # The epsilon of the LayerNorms: the one of the `LayerNormalization` of Keras, which the official implementation uses
 # (https://github.com/danijar/dreamerv2), also inside its GRU
@@ -331,7 +332,7 @@ class RSSM(nn.Module):
         transition_model (_FabricModule): the transition model described in
             [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
             The model is composed by a multu-layer perceptron to predict the stochastic part of the latent state.
-        distribution_cfg (Dict[str, Any]): the configs of the distributions.
+        distribution_cfg (dotdict): the configs of the distributions.
         discrete (int, optional): the size of the Categorical variables.
             Defaults to 32.
     """
@@ -341,7 +342,7 @@ class RSSM(nn.Module):
         recurrent_model: _FabricModule,
         representation_model: _FabricModule,
         transition_model: _FabricModule,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         discrete: Optional[int] = 32,
     ) -> None:
         super().__init__()
@@ -443,7 +444,7 @@ class Actor(nn.Module):
         actions_dim (Sequence[int]): the dimension in output of the actor.
             The number of actions if continuous, the dimension of the action if discrete.
         is_continuous (bool): whether or not the actions are continuous.
-        distribution_cfg (Dict[str, Any]): The configs of the distributions.
+        distribution_cfg (dotdict): The configs of the distributions.
         init_std (float): the amount to sum to the input of the softplus function for the standard deviation.
             Default to 5.
         min_std (float): the minimum standard deviation for the actions.
@@ -469,7 +470,7 @@ class Actor(nn.Module):
         latent_state_size: int,
         actions_dim: Sequence[int],
         is_continuous: bool,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         init_std: float = 0.0,
         min_std: float = 0.1,
         dense_units: int = 400,
@@ -609,7 +610,7 @@ class MinedojoActor(Actor):
         latent_state_size: int,
         actions_dim: Sequence[int],
         is_continuous: bool,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         init_std: float = 0,
         min_std: float = 0.1,
         dense_units: int = 400,
@@ -867,7 +868,7 @@ def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
@@ -880,7 +881,7 @@ def build_agent(
         fabric (Fabric): the fabric object.
         actions_dim (Sequence[int]): the dimension of the actions.
         is_continuous (bool): whether or not the actions are continuous.
-        cfg (DictConfig): the configs.
+        cfg (dotdict): the configs.
         obs_space (Dict[str, Any]): the observation space.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
             Default to None.

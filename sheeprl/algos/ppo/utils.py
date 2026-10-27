@@ -15,7 +15,7 @@ from torch.optim import Optimizer
 from sheeprl.algos.ppo.agent import PPOPlayer, build_agent
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
-from sheeprl.utils.utils import polynomial_decay, unwrap_fabric
+from sheeprl.utils.utils import dotdict, polynomial_decay, unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -25,7 +25,7 @@ MODELS_TO_REGISTER = {"agent"}
 
 
 def anneal(
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     optimizer: Optimizer,
     iteration: int,
     total_iters: int,
@@ -95,7 +95,7 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(agent: PPOPlayer, fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
+def test(agent: PPOPlayer, fabric: Fabric, cfg: dotdict, log_dir: str, policy_step: int = 0):
     env = make_env(cfg, None, 0, log_dir, "test", vector_env_idx=0)()
     agent.eval()
     done = False
@@ -132,7 +132,7 @@ def normalize_obs(
 
 
 def log_models(
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     models_to_log: Dict[str, torch.nn.Module | _FabricModule],
     run_id: str,
     experiment_id: str | None = None,
@@ -156,7 +156,7 @@ def log_models(
 
 
 def log_models_from_checkpoint(
-    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: dotdict, state: Dict[str, Any]
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))

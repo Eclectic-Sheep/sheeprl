@@ -10,11 +10,13 @@ from lightning.fabric import Fabric
 from torch import Tensor
 from torch.utils._pytree import tree_flatten, tree_map
 
+from sheeprl.utils.utils import dotdict
+
 # The precisions in which the losses are compiled with CUDA graphs (`algo.compile.mode=reduce-overhead`)
 CUDA_GRAPHS_PRECISIONS = ("32-true", "32", 32, "bf16-mixed")
 
 
-def compile_mode(cfg: Dict[str, Any]) -> Optional[str]:
+def compile_mode(cfg: dotdict) -> Optional[str]:
     """The mode of `torch.compile` for the losses (`algo.compile.mode`), `None` for the default one. CUDA graphs
     (`reduce-overhead`) are used only in the precisions where they have been tested (`CUDA_GRAPHS_PRECISIONS`)."""
     mode = (cfg.algo.get("compile") or {}).get("mode", None)
@@ -29,14 +31,14 @@ def compile_mode(cfg: Dict[str, Any]) -> Optional[str]:
     return mode
 
 
-def compile_enabled(fabric: Fabric, cfg: Dict[str, Any]) -> bool:
+def compile_enabled(fabric: Fabric, cfg: dotdict) -> bool:
     """Whether the losses are compiled (`algo.compile.enabled`), also with several processes: the modules are not
     wrapped by `DistributedDataParallel` (`sheeprl.utils.fabric.setup_module`), whose forward `torch.compile` doesn't
     trace, and the gradients are averaged after the backward pass (`sheeprl.utils.fabric.update`)."""
     return bool((cfg.algo.get("compile") or {}).get("enabled", False))
 
 
-def compiled(fn: Callable, fabric: Fabric, cfg: Dict[str, Any]) -> Callable:
+def compiled(fn: Callable, fabric: Fabric, cfg: dotdict) -> Callable:
     """`fn` compiled with `torch.compile` when `algo.compile.enabled` is set (compiled once, at the first call)."""
     if not compile_enabled(fabric, cfg):
         return fn
@@ -46,7 +48,7 @@ def compiled(fn: Callable, fabric: Fabric, cfg: Dict[str, Any]) -> Callable:
     return _COMPILED[fn, mode]
 
 
-def compiled_player(fn: Callable, fabric: Fabric, cfg: Dict[str, Any], cuda_graphs: bool = True) -> Callable:
+def compiled_player(fn: Callable, fabric: Fabric, cfg: dotdict, cuda_graphs: bool = True) -> Callable:
     """`fn`, the function that a player calls at every step (e.g. its `forward`), compiled with `torch.compile` when
     `algo.compile.enabled` and `algo.compile.player` are set, for the inputs of its first call: called with other
     inputs (e.g. the final observations of some of the environments, or the ones of the test) it runs uncompiled,
@@ -93,7 +95,7 @@ def _signature(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Tuple[Any, ...]
     )
 
 
-def mark_gradient_step(fabric: Fabric, cfg: Dict[str, Any]) -> None:
+def mark_gradient_step(fabric: Fabric, cfg: dotdict) -> None:
     """A new gradient step: with CUDA graphs, the outputs of the ones of the previous step, already used, can be
     overwritten."""
     if compile_enabled(fabric, cfg) and compile_mode(cfg) == "reduce-overhead":

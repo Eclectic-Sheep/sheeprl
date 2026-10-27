@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import warnings
-from typing import Any, Dict
 
 import gymnasium as gym
 import hydra
@@ -22,14 +21,14 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import phase_timer, timer, training_timer
-from sheeprl.utils.utils import off_policy_schedule, save_configs, unwrap_fabric
+from sheeprl.utils.utils import dotdict, off_policy_schedule, save_configs, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict, exploration_cfg: dotdict):
     # Single-device fabric object
     fabric_player = get_single_device_fabric(fabric)
 
@@ -49,7 +48,6 @@ def main(fabric: Fabric, cfg: Dict[str, Any], exploration_cfg: Dict[str, Any]):
     cfg.algo.gamma = exploration_cfg.algo.gamma
     cfg.algo.lmbda = exploration_cfg.algo.lmbda
     cfg.algo.horizon = exploration_cfg.algo.horizon
-    cfg.algo.layer_norm = exploration_cfg.algo.layer_norm
     cfg.algo.dense_units = exploration_cfg.algo.dense_units
     cfg.algo.mlp_layers = exploration_cfg.algo.mlp_layers
     cfg.algo.dense_act = exploration_cfg.algo.dense_act

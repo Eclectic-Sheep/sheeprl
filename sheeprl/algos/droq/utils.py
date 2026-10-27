@@ -9,7 +9,7 @@ from sheeprl.algos.droq.agent import build_agent
 from sheeprl.algos.sac.utils import AGGREGATOR_KEYS as sac_aggregator_keys
 from sheeprl.algos.sac.utils import MODELS_TO_REGISTER as sac_models_to_register
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
-from sheeprl.utils.utils import unwrap_fabric
+from sheeprl.utils.utils import dotdict, unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -19,7 +19,7 @@ MODELS_TO_REGISTER = sac_models_to_register
 
 
 def log_models_from_checkpoint(
-    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: dotdict, state: Dict[str, Any]
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))

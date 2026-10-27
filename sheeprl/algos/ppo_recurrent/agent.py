@@ -1,5 +1,5 @@
 from math import prod, sqrt
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
@@ -13,11 +13,12 @@ from sheeprl.algos.ppo.agent import CNNEncoder, MLPEncoder, PPOActor, ortho_init
 from sheeprl.models.models import MLP, MultiEncoder
 from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
+from sheeprl.utils.utils import dotdict
 
 
 class RecurrentModel(nn.Module):
     def __init__(
-        self, input_size: int, lstm_hidden_size: int, pre_rnn_mlp_cfg: Dict[str, Any], post_rnn_mlp_cfg: Dict[str, Any]
+        self, input_size: int, lstm_hidden_size: int, pre_rnn_mlp_cfg: dotdict, post_rnn_mlp_cfg: dotdict
     ) -> None:
         super().__init__()
         if pre_rnn_mlp_cfg.apply:
@@ -85,14 +86,14 @@ class RecurrentPPOAgent(nn.Module):
         self,
         actions_dim: Sequence[int],
         obs_space: gymnasium.spaces.Dict,
-        encoder_cfg: Dict[str, Any],
-        rnn_cfg: Dict[str, Any],
-        actor_cfg: Dict[str, Any],
-        critic_cfg: Dict[str, Any],
+        encoder_cfg: dotdict,
+        rnn_cfg: dotdict,
+        actor_cfg: dotdict,
+        critic_cfg: dotdict,
         cnn_keys: Sequence[str],
         mlp_keys: Sequence[str],
         is_continuous: bool,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         num_envs: int = 1,
         screen_size: int = 64,
         device: Union[torch.device, str] = "cpu",
@@ -422,7 +423,7 @@ def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[RecurrentPPOAgent, RecurrentPPOPlayer]:

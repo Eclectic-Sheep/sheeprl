@@ -14,7 +14,7 @@ from torch import Tensor
 from sheeprl.algos.sac.utils import AGGREGATOR_KEYS
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
-from sheeprl.utils.utils import unwrap_fabric
+from sheeprl.utils.utils import dotdict, unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -40,7 +40,7 @@ def prepare_obs(
 
 
 @torch.no_grad()
-def test(actor: "SACAEPlayer", fabric: Fabric, cfg: Dict[str, Any], log_dir: str, policy_step: int = 0):
+def test(actor: "SACAEPlayer", fabric: Fabric, cfg: dotdict, log_dir: str, policy_step: int = 0):
     env = make_env(cfg, cfg.seed, 0, log_dir, "test", vector_env_idx=0)()
     actor.eval()
     done = False
@@ -92,7 +92,7 @@ def weight_init(m: nn.Module):
 
 
 def log_models(
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     models_to_log: Dict[str, torch.nn.Module | _FabricModule],
     run_id: str,
     experiment_id: str | None = None,
@@ -116,7 +116,7 @@ def log_models(
 
 
 def log_models_from_checkpoint(
-    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: dotdict, state: Dict[str, Any]
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))
