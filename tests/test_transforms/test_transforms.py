@@ -8,6 +8,7 @@ from lightning import Fabric
 
 from sheeprl.transforms import (
     Cast,
+    Clip,
     ExpandDims,
     Flatten,
     FrameStack,
@@ -15,8 +16,11 @@ from sheeprl.transforms import (
     OneHot,
     Pipeline,
     Scale,
+    ScaleByReturnStd,
+    Sign,
     Standardize,
     Symlog,
+    Tanh,
     Transform,
     check_transform,
 )
@@ -40,6 +44,10 @@ CATALOGUE = {
     "scale_frame_no_shift": (lambda: Scale(shift=0, where="frame"), gym.spaces.Box(0, 255, (3, 4, 4), U8)),
     "scale_rows": (lambda: Scale(divisor=10, where="rows"), gym.spaces.Box(-10, 10, (2,), np.float32)),
     "symlog": (lambda: Symlog(), gym.spaces.Box(-100, 100, (4,), np.float32)),
+    "scale_by_return_std": (lambda: ScaleByReturnStd(gamma=0.9, clip=5.0), gym.spaces.Box(-10, 10, (), np.float32)),
+    "tanh": (lambda: Tanh(), gym.spaces.Box(-10, 10, (), np.float64)),
+    "sign": (lambda: Sign(), gym.spaces.Box(-10, 10, (), np.float32)),
+    "clip_batch": (lambda: Clip(-1.0, 2.0, where="batch"), gym.spaces.Box(-10, 10, (3,), np.float32)),
 }
 
 

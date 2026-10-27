@@ -49,8 +49,8 @@ class PPOWriter(Writer):
     """Writes every step in the rollout, with the columns of the actions of `PPOPolicy.act`. The rewards of the
     episodes truncated by the time limit are bootstrapped with the values of `policy`.
 
-    With `clip_rewards`, the rewards are squashed by a tanh; with `rewards_dtype`, they are stored with that dtype,
-    otherwise with the one of the environments (as A2C does).
+    The rewards are the ones of the environments after their transforms (`algo.rewards.transforms`); with
+    `rewards_dtype`, they are stored with that dtype, otherwise with the one of the environments (as A2C does).
     """
 
     def __init__(
@@ -58,13 +58,11 @@ class PPOWriter(Writer):
         fabric: Fabric,
         cfg: dotdict,
         policy: PPOPolicy,
-        clip_rewards: bool,
         rewards_dtype: Optional[np.dtype] = np.float32,
     ) -> None:
         self.fabric = fabric
         self.cfg = cfg
         self.policy = policy
-        self.clip_rewards = clip_rewards
         self.rewards_dtype = rewards_dtype
         self.cnn_keys = legacy_keys(cfg).image_keys
         self.obs_keys = legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys
@@ -79,9 +77,8 @@ class PPOWriter(Writer):
             return self.policy.get_values(final_obs).cpu().numpy()
 
         # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP: the
-        # value of their final observation is added to the reward, after the rewards are clipped
-        rewards = np.tanh(step.rewards) if self.clip_rewards else step.rewards
-        rewards = bootstrap_truncated(rewards, step.terminated, step.truncated, final_values, cfg.algo.gamma)
+        # value of their final observation is added to the reward, after the transforms of the rewards
+        rewards = bootstrap_truncated(step.rewards, step.terminated, step.truncated, final_values, cfg.algo.gamma)
         dones = np.logical_or(step.terminated, step.truncated).reshape(num_envs, -1).astype(np.uint8)
         rewards = rewards.reshape(num_envs, -1)
         if self.rewards_dtype is not None:
@@ -187,7 +184,7 @@ class PPO(Algorithm):
         return self._policy
 
     def writer(self, state: PPOState, policy: PPOPolicy) -> PPOWriter:
-        return PPOWriter(self.fabric, self.cfg, policy, clip_rewards=self.cfg.env.clip_rewards)
+        return PPOWriter(self.fabric, self.cfg, policy)
 
     def batches(
         self, state: PPOState, rollout: ReplayStore, n_steps: Optional[int], iteration: int

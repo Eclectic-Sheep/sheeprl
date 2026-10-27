@@ -133,7 +133,7 @@ def run_algorithm(cfg: dotdict):
         cfg.env.screen_size = exploration_cfg.env.screen_size
         cfg.env.action_repeat = exploration_cfg.env.action_repeat
         cfg.env.grayscale = exploration_cfg.env.grayscale
-        cfg.env.clip_rewards = exploration_cfg.env.clip_rewards
+        cfg.algo.rewards = exploration_cfg.algo.rewards
         cfg.env.max_episode_steps = exploration_cfg.env.max_episode_steps
         cfg.env.reward_as_observation = exploration_cfg.env.reward_as_observation
         _env_target = cfg.env.wrapper._target_.lower()

@@ -17,7 +17,7 @@ CFG = dotdict(
     {
         "algo": {"inputs": {"vector": {"keys": ["state"]}}},
         "buffer": {"validate_args": False, "type": "sequential"},
-        "env": {"clip_rewards": False},
+        "env": {},
         "dry_run": False,
     }
 )

@@ -130,7 +130,7 @@ class DreamerV3Writer(Writer):
         rewards = self.cast(step.rewards.reshape((1, num_envs, -1)))
         step_data["terminated"] = self.cast(step.terminated.reshape((1, num_envs, -1)))
         step_data["truncated"] = self.cast(step.truncated.reshape((1, num_envs, -1)))
-        step_data["rewards"] = np.tanh(rewards) if cfg.env.clip_rewards else rewards
+        step_data["rewards"] = rewards
 
         # The episodes that have just ended get a last row with their final observation; the next row, the first
         # observation of the new episode, gets zero reward and `is_first`

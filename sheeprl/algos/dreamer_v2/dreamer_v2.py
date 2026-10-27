@@ -118,8 +118,7 @@ class DreamerV2Writer(Writer):
         step_data["truncated"] = step.truncated.reshape((1, num_envs, -1))
         # The actions are stored one-hot for discrete actions, while the environments take their indices
         step_data["actions"] = act.columns["actions"].reshape((1, num_envs, -1))
-        rewards = np.tanh(step.rewards) if cfg.env.clip_rewards else step.rewards
-        step_data["rewards"] = rewards.reshape((1, num_envs, -1))
+        step_data["rewards"] = step.rewards.reshape((1, num_envs, -1))
         buffer.add(step_data, validate_args=cfg.buffer.validate_args)
 
         # The episodes that have just ended get a row with the first observation of the new episode

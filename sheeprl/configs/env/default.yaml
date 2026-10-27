@@ -4,14 +4,6 @@ sync_env: False
 screen_size: 64
 action_repeat: 1
 grayscale: False
-clip_rewards: False
-# On-policy algorithms only (`sheeprl/envs/normalization.py`): divide the rewards by the running std of the
-# discounted return (with `algo.gamma`), then clip them. The statistics are saved in the checkpoints. The observations
-# are standardized by the `sheeprl.transforms.Standardize` transform of an input
-normalization:
-  rewards: False
-  clip_rewards: 10.0
-  epsilon: 1e-8
 capture_video: True
 actions_as_observation:
   num_stack: -1

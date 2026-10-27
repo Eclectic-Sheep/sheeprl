@@ -74,9 +74,8 @@ class RecurrentPPOWriter(Writer):
             return values.cpu().numpy()
 
         # The episodes truncated by the time limit (and not terminated in the same step) don't end in the MDP: the
-        # value of their final observation is added to the reward, after the rewards are clipped
-        rewards = np.tanh(step.rewards) if cfg.env.clip_rewards else step.rewards
-        rewards = bootstrap_truncated(rewards, step.terminated, step.truncated, final_values, cfg.algo.gamma)
+        # value of their final observation is added to the reward, after the transforms of the rewards
+        rewards = bootstrap_truncated(step.rewards, step.terminated, step.truncated, final_values, cfg.algo.gamma)
         dones = np.logical_or(step.terminated, step.truncated).reshape(1, num_envs, -1).astype(np.float32)
         rewards = rewards.reshape(1, num_envs, -1).astype(np.float32)
 

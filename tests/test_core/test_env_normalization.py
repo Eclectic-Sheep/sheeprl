@@ -1,6 +1,6 @@
-"""The normalization of the observations (the `Standardize` transform) and of the rewards (`env.normalization`): the
-environments normalize their steps, the checkpoints save the statistics, a resumed run goes on from them and the
-evaluation plays with them."""
+"""The normalization of the observations (the `Standardize` transform) and of the rewards (the `ScaleByReturnStd`
+transform): the environments normalize their steps, the checkpoints save the statistics, a resumed run goes on from
+them and the evaluation plays with them."""
 
 from __future__ import annotations
 
@@ -18,10 +18,11 @@ import torch
 
 from sheeprl import ROOT_DIR
 from sheeprl.core import Episode, GymEnvironment, loop
-from sheeprl.envs.normalization import RewardNormalizer
-from sheeprl.transforms import Pipeline, Standardize
+from sheeprl.transforms import Pipeline, ScaleByReturnStd, Standardize, Tanh
 from sheeprl.transforms.observations import RowsTransforms
+from sheeprl.transforms.rewards import REWARD_SPACE
 from sheeprl.utils.env import get_vector_env_cls
+from tests.test_transforms import oracles
 
 COMMON_ARGS = [
     "hydra/job_logging=disabled",
@@ -46,7 +47,7 @@ PPO_ARGS = [
     "algo.rollout_steps=4",
     "algo.per_rank_batch_size=4",
     "algo.inputs.vector.transforms=[{_target_:sheeprl.transforms.Standardize}]",
-    "env.normalization.rewards=True",
+    "algo.rewards.transforms=[{_target_:sheeprl.transforms.ScaleByReturnStd,gamma:${algo.gamma}}]",
 ]
 
 
@@ -69,9 +70,8 @@ class TwoStepEnv(gym.Env):
 def two_step_environment() -> GymEnvironment:
     envs = get_vector_env_cls(True)([lambda: gym.wrappers.RecordEpisodeStatistics(TwoStepEnv())] * 2)
     pipeline = Pipeline([Standardize()], envs.single_observation_space["state"], "rows", "rows")
-    return GymEnvironment(
-        envs, seed=0, transforms=RowsTransforms({"state": pipeline}), reward_normalizer=RewardNormalizer(2, gamma=0.5)
-    )
+    rewards = Pipeline([ScaleByReturnStd(gamma=0.5)], REWARD_SPACE, "rows", "rows")
+    return GymEnvironment(envs, seed=0, transforms=RowsTransforms({"state": pipeline}), rewards=rewards)
 
 
 def standardize_of(env: GymEnvironment) -> Standardize:
@@ -81,6 +81,11 @@ def standardize_of(env: GymEnvironment) -> Standardize:
 def count_of(env_state, key: str = "state") -> float:
     """The count of the statistics of `Standardize` of `key` in the state of the environments of a checkpoint."""
     return float(env_state["transforms"][key]["stages.rows.0.stats.count"])
+
+
+def rewards_count_of(env_state) -> float:
+    """The count of the statistics of `ScaleByReturnStd` in the state of the environments of a checkpoint."""
+    return float(env_state["rewards"]["stages.rows.0.stats.count"])
 
 
 def test_gym_environment_normalizes_the_observations_and_the_rewards_of_its_steps():
@@ -102,14 +107,14 @@ def test_gym_environment_normalizes_the_observations_and_the_rewards_of_its_step
     assert np.allclose(second.rewards, 1 / 0.25, rtol=1e-3)
     # The ended episodes keep the rewards of the environment, and the returns start again
     assert second.episodes == (Episode(0, 2.0, 2), Episode(1, 2.0, 2))
-    assert np.array_equal(env.reward_normalizer.returns, np.zeros(2))
+    assert np.array_equal(env.rewards.stages["rows"][0].returns, np.zeros(2))
     state = env.state_dict()
     env.close()
 
     restored = two_step_environment()
     restored.load_state_dict(state)
     assert float(standardize_of(restored).stats.count) == float(stats.count)
-    assert restored.reward_normalizer.stats.count == pytest.approx(4 + 1e-4)
+    assert float(restored.rewards.stages["rows"][0].stats.count) == pytest.approx(4 + 1e-4)
     restored.close()
 
 
@@ -137,7 +142,7 @@ def test_the_statistics_of_the_normalization_are_resumed_and_evaluated():
             run_cli([*argv, "algo.total_steps=16", "run_name=first", "algo.run_test=True"])
         first = torch.load(last_checkpoint(root_dir, "first"), weights_only=False)["env"]
         assert count_of(first) == pytest.approx(2 + 16 + 1e-4)
-        assert first["reward_normalizer"]["count"] == pytest.approx(16 + 1e-4)
+        assert rewards_count_of(first) == pytest.approx(16 + 1e-4)
         # The test episode plays with the statistics of the training
         assert float(norm.call_args.args[0].stats.count) == pytest.approx(2 + 16 + 1e-4)
         assert norm.call_args.kwargs["update"] is False
@@ -154,7 +159,7 @@ def test_the_statistics_of_the_normalization_are_resumed_and_evaluated():
         ckpt_path = last_checkpoint(root_dir, "resumed")
         resumed = torch.load(ckpt_path, weights_only=False)["env"]
         assert count_of(resumed) == pytest.approx(2 * (2 + 16) + 1e-4)
-        assert resumed["reward_normalizer"]["count"] == pytest.approx(2 * 16 + 1e-4)
+        assert rewards_count_of(resumed) == pytest.approx(2 * 16 + 1e-4)
 
         # The evaluation normalizes with the statistics of the checkpoint, without changing them
         with (
@@ -193,7 +198,7 @@ def test_the_checkpoint_has_the_statistics_of_all_the_processes():
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
     assert count_of(state) == pytest.approx(2 * (2 + 16) + 1e-4)
-    assert state["reward_normalizer"]["count"] == pytest.approx(2 * 16 + 1e-4)
+    assert rewards_count_of(state) == pytest.approx(2 * 16 + 1e-4)
 
 
 def test_the_sync_of_the_environments_is_not_timed_with_the_interaction(monkeypatch):
@@ -223,14 +228,21 @@ def test_the_sync_of_the_environments_is_not_timed_with_the_interaction(monkeypa
     assert phases_at_sync == [[]]
 
 
-def test_off_policy_algorithms_reject_the_normalization():
+@pytest.mark.parametrize(
+    "transforms",
+    [
+        "algo.inputs.vector.transforms=[{_target_:sheeprl.transforms.Standardize}]",
+        "algo.rewards.transforms=[{_target_:sheeprl.transforms.ScaleByReturnStd,gamma:0.9}]",
+    ],
+)
+def test_off_policy_algorithms_reject_the_normalization(transforms):
     argv = [
         os.path.join(ROOT_DIR, "__main__.py"),
         *COMMON_ARGS,
         "exp=sac",
         "env.id=Pendulum-v1",
         "dry_run=True",
-        "algo.inputs.vector.transforms=[{_target_:sheeprl.transforms.Standardize}]",
+        transforms,
         "root_dir=pytest_env_normalization_sac",
     ]
     try:
@@ -238,3 +250,64 @@ def test_off_policy_algorithms_reject_the_normalization():
             run_cli(argv)
     finally:
         shutil.rmtree(os.path.join("logs", "runs", "pytest_env_normalization_sac"), ignore_errors=True)
+
+
+def test_the_rewards_are_normalized_then_squashed_in_the_environments():
+    # The former `env.normalization.rewards` and `env.clip_rewards`: the normalizer ran in the environments, the tanh
+    # in the writers, after it
+    env = two_step_environment()
+    env.rewards = Pipeline([ScaleByReturnStd(gamma=0.5), Tanh()], REWARD_SPACE, "rows", "rows")
+    oracle = oracles.RewardNormalizer(2, gamma=0.5)
+    env.reset()
+    for _ in range(4):
+        step = env.step(np.zeros(2, dtype=np.int64))
+        dones = step.terminated | step.truncated
+        assert np.array_equal(step.rewards, np.tanh(oracle(np.ones(2), dones)))
+    env.close()
+
+
+def test_ppo_bootstraps_the_transformed_rewards():
+    # The writer of PPO bootstraps the episodes truncated by the time limit with the rewards of the steps, so after
+    # their transforms: normalized, squashed, then bootstrapped
+    from sheeprl.algos.ppo import ppo
+    from sheeprl.core import environment
+
+    stepped, bootstrapped = [], []
+    gym_step, bootstrap = environment.GymEnvironment.step, ppo.bootstrap_truncated
+
+    def recording_step(self, actions):
+        step = gym_step(self, actions)
+        stepped.append((step.rewards.copy(), step.truncated.copy()))
+        return step
+
+    def recording_bootstrap(rewards, *args, **kwargs):
+        bootstrapped.append(np.array(rewards, copy=True))
+        return bootstrap(rewards, *args, **kwargs)
+
+    root_dir = "pytest_env_normalization_bootstrap"
+    argv = [
+        os.path.join(ROOT_DIR, "__main__.py"),
+        *COMMON_ARGS,
+        "exp=ppo",
+        "env.id=CartPole-v1",
+        "env.max_episode_steps=3",
+        "algo.rollout_steps=8",
+        "algo.per_rank_batch_size=8",
+        "algo.total_steps=16",
+        "algo.run_test=False",
+        "algo.rewards.transforms=[{_target_:sheeprl.transforms.ScaleByReturnStd,gamma:0.9},{_target_:sheeprl.transforms.Tanh}]",
+        f"root_dir={root_dir}",
+        "run_name=run",
+    ]
+    try:
+        with (
+            mock.patch.object(environment.GymEnvironment, "step", recording_step),
+            mock.patch.object(ppo, "bootstrap_truncated", recording_bootstrap),
+        ):
+            run_cli(argv)
+    finally:
+        shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
+    assert len(stepped) == len(bootstrapped) == 8 and any(truncated.any() for _, truncated in stepped)
+    # The rewards of CartPole are 1: squashed, they are below
+    assert all(np.abs(rewards).max() < 1 for rewards, _ in stepped)
+    assert all(np.array_equal(rewards, given) for (rewards, _), given in zip(stepped, bootstrapped))

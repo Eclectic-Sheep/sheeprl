@@ -69,8 +69,8 @@ class P2EDV2Finetuning(Algorithm):
             cfg.algo.world_model = exploration_cfg.algo.world_model
             cfg.algo.actor = exploration_cfg.algo.actor
             cfg.algo.critic = exploration_cfg.algo.critic
-            # Rewards must be clipped in the same way as during exploration
-            cfg.env.clip_rewards = exploration_cfg.env.clip_rewards
+            # The rewards are transformed as during the exploration
+            cfg.algo.rewards = exploration_cfg.algo.rewards
             # And the actions normalized in the same way (an exploration saved before the option didn't normalize them)
             cfg.algo.normalize_actions = exploration_cfg.algo.get("normalize_actions", False)
             # If the buffer is the same of the exploration, then we have to mantain the same number

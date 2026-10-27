@@ -51,12 +51,6 @@ def run(fabric: Fabric, cfg: dotdict, algo: Algorithm) -> Tuple[TrainState, str,
     if not MetricAggregator.disabled:
         aggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(fabric.device)
 
-    normalization = cfg.env.get("normalization") or {}
-    if algo.off_policy and normalization.get("rewards"):
-        raise ValueError(
-            "`env.normalization` is supported only by on-policy algorithms: the replay buffer of an off-policy "
-            "algorithm would keep rewards normalized with statistics that change during the training"
-        )
     schedule = TrainSchedule(cfg, fabric.world_size, algo.steps_per_iteration, checkpoint, algo.off_policy)
     env = GymEnvironment.from_config(
         fabric, cfg, log_dir, restart_on_exception=algo.restart_crashed_envs, off_policy=algo.off_policy

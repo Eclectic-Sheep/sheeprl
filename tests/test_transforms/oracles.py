@@ -136,3 +136,21 @@ class ObsNormalizer:
             normalized = (obs[k] - stats.mean) / np.sqrt(stats.var + self.epsilon)
             obs[k] = np.clip(normalized, -self.clip, self.clip).astype(np.float32)
         return obs
+
+
+class RewardNormalizer:
+    """`RewardNormalizer` (`sheeprl/envs/normalization.py`), without the sync."""
+
+    def __init__(self, num_envs: int, gamma: float, clip: float = 10.0, epsilon: float = 1e-8) -> None:
+        self.stats = RunningMeanStd()
+        self.returns = np.zeros(num_envs, dtype=np.float64)
+        self.gamma = gamma
+        self.clip = clip
+        self.epsilon = epsilon
+
+    def __call__(self, rewards: np.ndarray, dones: np.ndarray) -> np.ndarray:
+        self.returns = self.returns * self.gamma + rewards
+        self.stats.update(self.returns)
+        normalized = np.clip(rewards / np.sqrt(self.stats.var + self.epsilon), -self.clip, self.clip)
+        self.returns[dones] = 0.0
+        return normalized.astype(np.result_type(rewards.dtype, np.float32))

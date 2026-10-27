@@ -12,6 +12,12 @@ inputs: {}
 outputs: {}
 # The observation keys stored as they are and never encoded, read by the algorithm (e.g. the action masks of MineDojo)
 extra_keys: []
+# The transforms of the rewards of the environments, applied before they are stored (`sheeprl/transforms/rewards.py`),
+# e.g. `[{_target_: sheeprl.transforms.ScaleByReturnStd, gamma: "${algo.gamma}"}, {_target_: sheeprl.transforms.Tanh}]`
+# for the rewards divided by the std of the discounted return, then squashed. The ones with statistics are for the
+# on-policy algorithms only
+rewards:
+  transforms: []
 
 # Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start (a few minutes the
 # first time, then mostly reused from the cache of PyTorch). `mode` is the one of `torch.compile`: `reduce-overhead`

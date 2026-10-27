@@ -7,9 +7,12 @@ import pytest
 import torch
 from lightning import Fabric
 
-from sheeprl.envs.normalization import RewardNormalizer, RunningMeanStd
+from sheeprl.transforms import ScaleByReturnStd, Tanh
 from sheeprl.transforms.observations import RowsTransforms
+from sheeprl.transforms.rewards import REWARD_SPACE, reward_pipeline
+from sheeprl.transforms.stats import RunningMeanStd
 from sheeprl.utils.utils import dotdict
+from tests.test_transforms import oracles
 
 OBS_SPACE = gym.spaces.Dict(
     {
@@ -19,12 +22,13 @@ OBS_SPACE = gym.spaces.Dict(
 )
 
 
-def normalization_cfg(obs=False, clip=10.0, **normalization):
+def normalization_cfg(obs=False, clip=10.0, rewards=False):
     transforms = [{"_target_": "sheeprl.transforms.Standardize", "clip": clip, "epsilon": 1e-8}] if obs else []
+    reward_transforms = [{"_target_": "sheeprl.transforms.ScaleByReturnStd", "gamma": 0.9}] if rewards else []
     return dotdict(
         {
-            "env": {"normalization": {"clip_rewards": 10.0, "epsilon": 1e-8, **normalization}},
             "algo": {
+                "rewards": {"transforms": reward_transforms},
                 "gamma": 0.9,
                 "inputs": {"vector": {"keys": ["state"], "transforms": transforms}, "image": {"keys": ["rgb"]}},
             },
@@ -40,9 +44,9 @@ def test_running_mean_std_is_the_mean_and_variance_of_all_the_batches():
         stats.update(batch)
     samples = np.concatenate(batches)
     # The initial statistics weigh as `epsilon` samples
-    assert np.allclose(stats.mean, samples.mean(axis=0), rtol=1e-4)
-    assert np.allclose(stats.var, samples.var(axis=0), rtol=1e-4)
-    assert stats.count == pytest.approx(len(samples) + 1e-4)
+    assert np.allclose(stats.mean.numpy(), samples.mean(axis=0), rtol=1e-4)
+    assert np.allclose(stats.var.numpy(), samples.var(axis=0), rtol=1e-4)
+    assert float(stats.count) == pytest.approx(len(samples) + 1e-4)
 
 
 def process_batches(rank):
@@ -57,21 +61,20 @@ def sync_on_two_processes(fabric):
     for batch in first:
         stats.update(batch)
     stats.sync(fabric)
-    synced_count = stats.count
+    synced_count = float(stats.count)
     # Between the syncs, every process adds its own batches to the statistics of all of them
     for batch in second:
         stats.update(batch)
-    own = stats.count == synced_count + sum(len(batch) for batch in second)
+    own = float(stats.count) == synced_count + sum(len(batch) for batch in second)
     stats.sync(fabric)
-    moments = torch.as_tensor(np.concatenate([stats.mean, stats.var, [stats.count]]))
-    gathered = fabric.all_gather(moments)
+    gathered = fabric.all_gather(torch.cat([stats.mean, stats.var, stats.count[None]]))
     samples = np.concatenate([batch for rank in range(2) for rollout in process_batches(rank) for batch in rollout])
     return (
         own
         and torch.equal(gathered[0], gathered[1])
-        and np.allclose(stats.mean, samples.mean(axis=0), rtol=1e-4)
-        and np.allclose(stats.var, samples.var(axis=0), rtol=1e-4)
-        and stats.count == pytest.approx(len(samples) + 1e-4)
+        and np.allclose(stats.mean.numpy(), samples.mean(axis=0), rtol=1e-4)
+        and np.allclose(stats.var.numpy(), samples.var(axis=0), rtol=1e-4)
+        and float(stats.count) == pytest.approx(len(samples) + 1e-4)
     )
 
 
@@ -84,10 +87,9 @@ def test_running_mean_std_syncs_the_batches_of_all_the_processes():
 def test_running_mean_std_of_one_process_does_not_change_when_synced():
     stats = RunningMeanStd(shape=(2,))
     stats.update(np.arange(6.0).reshape(3, 2))
-    before = stats.state_dict()
+    before = {k: v.clone() for k, v in stats.state_dict().items()}
     stats.sync(SimpleNamespace(world_size=1))
-    assert np.array_equal(stats.mean, before["mean"]) and np.array_equal(stats.var, before["var"])
-    assert stats.count == before["count"]
+    assert all(torch.equal(v, before[k]) for k, v in stats.state_dict().items())
 
 
 def test_the_rows_stage_standardizes_and_clips_only_the_keys_of_its_input():
@@ -117,35 +119,49 @@ def test_the_rows_stage_restores_its_statistics():
         restored.load_key_state_dict({})
 
 
-def test_reward_normalizer_divides_the_rewards_by_the_std_of_the_discounted_returns():
+def test_scale_by_return_std_divides_the_rewards_by_the_std_of_the_discounted_returns():
     rng = np.random.default_rng(0)
     gamma, num_envs = 0.9, 3
-    normalizer = RewardNormalizer(num_envs, gamma)
+    oracle = oracles.RewardNormalizer(num_envs, gamma)
+    transform = ScaleByReturnStd(gamma)
+    transform.space(REWARD_SPACE)
     returns, all_returns = np.zeros(num_envs), []
     for t in range(20):
         rewards = rng.normal(1.0, 5.0, size=num_envs)
         # The episode of the second environment ends every 4 steps
         dones = np.array([False, t % 4 == 3, False])
-        normalized = normalizer(rewards, dones)
+        normalized = transform.rows(rewards, dones=dones)
+        # Bit for bit the former `RewardNormalizer`
+        assert np.array_equal(normalized, oracle(rewards, dones))
         returns = returns * gamma + rewards
         all_returns.append(returns.copy())
         expected = np.clip(rewards / np.sqrt(np.var(np.concatenate(all_returns)) + 1e-8), -10, 10)
         assert np.allclose(normalized, expected, rtol=1e-4)
         returns[dones] = 0
-        assert np.array_equal(normalizer.returns, returns)
+        assert np.array_equal(transform.returns, returns)
     assert normalized.dtype == np.float64
-    assert normalizer(np.ones(num_envs, dtype=np.float32), np.zeros(num_envs, bool)).dtype == np.float32
+    assert transform.rows(np.ones(num_envs, dtype=np.float32), dones=np.zeros(num_envs, bool)).dtype == np.float32
+    # The returns are episode state: only the statistics are saved
+    assert sorted(transform.state_dict()) == ["stats.count", "stats.mean", "stats.var"]
 
 
-def test_normalizers_are_created_as_configured():
-    # Without a `Standardize`, the observations have no statistics
+def test_the_transforms_are_created_as_configured():
+    # Without a `Standardize` or a `ScaleByReturnStd`, nothing has statistics
     assert RowsTransforms.from_config(normalization_cfg(obs=False), OBS_SPACE).key_state_dict() == {}
-    assert RewardNormalizer.from_config(normalization_cfg(rewards=False), 2) is None
-    # A configuration saved before the option doesn't normalize
-    old_cfg = normalization_cfg()
-    old_cfg.env.pop("normalization")
-    assert RewardNormalizer.from_config(old_cfg, 2) is None
+    assert len(reward_pipeline(normalization_cfg(rewards=False)).transforms("rows")) == 0
     # Only the vector observations the agent encodes, among the ones of the environment
     assert list(RowsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE).key_state_dict()) == ["state"]
-    reward_normalizer = RewardNormalizer.from_config(normalization_cfg(rewards=True), 2)
-    assert reward_normalizer.gamma == 0.9 and len(reward_normalizer.returns) == 2
+    (scale,) = reward_pipeline(normalization_cfg(rewards=True)).transforms("rows")
+    assert isinstance(scale, ScaleByReturnStd) and scale.gamma == 0.9
+    # The statistics of the data in a replay buffer: an error for the off-policy algorithms
+    with pytest.raises(ValueError, match="only by on-policy algorithms"):
+        RowsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE, off_policy=True)
+    with pytest.raises(ValueError, match="only by on-policy algorithms"):
+        reward_pipeline(normalization_cfg(rewards=True), off_policy=True)
+    # The stateless ones are for every algorithm, at `rows` only
+    cfg = normalization_cfg()
+    cfg.algo.rewards.transforms = [{"_target_": "sheeprl.transforms.Tanh"}]
+    assert isinstance(reward_pipeline(cfg, off_policy=True).transforms("rows")[0], Tanh)
+    cfg.algo.rewards.transforms = [{"_target_": "sheeprl.transforms.Tanh", "where": "batch"}]
+    with pytest.raises(ValueError, match="run at `rows`"):
+        reward_pipeline(cfg)
