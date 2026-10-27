@@ -134,7 +134,7 @@ class MultiEncoder(nn.Module):
         """The space of `key` in the store (before the `batch` transforms)."""
         for inp in self.inputs.values():
             if key in inp.keys:
-                return inp.pipelines[inp.keys.index(key)].spaces["rows"]
+                return inp.pipelines[inp.keys.index(key)].spaces["envs"]
         raise KeyError(f"No input reads the key `{key}`: the keys of the inputs are {list(self.keys)}")
 
     def batch_space(self, key: str) -> gym.Space:

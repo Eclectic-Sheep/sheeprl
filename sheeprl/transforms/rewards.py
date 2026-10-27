@@ -1,4 +1,4 @@
-"""The transforms of the rewards (`algo.rewards.transforms`), run at `rows` in `GymEnvironment.step` before the rewards
+"""The transforms of the rewards (`algo.rewards.transforms`), run at `envs` in `GymEnvironment.step` before the rewards
 are stored: `ScaleByReturnStd` and the elementwise `Tanh`, `Sign` and `Clip` (these also at `batch`)."""
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ class ScaleByReturnStd(Transform):
     is a floating-point one: they are not centered, their sign doesn't change. The statistics of the returns of the
     environments of all the processes are synced and saved; the returns themselves are episode state, not saved."""
 
-    where = "rows"
+    where = "envs"
     learns_from_data = True
 
     def __init__(self, gamma: float, clip: float = 10.0, epsilon: float = 1e-8, where: Optional[str] = None) -> None:
@@ -49,7 +49,7 @@ class ScaleByReturnStd(Transform):
         self.stats = RunningMeanStd(space.shape)
         return gym.spaces.Box(-self.clip, self.clip, space.shape, np.result_type(space.dtype, np.float32))
 
-    def rows(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
+    def envs(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
         if update:
             if self.returns is None:
                 self.returns = np.zeros(x.shape, dtype=np.float64)
@@ -68,10 +68,10 @@ class ScaleByReturnStd(Transform):
 
 
 class _Elementwise(Transform):
-    """An elementwise function of the data, at `rows` or at `batch`, that keeps its dtype."""
+    """An elementwise function of the data, at `envs` or at `batch`, that keeps its dtype."""
 
-    where = "rows"
-    supports = ("rows", "batch")
+    where = "envs"
+    supports = ("envs", "batch")
     low, high = -np.inf, np.inf
 
     def space(self, space: gym.Space) -> gym.Space:
@@ -86,7 +86,7 @@ class _Elementwise(Transform):
     def _torch(self, x: Tensor) -> Tensor:
         raise NotImplementedError
 
-    def rows(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
+    def envs(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
         return self._numpy(x)
 
     def batch(self, x: Tensor) -> Tensor:
@@ -137,14 +137,14 @@ class Clip(_Elementwise):
 
 
 def reward_pipeline(cfg: dotdict, off_policy: bool = False) -> Pipeline:
-    """The transforms of the rewards (`algo.rewards.transforms`): `rows` transforms only, since the rewards have no
+    """The transforms of the rewards (`algo.rewards.transforms`): `envs` transforms only, since the rewards have no
     space to size a network from and what the algorithms do to them on the device is part of their losses. A transform
     that learns from the data (e.g. `ScaleByReturnStd`) is an error for an off-policy algorithm, whose replay buffer
     would keep rewards transformed with statistics that change during the training."""
     transforms = instantiate_transforms(((cfg.algo.get("rewards") or {}).get("transforms")) or [])
-    not_rows = [type(t).__name__ for t in transforms if t.where != "rows"]
-    if not_rows:
-        raise ValueError(f"The transforms of the rewards run at `rows`, got {not_rows} at another placement")
+    not_envs = [type(t).__name__ for t in transforms if t.where != "envs"]
+    if not_envs:
+        raise ValueError(f"The transforms of the rewards run at `envs`, got {not_envs} at another placement")
     learning = [type(t).__name__ for t in transforms if t.learns_from_data]
     if off_policy and learning:
         raise ValueError(
@@ -152,4 +152,4 @@ def reward_pipeline(cfg: dotdict, off_policy: bool = False) -> Pipeline:
             "on-policy algorithms, as the replay buffer of an off-policy algorithm would keep rewards transformed with "
             "statistics that change during the training"
         )
-    return Pipeline(transforms, REWARD_SPACE, "rows", "rows")
+    return Pipeline(transforms, REWARD_SPACE, "envs", "envs")

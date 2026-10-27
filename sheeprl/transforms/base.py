@@ -5,14 +5,14 @@ of three placements, named after the unit of data it sees:
 
 - `frame`: in the environment process, once per step of one environment, on one observation (NumPy): the steps that
   change the shape or lose information, done once and stored compactly (resize, frame stack, flatten, one-hot);
-- `rows`: in the main process, inside `GymEnvironment.step`, on the observations (or the rewards) of all the
+- `envs`: in the main process, inside `GymEnvironment.step`, on the observations (or the rewards) of all the
   environments of the process, one row each (NumPy): the steps with running statistics, which are synced across the
   processes and saved in the checkpoints;
 - `batch`: on the device, inside `Input.forward` (so inside the compiled step), on a tensor of any leading shape: the
   cheap elementwise steps that must not inflate the storage (to float, divide by 255, symlog) and the learned ones.
 
 A pipeline holds the transforms of one key, in the order of the placements: the space after its `frame` stage is the
-one the environments report, after its `rows` stage the one the store holds, after its `batch` stage the one the
+one the environments report, after its `envs` stage the one the store holds, after its `batch` stage the one the
 network is sized from.
 """
 
@@ -28,7 +28,7 @@ from torch import Tensor, nn
 if TYPE_CHECKING:
     from lightning import Fabric
 
-PLACEMENTS = ("frame", "rows", "batch")
+PLACEMENTS = ("frame", "envs", "batch")
 # `act`: the policy choosing the actions in the environments (and the test); `train`: a training batch
 PHASES = ("act", "train")
 
@@ -39,8 +39,8 @@ class Transform(nn.Module):
     transform runs in the phases `phases` (e.g. a data augmentation only in `train`).
 
     A transform is an `nn.Module` whatever its placement: its parameters and buffers are its state (e.g. the
-    statistics of a `rows` transform, the weights of a learned `batch` one), saved with `state_dict`. `forward` is not
-    used: `frame`, `rows` and `batch` are named for the data they take.
+    statistics of an `envs` transform, the weights of a learned `batch` one), saved with `state_dict`. `forward` is not
+    used: `frame`, `envs` and `batch` are named for the data they take.
     """
 
     where: str = "batch"
@@ -75,11 +75,11 @@ class Transform(nn.Module):
         and `truncated` (both false after a reset), for the transforms that read it (`needs_info`)."""
         raise NotImplementedError(f"{type(self).__name__} doesn't run at `frame`")
 
-    def rows(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
+    def envs(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
         """The observations (or rewards) `x` of the environments, one row each, transformed. With `update`, they are
         added to the statistics of the transform (not for the last observations of the ended episodes, nor in the
         test). `dones` marks the environments whose episode ended in the step."""
-        raise NotImplementedError(f"{type(self).__name__} doesn't run at `rows`")
+        raise NotImplementedError(f"{type(self).__name__} doesn't run at `envs`")
 
     def batch(self, x: Tensor) -> Tensor:
         """The tensor `x`, of any leading shape, transformed: tensor operations only, to be compiled."""
@@ -96,18 +96,18 @@ class Transform(nn.Module):
         """Seed the randomness of the transform (random `frame` transforms)."""
 
     def sync(self, fabric: Fabric) -> None:
-        """Merge the statistics of all the processes (`rows` transforms)."""
+        """Merge the statistics of all the processes (`envs` transforms)."""
 
     def extra_repr(self) -> str:
         return f"where={self.where}"
 
 
 class Pipeline(nn.Module):
-    """The transforms of one key, in the order of the placements (`frame`, then `rows`, then `batch`: validated).
+    """The transforms of one key, in the order of the placements (`frame`, then `envs`, then `batch`: validated).
 
     The pipeline holds the stages from `from_stage` to `to_stage`, and `space` is the space of the data before
-    `from_stage`: e.g. the environments hold the `frame` stage, `GymEnvironment` the `rows` one, and an input builds the
-    `batch` one from the space of the store. `frame_space`, `rows_space` and `batch_space` are the spaces after every
+    `from_stage`: e.g. the environments hold the `frame` stage, `GymEnvironment` the `envs` one, and an input builds the
+    `batch` one from the space of the store. `frame_space`, `envs_space` and `batch_space` are the spaces after every
     stage (for a stage it doesn't hold, the space after the last one before it).
     """
 
@@ -122,7 +122,7 @@ class Pipeline(nn.Module):
         order = [PLACEMENTS.index(t.where) for t in transforms]
         if order != sorted(order):
             raise ValueError(
-                "The transforms of a pipeline run in the order of their placements (frame, then rows, then batch), "
+                "The transforms of a pipeline run in the order of their placements (frame, then envs, then batch), "
                 f"got: {', '.join(f'{type(t).__name__} ({t.where})' for t in transforms)}"
             )
         first, last = PLACEMENTS.index(from_stage), PLACEMENTS.index(to_stage)
@@ -147,8 +147,8 @@ class Pipeline(nn.Module):
         return self.spaces["frame"]
 
     @property
-    def rows_space(self) -> gym.Space:
-        return self.spaces["rows"]
+    def envs_space(self) -> gym.Space:
+        return self.spaces["envs"]
 
     @property
     def batch_space(self) -> gym.Space:
@@ -163,9 +163,9 @@ class Pipeline(nn.Module):
             x = transform.frame(x, info) if transform.needs_info else transform.frame(x)
         return x
 
-    def rows(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
-        for transform in self.transforms("rows"):
-            x = transform.rows(x, update=update, dones=dones)
+    def envs(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
+        for transform in self.transforms("envs"):
+            x = transform.envs(x, update=update, dones=dones)
         return x
 
     def batch(self, x: Tensor, phase: str = "train") -> Tensor:
@@ -191,7 +191,7 @@ class Pipeline(nn.Module):
             transform.seed(seed)
 
     def sync(self, fabric: Fabric) -> None:
-        for transform in self.transforms("rows"):
+        for transform in self.transforms("envs"):
             transform.sync(fabric)
 
     @property

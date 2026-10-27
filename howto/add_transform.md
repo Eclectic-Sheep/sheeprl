@@ -9,10 +9,10 @@ phase).
 ## The contract
 
 A transform is a subclass of `sheeprl.transforms.Transform`, which is an `nn.Module` whatever its placement: its
-parameters and buffers are its state, saved with `state_dict` (e.g. the statistics of a `rows` transform, the weights
+parameters and buffers are its state, saved with `state_dict` (e.g. the statistics of an `envs` transform, the weights
 of a learned `batch` one). Its class attributes:
 
-- `where`: the placement it runs at by default, `frame`, `rows` or `batch`.
+- `where`: the placement it runs at by default, `frame`, `envs` or `batch`.
 - `supports`: the placements it implements, if more than one; the configuration picks one with `where: ...`.
 - `phases`: for a `batch` transform, the phases it runs in, `("act", "train")` by default. The configuration may set
   them with `phases: [...]`.
@@ -27,14 +27,14 @@ Its methods:
   `n` of a `Discrete` space) and raises a clear error for a space it cannot take.
 - One method per placement it supports, named for the data it takes:
   - `frame(x, info=None)`: the observation of one environment (NumPy);
-  - `rows(x, update=True, dones=None)`: the observations of all the environments of the process, one row each
+  - `envs(x, update=True, dones=None)`: the observations of all the environments of the process, one row each
     (NumPy). With `update`, they are added to the statistics of the transform; `dones` marks the environments whose
     episode ended in the step;
   - `batch(x)`: a tensor of any leading shape, on the device. Tensor operations only (no `.item()`, no shapes that
     depend on the values): it is compiled with the network.
 - Optional: `inverse(x)` (the opposite of `batch`, to bring reconstructions back to the stored domain), `reset()`
   (forget the state of the episode, `frame` transforms), `seed(seed)` (random `frame` transforms) and `sync(fabric)`
-  (merge the statistics of all the processes, `rows` transforms).
+  (merge the statistics of all the processes, `envs` transforms).
 
 `forward` is not used. A transform is configured by its import path, like any Hydra object, so it can live in your
 own package.
@@ -124,7 +124,7 @@ class GaussianNoise(Transform):
 ```
 
 Check that it compiles in one graph, then add it to the vector input after the other transforms (the order of the
-placements is validated: `frame`, then `rows`, then `batch`). Your module must be importable by the run, e.g. in your
+placements is validated: `frame`, then `envs`, then `batch`). Your module must be importable by the run, e.g. in your
 own package:
 
 ```python
@@ -143,10 +143,10 @@ The policy reads the vectors without the noise (phase `act`), the training step 
 of a decoder are computed in the phase `train`, so they would get the noise too: use `transforms` in the output to give
 its targets their own transforms.
 
-## Example 3: the rewards clipped to their sign (`rows`)
+## Example 3: the rewards clipped to their sign (`envs`)
 
 The question: train on the sign of the rewards, -1, 0 or 1, as DQN does on the Atari games. The rewards have their own
-pipeline, `algo.rewards.transforms`, of `rows` transforms only: it runs in the main process on the rewards of all the
+pipeline, `algo.rewards.transforms`, of `envs` transforms only: it runs in the main process on the rewards of all the
 environments, before they are stored. The space of the rewards of one environment is
 `Box(-inf, inf, (), float64)`.
 
@@ -154,13 +154,13 @@ environments, before they are stored. The space of the rewards of one environmen
 class Sign(Transform):
     """`sign(x)`: -1, 0 or 1."""
 
-    where = "rows"
-    supports = ("rows", "batch")
+    where = "envs"
+    supports = ("envs", "batch")
 
     def space(self, space: gym.Space) -> gym.Space:
         return gym.spaces.Box(-1.0, 1.0, space.shape, space.dtype)
 
-    def rows(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
+    def envs(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
         return np.sign(x)
 
     def batch(self, x: Tensor) -> Tensor:
@@ -187,7 +187,7 @@ algorithm trains on.
 
 ## A transform with statistics
 
-A `rows` transform with running statistics (e.g. `sheeprl.transforms.Standardize`) keeps them as buffers (the
+An `envs` transform with running statistics (e.g. `sheeprl.transforms.Standardize`) keeps them as buffers (the
 `RunningMeanStd` module of `sheeprl.transforms.stats`), sets `learns_from_data = True`, adds the rows to the
 statistics only when `update` is true (not for the last observations of the ended episodes, nor in the test) and
 merges the statistics of the processes in `sync`. Its buffers are saved in `checkpoint["env"]` and restored on resume

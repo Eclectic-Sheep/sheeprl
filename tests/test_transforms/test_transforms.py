@@ -42,7 +42,7 @@ CATALOGUE = {
     "standardize": (lambda: Standardize(clip=5.0), gym.spaces.Box(-5, 5, (3,), np.float32)),
     "scale_batch": (lambda: Scale(), gym.spaces.Box(0, 255, (3, 4, 4), U8)),
     "scale_frame_no_shift": (lambda: Scale(shift=0, where="frame"), gym.spaces.Box(0, 255, (3, 4, 4), U8)),
-    "scale_rows": (lambda: Scale(divisor=10, where="rows"), gym.spaces.Box(-10, 10, (2,), np.float32)),
+    "scale_envs": (lambda: Scale(divisor=10, where="envs"), gym.spaces.Box(-10, 10, (2,), np.float32)),
     "symlog": (lambda: Symlog(), gym.spaces.Box(-100, 100, (4,), np.float32)),
     "scale_by_return_std": (lambda: ScaleByReturnStd(gamma=0.9, clip=5.0), gym.spaces.Box(-10, 10, (), np.float32)),
     "tanh": (lambda: Tanh(), gym.spaces.Box(-10, 10, (), np.float64)),
@@ -157,7 +157,7 @@ def test_standardize_is_the_obs_normalizer_bit_for_bit():
         if update:
             oracle.update({"state": rows})
         expected = oracle.normalize({"state": rows})["state"]
-        out = transform.rows(rows, update=update)
+        out = transform.envs(rows, update=update)
         assert out.dtype == np.float32 and np.array_equal(out, expected)
     assert np.array_equal(transform.stats.mean.numpy(), oracle.stats["state"].mean)
     assert np.array_equal(transform.stats.var.numpy(), oracle.stats["state"].var)
@@ -170,13 +170,13 @@ def test_standardize_restores_its_statistics():
     restored.space(space)
     rng = np.random.default_rng(0)
     for _ in range(5):
-        trained.rows(rng.normal(size=(4, 3)))
+        trained.envs(rng.normal(size=(4, 3)))
     state = trained.state_dict()
     # Only the statistics: the ones of the last sync and the ones added since are not saved
     assert sorted(state) == ["stats.count", "stats.mean", "stats.var"]
     restored.load_state_dict(state)
     rows = rng.normal(size=(4, 3))
-    assert np.array_equal(restored.rows(rows, update=False), trained.rows(rows, update=False))
+    assert np.array_equal(restored.envs(rows, update=False), trained.envs(rows, update=False))
     # The loaded statistics are the synced ones, with nothing added since
     assert torch.equal(restored.stats.synced_mean, trained.stats.mean)
     assert float(restored.stats.added_count) == 0
@@ -192,7 +192,7 @@ def standardize_on_two_processes(fabric):
     transform.space(gym.spaces.Box(-np.inf, np.inf, (2,), np.float64))
     for rollout in process_rows(fabric.global_rank):
         for rows in rollout:
-            transform.rows(rows)
+            transform.envs(rows)
         transform.sync(fabric)
     stats = transform.stats
     moments = torch.cat([stats.mean, stats.var, stats.count[None]])
@@ -231,7 +231,7 @@ def test_a_pipeline_runs_its_stages_in_order_and_reports_their_spaces():
     space = gym.spaces.Box(0, 255, (3, 32, 32), U8)
     pipeline = Pipeline([Image(16), FrameStack(2), Standardize(), Scale(), TrainOnly()], space)
     assert pipeline.frame_space.shape == (6, 16, 16) and pipeline.frame_space.dtype == U8
-    assert pipeline.rows_space.shape == (6, 16, 16) and pipeline.rows_space.dtype == np.float32
+    assert pipeline.envs_space.shape == (6, 16, 16) and pipeline.envs_space.dtype == np.float32
     assert pipeline.batch_space.shape == (6, 16, 16)
     # Built from the space of the store, it holds only the batch stage
     store_pipeline = Pipeline([Image(16), Scale(), TrainOnly()], gym.spaces.Box(0, 255, (3, 16, 16), U8), "batch")

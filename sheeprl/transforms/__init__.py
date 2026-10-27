@@ -1,5 +1,5 @@
 """The transforms of the observations and of the rewards, between the environments and the networks: see
-`sheeprl.transforms.base` for the placements (`frame`, `rows`, `batch`) and `howto/add_transform.md` to write one."""
+`sheeprl.transforms.base` for the placements (`frame`, `envs`, `batch`) and `howto/add_transform.md` to write one."""
 
 from sheeprl.transforms.base import PHASES, PLACEMENTS, Pipeline, Transform
 from sheeprl.transforms.check import check_input, check_net, check_transform

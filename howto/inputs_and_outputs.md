@@ -14,13 +14,13 @@ with a decoder, how it reconstructs them (its *outputs*). It replaces the former
   - `frame`: in the process of the environment, once per step, on the observation of one environment (NumPy). For
     the steps that change the shape or lose information, done once and stored compactly (resize, frame stack,
     flatten, one-hot).
-  - `rows`: in the main process, on the observations of all the environments of the process, one row each (NumPy).
+  - `envs`: in the main process, on the observations of all the environments of the process, one row each (NumPy).
     For the steps with running statistics (e.g. `Standardize`), which are synced across the processes and saved in
     the checkpoints.
   - `batch`: on the device, inside the forward of the input, on a tensor of any leading shape. For the cheap
     elementwise steps that must not inflate the storage (to float, divide by 255, symlog) and the learned ones.
-- **Pipeline**: the transforms of one key, always in the order `frame`, then `rows`, then `batch`. The store (rollout
-  or replay buffer) holds the data after the `rows` stage, the network is sized from the data after the `batch` stage.
+- **Pipeline**: the transforms of one key, always in the order `frame`, then `envs`, then `batch`. The store (rollout
+  or replay buffer) holds the data after the `envs` stage, the network is sized from the data after the `batch` stage.
 - **Phase**: `act` when the policy chooses the actions in the environments, `train` for a training batch. A `batch`
   transform runs in the phases it lists (e.g. a data augmentation only in `train`).
 - **Input**: a group of keys encoded together: their `batch` transforms, one concatenation, one network.
@@ -29,7 +29,7 @@ with a decoder, how it reconstructs them (its *outputs*). It replaces the former
 
 ```
 environment process          main process                              device
-raw obs --frame stage--> obs --rows stage--> store --batch stage--> concatenation --> net --> features
+raw obs --frame stage--> obs --envs stage--> store --batch stage--> concatenation --> net --> features
 ```
 
 ## The configuration
@@ -71,7 +71,7 @@ The fields of an input:
   3D ones first, with `sheeprl.transforms.Flatten`).
 
 The features of the inputs are concatenated, in the order of the configuration, into the features the agent reads.
-Every key is stored once, even if two inputs list it: its `frame` and `rows` stages must then be identical in both,
+Every key is stored once, even if two inputs list it: its `frame` and `envs` stages must then be identical in both,
 only the `batch` stage may differ.
 
 The keys that no input and no `algo.extra_keys` list are dropped by the environment: they are neither transformed nor
@@ -99,7 +99,7 @@ diambra run python sheeprl.py exp=ppo env=diambra env.id=doapp env.num_envs=1 \
   algo.inputs.image.keys=[frame] algo.inputs.vector.keys=[opp_health,own_health]
 ```
 
-The observations of an environment, as the environment returns them, after the `frame` stage and after the `rows`
+The observations of an environment, as the environment returns them, after the `frame` stage and after the `envs`
 stage (what the store holds), are printed by:
 
 ```bash
@@ -125,7 +125,7 @@ algo:
 
 One element of a list can be changed from the command line by its index, e.g. `algo.inputs.image.transforms.1.n=2`.
 
-The vector observations are standardized with their running mean and variance by `Standardize`, a `rows` transform
+The vector observations are standardized with their running mean and variance by `Standardize`, an `envs` transform
 whose statistics are synced across the processes and saved in the checkpoints. It learns from the data, so only the
 on-policy algorithms accept it: the replay buffer of an off-policy algorithm would keep observations standardized
 with statistics that change.
@@ -157,7 +157,7 @@ algo:
 
 ### The rewards
 
-The rewards have their own pipeline, `algo.rewards.transforms`, of `rows` transforms only, applied before the rewards
+The rewards have their own pipeline, `algo.rewards.transforms`, of `envs` transforms only, applied before the rewards
 are stored. It replaces `env.clip_rewards` (now `sheeprl.transforms.Tanh`). The rewards divided by the running
 standard deviation of the discounted return (the reward normalization of the `VecNormalize` of Stable-Baselines3),
 then squashed by the `tanh`, are, in this order:
@@ -268,7 +268,7 @@ inputs another way.
 
 ## Checkpoints
 
-The checkpoint of a run holds what was learned from the data: the statistics of the `rows` transforms of every key
+The checkpoint of a run holds what was learned from the data: the statistics of the `envs` transforms of every key
 and of the rewards (`checkpoint["env"]`, restored on resume and applied, frozen, by the evaluation) and the parameters
 of the `batch` transforms (with the agent). The `frame` stage is not saved: its state (e.g. the stacked frames) is the
 one of an episode, restarted on resume.

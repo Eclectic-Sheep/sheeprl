@@ -37,13 +37,13 @@ def check_transform(transform: Transform, space: gym.Space, n: int = 8, compile:
         for i, sample in enumerate(samples):
             out = transform.frame(sample, info) if transform.needs_info else transform.frame(sample)
             _assert_in(out_space, np.asarray(out), f"{type(transform).__name__}.frame, sample {i}")
-    elif transform.where == "rows":
+    elif transform.where == "envs":
         rows = np.stack(samples)
         for update in (True, False):
-            out = transform.rows(rows, update=update, dones=np.zeros(n, dtype=bool))
-            assert len(out) == n, f"{type(transform).__name__}.rows returned {len(out)} rows for {n}"
+            out = transform.envs(rows, update=update, dones=np.zeros(n, dtype=bool))
+            assert len(out) == n, f"{type(transform).__name__}.envs returned {len(out)} rows for {n}"
             for i, row in enumerate(out):
-                _assert_in(out_space, np.asarray(row), f"{type(transform).__name__}.rows, row {i}")
+                _assert_in(out_space, np.asarray(row), f"{type(transform).__name__}.envs, row {i}")
     else:
         x = torch.as_tensor(np.stack(samples))
         out = transform.batch(x)

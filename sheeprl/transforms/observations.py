@@ -1,5 +1,5 @@
 """The pipelines of the observation keys a configuration declares (`algo.inputs`, `algo.extra_keys`): their `frame`
-stages, run in the environments (`TransformsWrapper`), and their `rows` stages (`RowsTransforms`), run by
+stages, run in the environments (`TransformsWrapper`), and their `envs` stages (`EnvsTransforms`), run by
 `GymEnvironment` and by the test."""
 
 from __future__ import annotations
@@ -33,14 +33,14 @@ def stored_keys(cfg: dotdict) -> Tuple[str, ...]:
 
 
 def _stored_stages(transforms_cfg: List[Any]) -> List[Any]:
-    """The configurations of the transforms that run before the store (`frame` and `rows`)."""
+    """The configurations of the transforms that run before the store (`frame` and `envs`)."""
     return [cfg for cfg, t in zip(transforms_cfg, instantiate_transforms(transforms_cfg)) if t.where != "batch"]
 
 
 def key_transforms(cfg: dotdict) -> Dict[str, List[Any]]:
     """The configured transforms of every stored key: the ones of the first input that lists it (none for an extra key).
 
-    A key is stored once: listed in several inputs, its `frame` and `rows` transforms must be the same in all of them,
+    A key is stored once: listed in several inputs, its `frame` and `envs` transforms must be the same in all of them,
     only the `batch` ones may differ.
     """
     transforms: Dict[str, List[Any]] = {}
@@ -54,7 +54,7 @@ def key_transforms(cfg: dotdict) -> Dict[str, List[Any]]:
             elif _stored_stages(transforms[k]) != _stored_stages(key_cfg):
                 raise ValueError(
                     f"The key `{k}` is listed in the inputs `{owners[k]}` and `{name}` with different `frame` or "
-                    "`rows` transforms: it is stored once, so only their `batch` transforms may differ"
+                    "`envs` transforms: it is stored once, so only their `batch` transforms may differ"
                 )
     for k in cfg.algo.get("extra_keys") or []:
         transforms.setdefault(k, [])
@@ -83,8 +83,8 @@ def frame_pipelines(cfg: dotdict, space: gym.spaces.Dict) -> Dict[str, Pipeline]
     return {k: Pipeline.from_config(t, space[k], "frame", "frame") for k, t in key_transforms(cfg).items()}
 
 
-class RowsTransforms(nn.Module):
-    """The `rows` stage of every stored key: what `GymEnvironment` applies to the observations of its environments
+class EnvsTransforms(nn.Module):
+    """The `envs` stage of every stored key: what `GymEnvironment` applies to the observations of its environments
     (with `update`, adding them to the statistics) and the test to its own (frozen). Its state is the one of the
     transforms with statistics, by key."""
 
@@ -95,19 +95,19 @@ class RowsTransforms(nn.Module):
         self.pipelines = nn.ModuleList(pipelines.values())
 
     @classmethod
-    def from_config(cls, cfg: dotdict, frame_space: gym.spaces.Dict, off_policy: bool = False) -> RowsTransforms:
-        """The `rows` stages of the stored keys, from the space the environments report (after their `frame` stage).
+    def from_config(cls, cfg: dotdict, frame_space: gym.spaces.Dict, off_policy: bool = False) -> EnvsTransforms:
+        """The `envs` stages of the stored keys, from the space the environments report (after their `frame` stage).
         A transform that learns from the data (e.g. `Standardize`) is an error for an off-policy algorithm, whose
         replay buffer would keep data transformed with statistics that change during the training."""
         pipelines = {
-            k: Pipeline.from_config(t, frame_space[k], "rows", "rows")
+            k: Pipeline.from_config(t, frame_space[k], "envs", "envs")
             for k, t in key_transforms(cfg).items()
             if k in frame_space.spaces
         }
         learning = [k for k, p in pipelines.items() if p.learns_from_data]
         if off_policy and learning:
             raise ValueError(
-                f"The `rows` transforms of the keys {learning} learn statistics from the data (e.g. `Standardize`): "
+                f"The `envs` transforms of the keys {learning} learn statistics from the data (e.g. `Standardize`): "
                 "they are supported only by on-policy algorithms, as the replay buffer of an off-policy algorithm "
                 "would keep observations transformed with statistics that change during the training"
             )
@@ -118,20 +118,21 @@ class RowsTransforms(nn.Module):
 
     @property
     def space(self) -> gym.spaces.Dict:
-        """The spaces of the stored keys after their `rows` stage."""
-        return gym.spaces.Dict({k: p.rows_space for k, p in self._pipelines().items()})
+        """The spaces of the stored keys after their `envs` stage."""
+        return gym.spaces.Dict({k: p.envs_space for k, p in self._pipelines().items()})
 
-    def rows(self, obs: Dict[str, np.ndarray], update: bool = True) -> Dict[str, np.ndarray]:
-        """`obs` (one row per environment) through the `rows` stage of every key, as a new dictionary."""
+    def envs(self, obs: Dict[str, np.ndarray], update: bool = True) -> Dict[str, np.ndarray]:
+        """`obs` (one row per environment) through the `envs` stage of every key, as a new dictionary."""
         obs = dict(obs)
         for k, pipeline in self._pipelines().items():
-            if not pipeline.is_identity("rows"):
-                obs[k] = pipeline.rows(obs[k], update=update)
+            if not pipeline.is_identity("envs"):
+                obs[k] = pipeline.envs(obs[k], update=update)
         return obs
 
     def one(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """The observation of one environment (without the rows) through the `rows` stage, frozen."""
-        return {k: v[0] for k, v in self.rows({k: v[np.newaxis] for k, v in obs.items()}, update=False).items()}
+        """The observation of one environment, without the dimension of the environments, through the `envs` stage,
+        frozen."""
+        return {k: v[0] for k, v in self.envs({k: v[np.newaxis] for k, v in obs.items()}, update=False).items()}
 
     def sync(self, fabric: Fabric) -> None:
         for pipeline in self.pipelines:

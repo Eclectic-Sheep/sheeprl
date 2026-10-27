@@ -1,6 +1,6 @@
 """Print the observation space of an environment as an agent sees it, for the keys its inputs declare: as the
 environment returns it, after the `frame` stage of the transforms (what the vectorized environment reports) and after
-the `rows` stage (what the store holds). E.g.
+the `envs` stage (what the store holds). E.g.
 
     python examples/observation_space.py agent=dreamer_v3 env=atari algo.inputs.image.keys=[state]
 """
@@ -10,7 +10,7 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 
 from sheeprl.envs.wrappers import TransformsWrapper
-from sheeprl.transforms.observations import RowsTransforms
+from sheeprl.transforms.observations import EnvsTransforms
 from sheeprl.utils.env import make_env
 from sheeprl.utils.registry import algorithm_registry
 from sheeprl.utils.utils import dotdict
@@ -31,7 +31,7 @@ def main(cfg: DictConfig) -> None:
     wrapper = env
     while not isinstance(wrapper, TransformsWrapper):
         wrapper = wrapper.env
-    rows = RowsTransforms.from_config(cfg, env.observation_space)
+    envs_transforms = EnvsTransforms.from_config(cfg, env.observation_space)
 
     print()
     print(f"Observation space of `{cfg.env.id}` environment for `{cfg.agent}` agent:")
@@ -39,7 +39,7 @@ def main(cfg: DictConfig) -> None:
         print(f"- {k}")
         print(f"    from the environment: {wrapper.env.observation_space[k]}")
         print(f"    after the frame stage: {env.observation_space[k]}")
-        print(f"    after the rows stage (stored): {rows.space[k]}")
+        print(f"    after the envs stage (stored): {envs_transforms.space[k]}")
     env.close()
 
 

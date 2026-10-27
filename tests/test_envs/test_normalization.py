@@ -8,7 +8,7 @@ import torch
 from lightning import Fabric
 
 from sheeprl.transforms import ScaleByReturnStd, Tanh
-from sheeprl.transforms.observations import RowsTransforms
+from sheeprl.transforms.observations import EnvsTransforms
 from sheeprl.transforms.rewards import REWARD_SPACE, reward_pipeline
 from sheeprl.transforms.stats import RunningMeanStd
 from sheeprl.utils.utils import dotdict
@@ -95,25 +95,26 @@ def test_running_mean_std_of_one_process_does_not_change_when_synced():
 def test_the_rows_stage_standardizes_and_clips_only_the_keys_of_its_input():
     rng = np.random.default_rng(0)
     obs = {"state": rng.normal(5.0, 3.0, size=(1000, 3)), "rgb": rng.integers(0, 255, (1000, 3, 4, 4), np.uint8)}
-    transforms = RowsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE)
-    normalized = transforms.rows(obs)
+    transforms = EnvsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE)
+    normalized = transforms.envs(obs)
     assert normalized["state"].dtype == np.float32
     assert np.allclose(normalized["state"].mean(axis=0), 0, atol=1e-3)
     assert np.allclose(normalized["state"].std(axis=0), 1, atol=1e-3)
     assert normalized["rgb"] is obs["rgb"]
-    # The observation of one environment, without the rows, is transformed as the rows are
+    # The observation of one environment, without the dimension of the environments, is transformed as the ones of
+    # all the environments are
     assert np.array_equal(transforms.one({"state": obs["state"][7]})["state"], normalized["state"][7])
-    clipped = RowsTransforms.from_config(normalization_cfg(obs=True, clip=1.0), OBS_SPACE)
-    assert np.abs(clipped.rows(obs)["state"]).max() == 1.0
+    clipped = EnvsTransforms.from_config(normalization_cfg(obs=True, clip=1.0), OBS_SPACE)
+    assert np.abs(clipped.envs(obs)["state"]).max() == 1.0
 
 
 def test_the_rows_stage_restores_its_statistics():
-    transforms = RowsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE)
-    transforms.rows({"state": np.arange(12.0).reshape(4, 3)})
-    restored = RowsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE)
+    transforms = EnvsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE)
+    transforms.envs({"state": np.arange(12.0).reshape(4, 3)})
+    restored = EnvsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE)
     restored.load_key_state_dict(transforms.key_state_dict())
     obs = {"state": np.ones((2, 3))}
-    assert np.array_equal(restored.rows(obs, update=False)["state"], transforms.rows(obs, update=False)["state"])
+    assert np.array_equal(restored.envs(obs, update=False)["state"], transforms.envs(obs, update=False)["state"])
     # Every key with statistics must find its own
     with pytest.raises(KeyError, match="state"):
         restored.load_key_state_dict({})
@@ -130,7 +131,7 @@ def test_scale_by_return_std_divides_the_rewards_by_the_std_of_the_discounted_re
         rewards = rng.normal(1.0, 5.0, size=num_envs)
         # The episode of the second environment ends every 4 steps
         dones = np.array([False, t % 4 == 3, False])
-        normalized = transform.rows(rewards, dones=dones)
+        normalized = transform.envs(rewards, dones=dones)
         # Bit for bit the former `RewardNormalizer`
         assert np.array_equal(normalized, oracle(rewards, dones))
         returns = returns * gamma + rewards
@@ -140,28 +141,28 @@ def test_scale_by_return_std_divides_the_rewards_by_the_std_of_the_discounted_re
         returns[dones] = 0
         assert np.array_equal(transform.returns, returns)
     assert normalized.dtype == np.float64
-    assert transform.rows(np.ones(num_envs, dtype=np.float32), dones=np.zeros(num_envs, bool)).dtype == np.float32
+    assert transform.envs(np.ones(num_envs, dtype=np.float32), dones=np.zeros(num_envs, bool)).dtype == np.float32
     # The returns are episode state: only the statistics are saved
     assert sorted(transform.state_dict()) == ["stats.count", "stats.mean", "stats.var"]
 
 
 def test_the_transforms_are_created_as_configured():
     # Without a `Standardize` or a `ScaleByReturnStd`, nothing has statistics
-    assert RowsTransforms.from_config(normalization_cfg(obs=False), OBS_SPACE).key_state_dict() == {}
-    assert len(reward_pipeline(normalization_cfg(rewards=False)).transforms("rows")) == 0
+    assert EnvsTransforms.from_config(normalization_cfg(obs=False), OBS_SPACE).key_state_dict() == {}
+    assert len(reward_pipeline(normalization_cfg(rewards=False)).transforms("envs")) == 0
     # Only the vector observations the agent encodes, among the ones of the environment
-    assert list(RowsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE).key_state_dict()) == ["state"]
-    (scale,) = reward_pipeline(normalization_cfg(rewards=True)).transforms("rows")
+    assert list(EnvsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE).key_state_dict()) == ["state"]
+    (scale,) = reward_pipeline(normalization_cfg(rewards=True)).transforms("envs")
     assert isinstance(scale, ScaleByReturnStd) and scale.gamma == 0.9
     # The statistics of the data in a replay buffer: an error for the off-policy algorithms
     with pytest.raises(ValueError, match="only by on-policy algorithms"):
-        RowsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE, off_policy=True)
+        EnvsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE, off_policy=True)
     with pytest.raises(ValueError, match="only by on-policy algorithms"):
         reward_pipeline(normalization_cfg(rewards=True), off_policy=True)
-    # The stateless ones are for every algorithm, at `rows` only
+    # The stateless ones are for every algorithm, at `envs` only
     cfg = normalization_cfg()
     cfg.algo.rewards.transforms = [{"_target_": "sheeprl.transforms.Tanh"}]
-    assert isinstance(reward_pipeline(cfg, off_policy=True).transforms("rows")[0], Tanh)
+    assert isinstance(reward_pipeline(cfg, off_policy=True).transforms("envs")[0], Tanh)
     cfg.algo.rewards.transforms = [{"_target_": "sheeprl.transforms.Tanh", "where": "batch"}]
-    with pytest.raises(ValueError, match="run at `rows`"):
+    with pytest.raises(ValueError, match="run at `envs`"):
         reward_pipeline(cfg)

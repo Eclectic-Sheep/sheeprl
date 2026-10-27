@@ -13,7 +13,7 @@ from lightning import Fabric
 
 from sheeprl.envs.wrappers import RestartOnException
 from sheeprl.transforms.base import Pipeline
-from sheeprl.transforms.observations import RowsTransforms
+from sheeprl.transforms.observations import EnvsTransforms
 from sheeprl.transforms.rewards import REWARD_SPACE, reward_pipeline
 from sheeprl.utils.env import get_episode_stats, get_vector_env_cls, make_env
 from sheeprl.utils.utils import dotdict
@@ -103,7 +103,7 @@ class GymEnvironment(Environment):
     created by `from_config`: it seeds the resets with `seed` and translates the `info` of gymnasium into the fields of
     `EnvStep`. The ended episodes are read from the statistics of `RecordEpisodeStatistics`.
 
-    The observations of the steps (`obs`, `next_obs` and `final_obs`) go through the `rows` stage of their transforms
+    The observations of the steps (`obs`, `next_obs` and `final_obs`) go through the `envs` stage of their transforms
     (`transforms`, e.g. `Standardize`): the observations of every step are added to their statistics, the last ones of
     the ended episodes are not, and `sync` merges the statistics with the ones of the other processes.
     `observation_space` is the space after that stage, the one the store holds. The rewards of the steps go through
@@ -115,18 +115,18 @@ class GymEnvironment(Environment):
         self,
         envs: gym.vector.VectorEnv,
         seed: Optional[int] = None,
-        transforms: Optional[RowsTransforms] = None,
+        transforms: Optional[EnvsTransforms] = None,
         rewards: Optional[Pipeline] = None,
     ) -> None:
         self.envs = envs
         self.seed = seed
         self.num_envs = envs.num_envs
-        self.transforms = transforms if transforms is not None else RowsTransforms({})
+        self.transforms = transforms if transforms is not None else EnvsTransforms({})
         self.observation_space = gym.spaces.Dict(
             {**envs.single_observation_space.spaces, **self.transforms.space.spaces}
         )
         self.action_space = envs.single_action_space
-        self.rewards = rewards if rewards is not None else Pipeline([], REWARD_SPACE, "rows", "rows")
+        self.rewards = rewards if rewards is not None else Pipeline([], REWARD_SPACE, "envs", "envs")
         self.obs: Dict[str, np.ndarray] = {}
 
     @classmethod
@@ -137,7 +137,7 @@ class GymEnvironment(Environment):
 
         With `restart_on_exception`, an environment that raises an exception is created again (`RestartOnException`)
         instead of stopping the run: its step then returns the first observation of a new episode, with `restarted`
-        set. The transforms that learn from the data are an error for an `off_policy` algorithm (`RowsTransforms`,
+        set. The transforms that learn from the data are an error for an `off_policy` algorithm (`EnvsTransforms`,
         `reward_pipeline`).
         """
         num_envs = cfg.env.num_envs
@@ -162,13 +162,13 @@ class GymEnvironment(Environment):
         return cls(
             envs,
             seed=first_seed,
-            transforms=RowsTransforms.from_config(cfg, envs.single_observation_space, off_policy=off_policy),
+            transforms=EnvsTransforms.from_config(cfg, envs.single_observation_space, off_policy=off_policy),
             rewards=reward_pipeline(cfg, off_policy=off_policy),
         )
 
     def reset(self) -> Dict[str, np.ndarray]:
         """Reset every environment with its own seed and return the first observations."""
-        self.obs = self.transforms.rows(self.envs.reset(seed=self.seed)[0])
+        self.obs = self.transforms.envs(self.envs.reset(seed=self.seed)[0])
         return self.obs
 
     def random_actions(self) -> np.ndarray:
@@ -181,11 +181,11 @@ class GymEnvironment(Environment):
         # The same-step autoreset and `RestartOnException` report them in `info`
         final_obs = info.get("final_obs", [None] * self.num_envs)
         restarted = info.get("restart_on_exception", np.zeros(self.num_envs, dtype=bool))
-        next_obs = self.transforms.rows(next_obs)
+        next_obs = self.transforms.envs(next_obs)
         # The last observations of the ended episodes are transformed, but not added to the statistics
         final_obs = [None if obs is None else self.transforms.one(obs) for obs in final_obs]
         # The returns of the environments whose episode has ended start again
-        rewards = self.rewards.rows(rewards, update=True, dones=terminated | truncated | restarted)
+        rewards = self.rewards.envs(rewards, update=True, dones=terminated | truncated | restarted)
         step = EnvStep(
             self.obs,
             next_obs,

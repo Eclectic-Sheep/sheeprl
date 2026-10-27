@@ -1,5 +1,5 @@
 """The transforms of the shapes, the dtypes and the values: `Flatten`, `ExpandDims`, `Cast`, `OneHot` (`frame`),
-`Standardize` (`rows`), `Scale` and `Symlog` (`batch`)."""
+`Standardize` (`envs`), `Scale` and `Symlog` (`batch`)."""
 
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ class Standardize(Transform):
     step (not with the last observations of the ended episodes, nor in the test), synced across the processes at the
     end of every rollout and saved in the checkpoints."""
 
-    where = "rows"
+    where = "envs"
     learns_from_data = True
 
     def __init__(self, clip: float = 10.0, epsilon: float = 1e-8, where: Optional[str] = None) -> None:
@@ -118,7 +118,7 @@ class Standardize(Transform):
         self.stats = RunningMeanStd(space.shape)
         return gym.spaces.Box(-self.clip, self.clip, space.shape, np.float32)
 
-    def rows(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
+    def envs(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
         if update:
             self.stats.update(x)
         mean, var = self.stats.mean.numpy(), self.stats.var.numpy()
@@ -135,7 +135,7 @@ class Scale(Transform):
     """`x / divisor - shift` as float32, in this order (e.g. the pixels to [-0.5, 0.5])."""
 
     where = "batch"
-    supports = ("frame", "rows", "batch")
+    supports = ("frame", "envs", "batch")
 
     def __init__(
         self, divisor: float = 255, shift: float = 0.5, where: Optional[str] = None, phases: Optional[Any] = None
@@ -157,7 +157,7 @@ class Scale(Transform):
     def frame(self, x: np.ndarray, info: Optional[Dict[str, Any]] = None) -> np.ndarray:
         return self._scale(x)
 
-    def rows(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
+    def envs(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
         return self._scale(x)
 
     def batch(self, x: Tensor) -> Tensor:

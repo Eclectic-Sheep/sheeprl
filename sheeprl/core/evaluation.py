@@ -12,7 +12,7 @@ from torch import nn
 
 from sheeprl.core.algorithm import Algorithm, TrainState
 from sheeprl.core.loop import load_trained_state
-from sheeprl.transforms.observations import RowsTransforms
+from sheeprl.transforms.observations import EnvsTransforms
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.utils import dotdict, unwrap_fabric
@@ -36,12 +36,12 @@ def run_test(
 ) -> float:
     """Play one episode of a test environment with `policy` and log its return (`Test/cumulative_reward`) at
     `policy_step`: the test of every algorithm (`Algorithm.test`). With `greedy`, the policy plays its most likely
-    actions. The observations go through the `rows` stage of their transforms, frozen, with the statistics of
+    actions. The observations go through the `envs` stage of their transforms, frozen, with the statistics of
     `env_state` (the state of the environments of the training, `Environment.state_dict`). A dry run plays one step.
     Returns the return of the episode.
     """
     env = make_env(cfg, cfg.seed, 0, log_dir, "test" + (f"_{test_name}" if test_name else ""), vector_env_idx=0)()
-    transforms = RowsTransforms.from_config(cfg, env.observation_space)
+    transforms = EnvsTransforms.from_config(cfg, env.observation_space)
     if env_state is not None:
         transforms.load_key_state_dict(env_state.get("transforms"))
     training = isinstance(policy, nn.Module) and policy.training
@@ -53,7 +53,7 @@ def run_test(
     cumulative_rew = 0
     while not done:
         # The policy plays one environment: its observations are a row
-        obs = transforms.rows({k: v[np.newaxis] for k, v in obs.items()}, update=False)
+        obs = transforms.envs({k: v[np.newaxis] for k, v in obs.items()}, update=False)
         act = policy.act(obs, greedy=greedy)
         obs, reward, terminated, truncated, _ = env.step(act.env_actions.reshape(env.action_space.shape))
         done = terminated or truncated or cfg.dry_run

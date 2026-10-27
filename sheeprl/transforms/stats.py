@@ -1,4 +1,4 @@
-"""Running statistics of a stream of batches, synced across the processes: the state of the `rows` transforms."""
+"""Running statistics of a stream of batches, synced across the processes: the state of the `envs` transforms."""
 
 from __future__ import annotations
 

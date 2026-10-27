@@ -19,7 +19,7 @@ import torch
 from sheeprl import ROOT_DIR
 from sheeprl.core import Episode, GymEnvironment, loop
 from sheeprl.transforms import Pipeline, ScaleByReturnStd, Standardize, Tanh
-from sheeprl.transforms.observations import RowsTransforms
+from sheeprl.transforms.observations import EnvsTransforms
 from sheeprl.transforms.rewards import REWARD_SPACE
 from sheeprl.utils.env import get_vector_env_cls
 from tests.test_transforms import oracles
@@ -69,23 +69,23 @@ class TwoStepEnv(gym.Env):
 
 def two_step_environment() -> GymEnvironment:
     envs = get_vector_env_cls(True)([lambda: gym.wrappers.RecordEpisodeStatistics(TwoStepEnv())] * 2)
-    pipeline = Pipeline([Standardize()], envs.single_observation_space["state"], "rows", "rows")
-    rewards = Pipeline([ScaleByReturnStd(gamma=0.5)], REWARD_SPACE, "rows", "rows")
-    return GymEnvironment(envs, seed=0, transforms=RowsTransforms({"state": pipeline}), rewards=rewards)
+    pipeline = Pipeline([Standardize()], envs.single_observation_space["state"], "envs", "envs")
+    rewards = Pipeline([ScaleByReturnStd(gamma=0.5)], REWARD_SPACE, "envs", "envs")
+    return GymEnvironment(envs, seed=0, transforms=EnvsTransforms({"state": pipeline}), rewards=rewards)
 
 
 def standardize_of(env: GymEnvironment) -> Standardize:
-    return env.transforms.pipelines[0].stages["rows"][0]
+    return env.transforms.pipelines[0].stages["envs"][0]
 
 
 def count_of(env_state, key: str = "state") -> float:
     """The count of the statistics of `Standardize` of `key` in the state of the environments of a checkpoint."""
-    return float(env_state["transforms"][key]["stages.rows.0.stats.count"])
+    return float(env_state["transforms"][key]["stages.envs.0.stats.count"])
 
 
 def rewards_count_of(env_state) -> float:
     """The count of the statistics of `ScaleByReturnStd` in the state of the environments of a checkpoint."""
-    return float(env_state["rewards"]["stages.rows.0.stats.count"])
+    return float(env_state["rewards"]["stages.envs.0.stats.count"])
 
 
 def test_gym_environment_normalizes_the_observations_and_the_rewards_of_its_steps():
@@ -99,7 +99,7 @@ def test_gym_environment_normalizes_the_observations_and_the_rewards_of_its_step
     assert float(stats.mean) == pytest.approx(1 / 3, rel=1e-4) and float(stats.var) == pytest.approx(2 / 9, rel=1e-4)
     # The steps hold the observations normalized with the statistics of their time
     assert first.obs is first_obs and second.obs is first.next_obs
-    frozen = lambda x: env.transforms.rows({"state": x}, update=False)["state"]  # noqa: E731
+    frozen = lambda x: env.transforms.envs({"state": x}, update=False)["state"]  # noqa: E731
     assert np.array_equal(second.next_obs["state"], frozen(np.zeros((2, 1))))
     assert np.array_equal(second.stack_final_obs([0, 1], ["state"])["state"], frozen(np.full((2, 1), 2.0)))
     # The discounted returns are 1 and 1.5: the reward of the second step is 1 / std([1, 1, 1.5, 1.5]) (up to the
@@ -107,14 +107,14 @@ def test_gym_environment_normalizes_the_observations_and_the_rewards_of_its_step
     assert np.allclose(second.rewards, 1 / 0.25, rtol=1e-3)
     # The ended episodes keep the rewards of the environment, and the returns start again
     assert second.episodes == (Episode(0, 2.0, 2), Episode(1, 2.0, 2))
-    assert np.array_equal(env.rewards.stages["rows"][0].returns, np.zeros(2))
+    assert np.array_equal(env.rewards.stages["envs"][0].returns, np.zeros(2))
     state = env.state_dict()
     env.close()
 
     restored = two_step_environment()
     restored.load_state_dict(state)
     assert float(standardize_of(restored).stats.count) == float(stats.count)
-    assert float(restored.rewards.stages["rows"][0].stats.count) == pytest.approx(4 + 1e-4)
+    assert float(restored.rewards.stages["envs"][0].stats.count) == pytest.approx(4 + 1e-4)
     restored.close()
 
 
@@ -138,7 +138,7 @@ def test_the_statistics_of_the_normalization_are_resumed_and_evaluated():
     try:
         # 2 iterations, then 2 more: every iteration adds 4 observations and rewards of the 2 environments, and the
         # first observations of the resets of the 2 runs are added too
-        with mock.patch.object(Standardize, "rows", autospec=True, side_effect=Standardize.rows) as norm:
+        with mock.patch.object(Standardize, "envs", autospec=True, side_effect=Standardize.envs) as norm:
             run_cli([*argv, "algo.total_steps=16", "run_name=first", "algo.run_test=True"])
         first = torch.load(last_checkpoint(root_dir, "first"), weights_only=False)["env"]
         assert count_of(first) == pytest.approx(2 + 16 + 1e-4)
@@ -163,7 +163,7 @@ def test_the_statistics_of_the_normalization_are_resumed_and_evaluated():
 
         # The evaluation normalizes with the statistics of the checkpoint, without changing them
         with (
-            mock.patch.object(Standardize, "rows", autospec=True, side_effect=Standardize.rows) as norm,
+            mock.patch.object(Standardize, "envs", autospec=True, side_effect=Standardize.envs) as norm,
             mock.patch.object(
                 sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False"]
             ),
@@ -172,7 +172,7 @@ def test_the_statistics_of_the_normalization_are_resumed_and_evaluated():
         assert norm.called and all(call.kwargs["update"] is False for call in norm.call_args_list)
         evaluated = norm.call_args.args[0].stats
         assert float(evaluated.count) == count_of(resumed)
-        assert torch.equal(evaluated.mean, resumed["transforms"]["state"]["stages.rows.0.stats.mean"])
+        assert torch.equal(evaluated.mean, resumed["transforms"]["state"]["stages.envs.0.stats.mean"])
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)
 
@@ -256,7 +256,7 @@ def test_the_rewards_are_normalized_then_squashed_in_the_environments():
     # The former `env.normalization.rewards` and `env.clip_rewards`: the normalizer ran in the environments, the tanh
     # in the writers, after it
     env = two_step_environment()
-    env.rewards = Pipeline([ScaleByReturnStd(gamma=0.5), Tanh()], REWARD_SPACE, "rows", "rows")
+    env.rewards = Pipeline([ScaleByReturnStd(gamma=0.5), Tanh()], REWARD_SPACE, "envs", "envs")
     oracle = oracles.RewardNormalizer(2, gamma=0.5)
     env.reset()
     for _ in range(4):

@@ -79,5 +79,5 @@ def test_a_key_of_two_inputs_is_stored_once_with_the_same_stored_stages():
     # Only their `batch` transforms differ: stored once, resized
     space, _ = first_obs(config([*two_inputs, f"+algo.inputs.raw.transforms=[{image}]"]))
     assert list(space.spaces) == ["rgb"] and space["rgb"].shape == (3, 16, 16)
-    with pytest.raises(ValueError, match="different `frame` or `rows` transforms"):
+    with pytest.raises(ValueError, match="different `frame` or `envs` transforms"):
         first_obs(config([*two_inputs, "+algo.inputs.raw.transforms=[]"]))
