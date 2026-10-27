@@ -18,7 +18,7 @@ network is sized from.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, cast
 
 import gymnasium as gym
 import hydra
@@ -131,7 +131,7 @@ class Pipeline(nn.Module):
         )
         self.spaces: Dict[str, gym.Space] = {}
         for placement in PLACEMENTS:
-            for transform in self.stages[placement] if placement in self.stages else ():
+            for transform in self.transforms(placement):
                 space = transform.space(space)
             self.spaces[placement] = space
 
@@ -156,7 +156,8 @@ class Pipeline(nn.Module):
 
     def transforms(self, placement: str) -> Sequence[Transform]:
         """The transforms of the stage `placement` (none if the pipeline doesn't hold it)."""
-        return self.stages[placement] if placement in self.stages else ()
+        # `nn.ModuleDict` types its items as `nn.Module`: they are the lists of transforms of `__init__`
+        return cast("Sequence[Transform]", self.stages[placement]) if placement in self.stages else ()
 
     def frame(self, x: np.ndarray, info: Optional[Dict[str, Any]] = None) -> np.ndarray:
         for transform in self.transforms("frame"):

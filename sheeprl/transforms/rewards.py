@@ -47,17 +47,20 @@ class ScaleByReturnStd(Transform):
     def space(self, space: gym.Space) -> gym.Space:
         space = _box(space, "ScaleByReturnStd")
         self.stats = RunningMeanStd(space.shape)
-        return gym.spaces.Box(-self.clip, self.clip, space.shape, np.result_type(space.dtype, np.float32))
+        return gym.spaces.Box(-self.clip, self.clip, space.shape, np.result_type(space.dtype, np.float32).type)
 
     def envs(self, x: np.ndarray, update: bool = True, dones: Optional[np.ndarray] = None) -> np.ndarray:
         if update:
-            if self.returns is None:
-                self.returns = np.zeros(x.shape, dtype=np.float64)
-            self.returns = self.returns * self.gamma + x
-            self.stats.update(self.returns)
+            returns = self.returns
+            if returns is None:
+                returns = np.zeros(x.shape, dtype=np.float64)
+            returns = returns * self.gamma + x
+            self.stats.update(returns)
+            # From 0 again where an episode ended (`update` has read the returns already)
+            if dones is not None:
+                returns[dones] = 0.0
+            self.returns = returns
         normalized = np.clip(x / np.sqrt(self.stats.var.numpy() + self.epsilon), -self.clip, self.clip)
-        if update and dones is not None:
-            self.returns[dones] = 0.0
         return normalized.astype(np.result_type(x.dtype, np.float32))
 
     def sync(self, fabric: Fabric) -> None:
@@ -78,7 +81,7 @@ class _Elementwise(Transform):
         space = _box(space, type(self).__name__)
         low = np.maximum(self._numpy(space.low.astype(np.float64)), self.low)
         high = np.minimum(self._numpy(space.high.astype(np.float64)), self.high)
-        return gym.spaces.Box(low.astype(space.dtype), high.astype(space.dtype), space.shape, space.dtype)
+        return gym.spaces.Box(low.astype(space.dtype), high.astype(space.dtype), space.shape, space.dtype.type)
 
     def _numpy(self, x: np.ndarray) -> np.ndarray:
         raise NotImplementedError

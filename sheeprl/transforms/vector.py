@@ -32,7 +32,9 @@ class Flatten(Transform):
     def space(self, space: gym.Space) -> gym.Space:
         space = _box(space, "Flatten")
         self.sample_ndim = len(space.shape)
-        return gym.spaces.Box(space.low.reshape(-1), space.high.reshape(-1), (int(np.prod(space.shape)),), space.dtype)
+        return gym.spaces.Box(
+            space.low.reshape(-1), space.high.reshape(-1), (int(np.prod(space.shape)),), space.dtype.type
+        )
 
     def frame(self, x: np.ndarray, info: Optional[Dict[str, Any]] = None) -> np.ndarray:
         return x.reshape(-1)
@@ -53,7 +55,7 @@ class ExpandDims(Transform):
     def space(self, space: gym.Space) -> gym.Space:
         space = _box(space, "ExpandDims")
         low, high = np.expand_dims(space.low, self.axis), np.expand_dims(space.high, self.axis)
-        return gym.spaces.Box(low, high, low.shape, space.dtype)
+        return gym.spaces.Box(low, high, low.shape, space.dtype.type)
 
     def frame(self, x: np.ndarray, info: Optional[Dict[str, Any]] = None) -> np.ndarray:
         return np.expand_dims(x, self.axis)
@@ -73,7 +75,7 @@ class Cast(Transform):
 
     def space(self, space: gym.Space) -> gym.Space:
         space = _box(space, "Cast")
-        return gym.spaces.Box(space.low.astype(self.dtype), space.high.astype(self.dtype), space.shape, self.dtype)
+        return gym.spaces.Box(space.low.astype(self.dtype), space.high.astype(self.dtype), space.shape, self.dtype.type)
 
     def frame(self, x: np.ndarray, info: Optional[Dict[str, Any]] = None) -> np.ndarray:
         return np.asarray(x).astype(self.dtype)

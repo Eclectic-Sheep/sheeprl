@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Dict, Optional, Protocol, Sequence
+from typing import Any, Dict, Optional, Protocol, Sequence, cast
 
 import gymnasium as gym
 import numpy as np
@@ -57,7 +57,15 @@ class EnvStep:
 
     def stack_final_obs(self, env_idxes: Sequence[int], keys: Sequence[str]) -> Dict[str, np.ndarray]:
         """The last observations of the episodes that have just ended in the environments `env_idxes`, stacked."""
-        return {k: np.stack([self.final_obs[env_idx][k] for env_idx in env_idxes]) for k in keys}
+        final_obs = []
+        for env_idx in env_idxes:
+            obs = self.final_obs[env_idx]
+            if obs is None:
+                raise ValueError(
+                    f"The episode of the environment {env_idx} hasn't ended in this step: no last observation"
+                )
+            final_obs.append(obs)
+        return {k: np.stack([obs[k] for obs in final_obs]) for k in keys}
 
 
 class Environment(Protocol):
@@ -74,13 +82,16 @@ class Environment(Protocol):
 
     def reset(self) -> Dict[str, np.ndarray]:
         """Reset every environment and return the first observations."""
+        ...
 
     def random_actions(self) -> np.ndarray:
         """Uniformly random actions, one row per environment (e.g. to fill a replay buffer before the training)."""
+        ...
 
     def step(self, actions: np.ndarray) -> EnvStep:
         """Play `actions` (one row per environment) and return what happened. An environment whose episode ends
         starts the next one in the same step."""
+        ...
 
     def close(self) -> None:
         """Close the environments."""
@@ -122,9 +133,9 @@ class GymEnvironment(Environment):
         self.seed = seed
         self.num_envs = envs.num_envs
         self.transforms = transforms if transforms is not None else EnvsTransforms({})
-        self.observation_space = gym.spaces.Dict(
-            {**envs.single_observation_space.spaces, **self.transforms.space.spaces}
-        )
+        # The environments of `make_env` return dictionaries of observations
+        single_space = cast(gym.spaces.Dict, envs.single_observation_space)
+        self.observation_space = gym.spaces.Dict({**single_space.spaces, **self.transforms.space.spaces})
         self.action_space = envs.single_action_space
         self.rewards = rewards if rewards is not None else Pipeline([], REWARD_SPACE, "envs", "envs")
         self.obs: Dict[str, np.ndarray] = {}
@@ -162,7 +173,9 @@ class GymEnvironment(Environment):
         return cls(
             envs,
             seed=first_seed,
-            transforms=EnvsTransforms.from_config(cfg, envs.single_observation_space, off_policy=off_policy),
+            transforms=EnvsTransforms.from_config(
+                cfg, cast(gym.spaces.Dict, envs.single_observation_space), off_policy=off_policy
+            ),
             rewards=reward_pipeline(cfg, off_policy=off_policy),
         )
 

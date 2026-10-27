@@ -24,6 +24,10 @@ CFG = dotdict(
 )
 
 
+def _no_actions(*args, **kwargs):
+    raise AssertionError("This stand-in policy plays random actions only")
+
+
 class StandInPolicy(DreamerPolicy):
     """A Dreamer policy whose actions come from `get_actions`, which records its resets."""
 
@@ -34,8 +38,11 @@ class StandInPolicy(DreamerPolicy):
         self.codec = codec_of(actions_dim)
         self.actions_dim = actions_dim
         self.actor = SimpleNamespace(is_continuous=False)
-        self.get_actions = get_actions
+        self._get_actions = get_actions or _no_actions
         self.resets = []
+
+    def get_actions(self, obs, greedy=False, mask=None):
+        return self._get_actions(obs, greedy=greedy, mask=mask)
 
     def init_states(self, num_envs):
         self.resets.append(num_envs)

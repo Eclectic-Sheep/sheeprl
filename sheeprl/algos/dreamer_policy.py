@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, Optional, Sequence
+from typing import TYPE_CHECKING, Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
+import torch
 from torch import Tensor
 
 from sheeprl.core.collector import Act, Policy
 from sheeprl.models.io import to_device
 
 if TYPE_CHECKING:
+    from sheeprl.core.actions import ActionCodec
     from sheeprl.core.environment import Environment
 
 
@@ -22,8 +24,20 @@ class DreamerPolicy(Policy):
     store through `codec` (one-hot for discrete actions, while the environments take their indices).
 
     A subclass is an `nn.Module` with the attributes `device`, `keys` (the keys of the inputs of its encoder),
-    `mask_keys`, `codec` and `actor`.
+    `mask_keys`, `codec` and `actor`, and the method `get_actions`.
     """
+
+    # Set by the subclasses
+    device: Union[str, torch.device]
+    keys: Tuple[str, ...]
+    mask_keys: Tuple[str, ...]
+    codec: ActionCodec
+
+    def get_actions(
+        self, obs: Dict[str, Tensor], greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
+    ) -> Sequence[Tensor]:
+        """The actions for `obs`, one tensor per action, updating the latent states of the environments."""
+        raise NotImplementedError
 
     def obs_to_device(self, obs: Dict[str, np.ndarray]) -> Dict[str, Tensor]:
         """The observations of the keys of the inputs and of the action masks, on the device of the policy, as

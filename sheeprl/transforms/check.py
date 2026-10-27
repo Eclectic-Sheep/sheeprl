@@ -30,6 +30,8 @@ def check_transform(transform: Transform, space: gym.Space, n: int = 8, compile:
     dtype and the bounds its `space` promises. With `compile`, assert that its `batch` compiles in one graph
     (`torch._dynamo.explain`)."""
     out_space = transform.space(space)
+    if not isinstance(out_space, gym.spaces.Box):
+        raise TypeError(f"`check_transform` checks transforms to a `Box`, {type(transform).__name__} gives {out_space}")
     samples = _samples(space, n)
     if transform.where == "frame":
         transform.reset()

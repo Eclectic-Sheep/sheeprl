@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NamedTuple, Tuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Tuple, cast
 
 import numpy as np
 import torch
-from torch import nn
+from torch import Tensor, nn
 
 if TYPE_CHECKING:
     from lightning import Fabric
 
 
-class SampleMoments(NamedTuple):
+@dataclass(frozen=True)
+class SampleMoments:
     """The mean, the variance and the number of a set of samples."""
 
     mean: np.ndarray
@@ -41,18 +43,23 @@ class RunningMeanStd(nn.Module):
     since are buffers that are not saved: loading a state makes it the synced one.
     """
 
+    # The saved buffers, registered in `__init__`
+    mean: Tensor
+    var: Tensor
+    count: Tensor
+
     def __init__(self, shape: Tuple[int, ...] = (), epsilon: float = 1e-4) -> None:
         super().__init__()
-        f64 = dict(dtype=torch.float64)
-        self.register_buffer("mean", torch.zeros(shape, **f64))
-        self.register_buffer("var", torch.ones(shape, **f64))
-        self.register_buffer("count", torch.tensor(epsilon, **f64))
-        self.register_buffer("synced_mean", torch.zeros(shape, **f64), persistent=False)
-        self.register_buffer("synced_var", torch.ones(shape, **f64), persistent=False)
-        self.register_buffer("synced_count", torch.tensor(epsilon, **f64), persistent=False)
-        self.register_buffer("added_mean", torch.zeros(shape, **f64), persistent=False)
-        self.register_buffer("added_var", torch.zeros(shape, **f64), persistent=False)
-        self.register_buffer("added_count", torch.tensor(0.0, **f64), persistent=False)
+        f64 = torch.float64
+        self.register_buffer("mean", torch.zeros(shape, dtype=f64))
+        self.register_buffer("var", torch.ones(shape, dtype=f64))
+        self.register_buffer("count", torch.tensor(epsilon, dtype=f64))
+        self.register_buffer("synced_mean", torch.zeros(shape, dtype=f64), persistent=False)
+        self.register_buffer("synced_var", torch.ones(shape, dtype=f64), persistent=False)
+        self.register_buffer("synced_count", torch.tensor(epsilon, dtype=f64), persistent=False)
+        self.register_buffer("added_mean", torch.zeros(shape, dtype=f64), persistent=False)
+        self.register_buffer("added_var", torch.zeros(shape, dtype=f64), persistent=False)
+        self.register_buffer("added_count", torch.tensor(0.0, dtype=f64), persistent=False)
 
     def _get(self, prefix: str) -> SampleMoments:
         return SampleMoments(
@@ -88,7 +95,7 @@ class RunningMeanStd(nn.Module):
         shape, size = added.mean.shape, added.mean.size
         flat = np.concatenate([added.mean.ravel(), added.var.ravel(), [added.count]])
         # One row per process
-        gathered = fabric.all_gather(torch.as_tensor(flat, device=fabric.device)).cpu().numpy()
+        gathered = cast(Tensor, fabric.all_gather(torch.as_tensor(flat, device=fabric.device))).cpu().numpy()
         moments = self._get("synced_")
         for row in gathered:
             mean, var, count = row[:size].reshape(shape), row[size:-1].reshape(shape), float(row[-1])

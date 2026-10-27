@@ -378,12 +378,12 @@ class DreamerV1Policy(nn.Module, DreamerPolicy):
         return self.get_exploration_actions(obs, mask=mask, step=step)
 
     def get_exploration_actions(
-        self, obs: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
+        self, obs: Dict[str, Tensor], greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
     ) -> Sequence[Tensor]:
         """Return the actions with a certain amount of noise for exploration.
 
         Args:
-            obs (Tensor): the current observations.
+            obs (Dict[str, Tensor]): the current observations.
             greedy (bool): whether or not to sample the actions.
                 Default to False.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
@@ -402,12 +402,12 @@ class DreamerV1Policy(nn.Module, DreamerPolicy):
         return expl_actions or actions
 
     def get_actions(
-        self, obs: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
+        self, obs: Dict[str, Tensor], greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
         """Return the greedy actions.
 
         Args:
-            obs (Tensor): the current observations.
+            obs (Dict[str, Tensor]): the current observations.
             greedy (bool): whether or not to sample the actions.
                 Default to False.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).

@@ -90,4 +90,4 @@ class ActionCodec:
 
     def split(self, stored: Tensor) -> Sequence[Tensor]:
         """The stored actions, one tensor per head."""
-        return torch.split(stored, self.dims, dim=-1)
+        return torch.split(stored, list(self.dims), dim=-1)

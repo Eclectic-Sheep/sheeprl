@@ -99,7 +99,7 @@ class FrameStack(Transform):
             np.concatenate([space.low] * self.n, axis=0),
             np.concatenate([space.high] * self.n, axis=0),
             (self.n * space.shape[0], *space.shape[1:]),
-            space.dtype,
+            space.dtype.type,
         )
 
     def reset(self) -> None:

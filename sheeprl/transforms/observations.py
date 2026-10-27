@@ -4,7 +4,7 @@ stages, run in the environments (`TransformsWrapper`), and their `envs` stages (
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
 
 import gymnasium as gym
 import numpy as np
@@ -114,7 +114,8 @@ class EnvsTransforms(nn.Module):
         return cls(pipelines)
 
     def _pipelines(self) -> Dict[str, Pipeline]:
-        return dict(zip(self.keys, self.pipelines))
+        # `nn.ModuleList` types its items as `nn.Module`: they are the pipelines given to `__init__`
+        return {k: cast(Pipeline, p) for k, p in zip(self.keys, self.pipelines)}
 
     @property
     def space(self) -> gym.spaces.Dict:
@@ -135,7 +136,7 @@ class EnvsTransforms(nn.Module):
         return {k: v[0] for k, v in self.envs({k: v[np.newaxis] for k, v in obs.items()}, update=False).items()}
 
     def sync(self, fabric: Fabric) -> None:
-        for pipeline in self.pipelines:
+        for pipeline in self._pipelines().values():
             pipeline.sync(fabric)
 
     def key_state_dict(self) -> Dict[str, Dict[str, Any]]:

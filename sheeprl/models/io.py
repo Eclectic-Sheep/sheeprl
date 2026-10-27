@@ -13,7 +13,7 @@ dimensions.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, cast
 
 import gymnasium as gym
 import hydra
@@ -44,6 +44,13 @@ def _concat_dim(shapes: Sequence[Tuple[int, ...]], keys: Sequence[str], cat_dim:
     )
 
 
+def _shape(space: gym.Space, key: str) -> Tuple[int, ...]:
+    """The shape of the samples of `space`, the space of `key`."""
+    if space.shape is None:
+        raise TypeError(f"The samples of the key `{key}` have no fixed shape after its transforms: {space}")
+    return tuple(space.shape)
+
+
 def _concat_shape(shapes: Sequence[Tuple[int, ...]], cat_dim: int, what: str) -> Tuple[int, ...]:
     """The shape of the concatenation of samples of `shapes` along `cat_dim`."""
     first = list(shapes[0])
@@ -67,7 +74,8 @@ class Input(nn.Module):
         self.pipelines = nn.ModuleList(pipelines)
         self.net = net
         self.cat_dim = cat_dim
-        self.output_dim = int(net.output_dim)
+        # The networks of the contract expose it (checked by `from_config`)
+        self.output_dim = int(getattr(net, "output_dim"))
 
     @classmethod
     def from_config(cls, cfg: Any, store_space: gym.spaces.Dict) -> Input:
@@ -77,7 +85,7 @@ class Input(nn.Module):
         if missing:
             raise ValueError(f"The keys {missing} are not in the store, whose keys are {list(store_space.spaces)}")
         pipelines = [Pipeline.from_config(cfg.get("transforms") or [], store_space[k], "batch", "batch") for k in keys]
-        shapes = [tuple(p.batch_space.shape) for p in pipelines]
+        shapes = [_shape(p.batch_space, k) for k, p in zip(keys, pipelines)]
         cat_dim = _concat_dim(shapes, keys, cfg.get("cat_dim"))
         input_shape = _concat_shape(shapes, cat_dim, f"The input of the keys {keys}")
         net = hydra.utils.instantiate(cfg["net"], input_shape=list(input_shape), _convert_="all")
@@ -88,16 +96,24 @@ class Input(nn.Module):
     def transformed(self, obs: Dict[str, Tensor], phase: str = "train") -> List[Tensor]:
         """The tensors of the keys through their `batch` transforms of `phase`, in the default dtype."""
         dtype = torch.get_default_dtype()
-        return [p.batch(obs[k], phase).to(dtype) for k, p in zip(self.keys, self.pipelines)]
+        return [p.batch(obs[k], phase).to(dtype) for k, p in zip(self.keys, self._pipelines())]
 
     def forward(self, obs: Dict[str, Tensor], phase: str = "train", **kwargs: Any) -> Tensor:
         """The features of the keys of `obs`; the keyword arguments go to the network (e.g. the
         `detach_encoder_features` of the encoders of SAC-AE)."""
         return self.net(torch.cat(self.transformed(obs, phase), dim=self.cat_dim), **kwargs)
 
+    def _pipelines(self) -> Sequence[Pipeline]:
+        # `nn.ModuleList` types its items as `nn.Module`: they are the pipelines given to `__init__`
+        return cast("Sequence[Pipeline]", self.pipelines)
+
+    def pipeline(self, key: str) -> Pipeline:
+        """The pipeline of the `batch` transforms of `key`."""
+        return self._pipelines()[self.keys.index(key)]
+
     def batch_space(self, key: str) -> gym.Space:
         """The space of `key` after its `batch` transforms."""
-        return self.pipelines[self.keys.index(key)].batch_space
+        return self.pipeline(key).batch_space
 
 
 class MultiEncoder(nn.Module):
@@ -126,20 +142,24 @@ class MultiEncoder(nn.Module):
             }
         )
 
+    def _inputs(self) -> Mapping[str, Input]:
+        # `nn.ModuleDict` types its items as `nn.Module`: they are the inputs given to `__init__`
+        return cast("Mapping[str, Input]", self.inputs)
+
     def forward(self, obs: Dict[str, Tensor], phase: str = "train", **kwargs: Any) -> Tensor:
-        features = [inp(obs, phase, **kwargs) for inp in self.inputs.values()]
+        features = [inp(obs, phase, **kwargs) for inp in self._inputs().values()]
         return features[0] if len(features) == 1 else torch.cat(features, dim=-1)
 
     def store_space(self, key: str) -> gym.Space:
         """The space of `key` in the store (before the `batch` transforms)."""
-        for inp in self.inputs.values():
+        for inp in self._inputs().values():
             if key in inp.keys:
-                return inp.pipelines[inp.keys.index(key)].spaces["envs"]
+                return inp.pipeline(key).envs_space
         raise KeyError(f"No input reads the key `{key}`: the keys of the inputs are {list(self.keys)}")
 
     def batch_space(self, key: str) -> gym.Space:
         """The space of `key` after the `batch` transforms of the first input that reads it."""
-        for inp in self.inputs.values():
+        for inp in self._inputs().values():
             if key in inp.keys:
                 return inp.batch_space(key)
         raise KeyError(f"No input reads the key `{key}`: the keys of the inputs are {list(self.keys)}")
@@ -149,9 +169,9 @@ class MultiEncoder(nn.Module):
         phase: the targets of the losses of the decoders."""
         targets = {}
         for k in keys:
-            for inp in self.inputs.values():
+            for inp in self._inputs().values():
                 if k in inp.keys:
-                    targets[k] = inp.pipelines[inp.keys.index(k)].batch(obs[k], "train").to(torch.get_default_dtype())
+                    targets[k] = inp.pipeline(k).batch(obs[k], "train").to(torch.get_default_dtype())
                     break
             else:
                 raise KeyError(f"No input reads the key `{k}`: a decoded key must be encoded")
@@ -196,7 +216,7 @@ class Output(nn.Module):
         """The output of `cfg` (`keys`, `net`, optionally `likelihood`, `transforms` of its targets and `cat_dim`): the
         shape of every key is the one the encoder gives it after its `batch` transforms."""
         keys = list(cfg["keys"])
-        shapes = [tuple(encoder.batch_space(k).shape) for k in keys]
+        shapes = [_shape(encoder.batch_space(k), k) for k in keys]
         target_pipelines = None
         if cfg.get("transforms") is not None:
             target_pipelines = [
@@ -219,7 +239,9 @@ class Output(nn.Module):
         if self.target_pipelines is None:
             return encoder.targets(obs, self.keys)
         dtype = torch.get_default_dtype()
-        return {k: p.batch(obs[k], "train").to(dtype) for k, p in zip(self.keys, self.target_pipelines)}
+        # `nn.ModuleList` types its items as `nn.Module`: they are the pipelines given to `__init__`
+        target_pipelines = cast("Sequence[Pipeline]", self.target_pipelines)
+        return {k: p.batch(obs[k], "train").to(dtype) for k, p in zip(self.keys, target_pipelines)}
 
     def log_probs(self, reconstructions: Dict[str, Tensor], targets: Dict[str, Tensor]) -> Dict[str, Tensor]:
         """The log-likelihood of the target of every key under the distribution of its reconstruction."""
@@ -233,7 +255,8 @@ class Output(nn.Module):
     def log_prob(self, reconstructions: Dict[str, Tensor], targets: Dict[str, Tensor]) -> Tensor:
         """The sum over the keys of the log-likelihood of their targets under the distribution of their
         reconstruction."""
-        return sum(self.log_probs(reconstructions, targets).values())
+        # A tensor: an output has at least one key
+        return cast(Tensor, sum(self.log_probs(reconstructions, targets).values()))
 
 
 class MultiDecoder(nn.Module):
@@ -255,28 +278,33 @@ class MultiDecoder(nn.Module):
             }
         )
 
+    def _outputs(self) -> Mapping[str, Output]:
+        # `nn.ModuleDict` types its items as `nn.Module`: they are the outputs given to `__init__`
+        return cast("Mapping[str, Output]", self.outputs)
+
     def forward(self, latent: Tensor) -> Dict[str, Tensor]:
         reconstructions: Dict[str, Tensor] = {}
-        for out in self.outputs.values():
+        for out in self._outputs().values():
             reconstructions.update(out(latent))
         return reconstructions
 
     def targets(self, obs: Dict[str, Tensor], encoder: MultiEncoder) -> Dict[str, Tensor]:
         """The targets of the reconstructions of all the keys of `obs` (as stored)."""
         targets: Dict[str, Tensor] = {}
-        for out in self.outputs.values():
+        for out in self._outputs().values():
             targets.update(out.targets(obs, encoder))
         return targets
 
     def log_probs(self, reconstructions: Dict[str, Tensor], targets: Dict[str, Tensor]) -> Dict[str, Tensor]:
         """The log-likelihood of every key, in the order of the outputs."""
         log_probs: Dict[str, Tensor] = {}
-        for out in self.outputs.values():
+        for out in self._outputs().values():
             log_probs.update(out.log_probs(reconstructions, targets))
         return log_probs
 
     def log_prob(self, reconstructions: Dict[str, Tensor], targets: Dict[str, Tensor]) -> Tensor:
-        return sum(out.log_prob(reconstructions, targets) for out in self.outputs.values())
+        # A tensor: the decoders reconstruct at least one key (`check_reconstructs`)
+        return cast(Tensor, sum(out.log_prob(reconstructions, targets) for out in self._outputs().values()))
 
 
 def log_inputs_and_outputs(
@@ -284,9 +312,9 @@ def log_inputs_and_outputs(
 ) -> None:
     """Print the keys of the inputs and of the outputs, with `metric.log_level`."""
     if cfg.metric.log_level > 0:
-        for name, inp in encoder.inputs.items():
+        for name, inp in encoder._inputs().items():
             fabric.print(f"Input `{name}`: {list(inp.keys)}")
-        for name, out in (decoder.outputs.items() if decoder is not None else ()):
+        for name, out in decoder._outputs().items() if decoder is not None else ():
             fabric.print(f"Output `{name}`: {list(out.keys)}")
 
 
