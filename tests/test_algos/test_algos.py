@@ -176,6 +176,7 @@ def test_sac_ae(standard_args, start_time):
         f"run_name={run_name}",
         "algo.inputs.vector.keys=[state]",
         "algo.inputs.image.keys=[rgb]",
+        "env.render_key=rgb",
         "env.screen_size=64",
         "algo.hidden_size=4",
         "algo.dense_units=4",
@@ -885,6 +886,7 @@ OFF_POLICY_CASES = [
         [
             "algo.inputs.vector.keys=[state]",
             "algo.inputs.image.keys=[rgb]",
+            "env.render_key=rgb",
             "env.screen_size=64",
             "algo.hidden_size=4",
             "algo.dense_units=4",

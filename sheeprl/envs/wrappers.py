@@ -3,11 +3,13 @@ from __future__ import annotations
 import copy
 import time
 from collections import deque
-from typing import Any, Callable, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, SupportsFloat, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
 from gymnasium.core import Env, RenderFrame
+
+from sheeprl.transforms.base import Pipeline
 
 
 class MaskVelocityWrapper(gym.ObservationWrapper):
@@ -156,63 +158,36 @@ class RestartOnException(gym.Wrapper):
             return new_obs, info
 
 
-class FrameStack(gym.Wrapper):
-    def __init__(self, env: Env, num_stack: int, cnn_keys: Sequence[str], dilation: int = 1) -> None:
+class TransformsWrapper(gym.Wrapper):
+    """The `frame` stage of the observation keys (`sheeprl.transforms`): every key the agent stores goes through the
+    `frame` transforms of its pipeline, once per step of the environment; the other keys are dropped. The transforms get
+    the `info` of the step with its `terminated` and `truncated`, and are reset (and seeded) with the environment."""
+
+    def __init__(self, env: Env, pipelines: Dict[str, Pipeline]) -> None:
         super().__init__(env)
-        if num_stack <= 0:
-            raise ValueError(f"Invalid value for num_stack, expected a value greater than zero, got {num_stack}")
-        if not isinstance(env.observation_space, gym.spaces.Dict):
-            raise RuntimeError(
-                f"Expected an observation space of type gym.spaces.Dict, got: {type(env.observation_space)}"
-            )
-        self._num_stack = num_stack
-        self._cnn_keys = []
-        self._dilation = dilation
-        self.observation_space = copy.deepcopy(self.env.observation_space)
-        for k, v in self.env.observation_space.spaces.items():
-            if cnn_keys and len(v.shape) == 3:
-                self._cnn_keys.append(k)
-                self.observation_space[k] = gym.spaces.Box(
-                    np.repeat(self.env.observation_space[k].low[None, ...], num_stack, axis=0),
-                    np.repeat(self.env.observation_space[k].high[None, ...], num_stack, axis=0),
-                    (self._num_stack, *self.env.observation_space[k].shape),
-                    self.env.observation_space[k].dtype,
-                )
+        self.pipelines = pipelines
+        self.observation_space = gym.spaces.Dict({k: p.frame_space for k, p in pipelines.items()})
+        self._needs_info = any(p.needs_info for p in pipelines.values())
 
-        if self._cnn_keys is None or len(self._cnn_keys) == 0:
-            raise RuntimeError("Specify at least one valid cnn key to be stacked")
-        self._frames = {k: deque(maxlen=num_stack * dilation) for k in self._cnn_keys}
-
-    def _get_obs(self, key):
-        frames_subset = list(self._frames[key])[self._dilation - 1 :: self._dilation]
-        assert len(frames_subset) == self._num_stack
-        return np.stack(list(frames_subset), axis=0)
-
-    def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
-        obs, reward, done, truncated, infos = self.env.step(action)
-        for k in self._cnn_keys:
-            self._frames[k].append(obs[k])
-            if (
-                "env_domain" in infos
-                and infos["env_domain"] == "DIAMBRA"
-                and len(set(["round_done", "stage_done", "game_done"]).intersection(infos.keys())) == 3
-                and (infos["round_done"] or infos["stage_done"] or infos["game_done"])
-                and not (done or truncated)
-            ):
-                for _ in range(self._num_stack * self._dilation - 1):
-                    self._frames[k].append(obs[k])
-            obs[k] = self._get_obs(k)
-        return obs, reward, done, truncated, infos
+    def _transform(
+        self, obs: Dict[str, Any], info: Dict[str, Any], terminated: bool, truncated: bool
+    ) -> Dict[str, Any]:
+        info = {**info, "terminated": terminated, "truncated": truncated} if self._needs_info else None
+        return {k: p.frame(obs[k], info) for k, p in self.pipelines.items()}
 
     def reset(
-        self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None, **kwargs
+        self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[Any, Dict[str, Any]]:
-        obs, infos = self.env.reset(seed=seed, **kwargs)
-        [self._frames[k].clear() for k in self._cnn_keys]
-        for k in self._cnn_keys:
-            [self._frames[k].append(obs[k]) for _ in range(self._num_stack * self._dilation)]
-            obs[k] = self._get_obs(k)
-        return obs, infos
+        obs, info = self.env.reset(seed=seed, options=options)
+        for pipeline in self.pipelines.values():
+            pipeline.reset()
+            if seed is not None:
+                pipeline.seed(seed)
+        return self._transform(obs, info, False, False), info
+
+    def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        return self._transform(obs, info, terminated, truncated), reward, terminated, truncated, info
 
 
 class RewardAsObservationWrapper(gym.Wrapper):

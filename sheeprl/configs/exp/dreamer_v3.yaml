@@ -12,12 +12,10 @@ algo:
   total_steps: 5000000
   per_rank_batch_size: 16
   per_rank_sequence_length: 64
+  # The frames of Atari, a bare observation (the key `state`); the decoder reconstructs them
   inputs:
     image:
-      keys: [rgb]
-  outputs:
-    image:
-      keys: [rgb]
+      keys: [state]
 
 # Checkpoint
 checkpoint:

@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from sheeprl.core.collector import Policy, Writer
     from sheeprl.core.schedule import TrainSchedule
     from sheeprl.data.store import ReplayStore
-    from sheeprl.envs.normalization import ObsNormalizer
 
 
 @dataclasses.dataclass
@@ -110,9 +109,10 @@ class Algorithm:
     # Whether a crashed environment is created again instead of stopping the run (`GymEnvironment`): the writer must
     # then handle `EnvStep.restarted`, which marks the first observation of the new environment
     restart_crashed_envs: bool = False
-    # The normalization of the observations the policy is trained with (`env.normalization.obs`), set by the training
-    # loop and by `load_trained_state`: the test episode normalizes its observations with it, frozen
-    obs_normalizer: Optional[ObsNormalizer] = None
+    # The state of the environments the policy was trained with (`Environment.state_dict`, e.g. the statistics of the
+    # `Standardize` transforms), set by the training loop and by `load_trained_state`: the test episode transforms its
+    # observations with it, frozen
+    trained_env_state: Optional[Dict[str, Any]] = None
 
     def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         self.fabric = fabric
@@ -144,7 +144,7 @@ class Algorithm:
             log_dir,
             policy_step=policy_step,
             greedy=self.greedy_test,
-            obs_normalizer=self.obs_normalizer,
+            env_state=self.trained_env_state,
         )
 
     def policy(self, state: TrainState) -> Policy:

@@ -18,5 +18,8 @@ actions_as_observation:
   noop: "You MUST define the NOOP"
   dilation: 1
 max_episode_steps: null
+# The key under which the render of the environment is added to its observations (e.g. `rgb` to play CartPole from
+# pixels), `null` for none
+render_key: null
 reward_as_observation: False
 wrapper: ???

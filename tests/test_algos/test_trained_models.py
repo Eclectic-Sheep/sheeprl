@@ -144,6 +144,7 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
             # A rendered environment with bounded continuous actions (those of the dummy environments are unbounded)
             # whose renderer draws only shapes: Pendulum loads an image, which needs the PNG support of pygame
             "env.id=MountainCarContinuous-v0",
+            "env.render_key=rgb",
             "algo.inputs.image.keys=[rgb]",
             "algo.inputs.vector.keys=[state]",
             "algo.hidden_size=8",

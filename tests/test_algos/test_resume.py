@@ -91,6 +91,7 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
             "exp=sac_ae",
             # A rendered environment with bounded continuous actions, whose renderer draws only shapes
             "env.id=MountainCarContinuous-v0",
+            "env.render_key=rgb",
             "algo.inputs.image.keys=[rgb]",
             "algo.inputs.vector.keys=[state]",
             "algo.hidden_size=8",

@@ -7,7 +7,8 @@ import pytest
 import torch
 from lightning import Fabric
 
-from sheeprl.envs.normalization import ObsNormalizer, RewardNormalizer, RunningMeanStd
+from sheeprl.envs.normalization import RewardNormalizer, RunningMeanStd
+from sheeprl.transforms.observations import RowsTransforms
 from sheeprl.utils.utils import dotdict
 
 OBS_SPACE = gym.spaces.Dict(
@@ -18,12 +19,15 @@ OBS_SPACE = gym.spaces.Dict(
 )
 
 
-def normalization_cfg(obs=False, **normalization):
-    transforms = [{"_target_": "sheeprl.transforms.Standardize", "clip": 10.0, "epsilon": 1e-8}] if obs else []
+def normalization_cfg(obs=False, clip=10.0, **normalization):
+    transforms = [{"_target_": "sheeprl.transforms.Standardize", "clip": clip, "epsilon": 1e-8}] if obs else []
     return dotdict(
         {
             "env": {"normalization": {"clip_rewards": 10.0, "epsilon": 1e-8, **normalization}},
-            "algo": {"gamma": 0.9, "inputs": {"vector": {"keys": ["state", "missing"], "transforms": transforms}}},
+            "algo": {
+                "gamma": 0.9,
+                "inputs": {"vector": {"keys": ["state"], "transforms": transforms}, "image": {"keys": ["rgb"]}},
+            },
         }
     )
 
@@ -86,29 +90,31 @@ def test_running_mean_std_of_one_process_does_not_change_when_synced():
     assert stats.count == before["count"]
 
 
-def test_obs_normalizer_standardizes_and_clips_only_its_keys():
+def test_the_rows_stage_standardizes_and_clips_only_the_keys_of_its_input():
     rng = np.random.default_rng(0)
     obs = {"state": rng.normal(5.0, 3.0, size=(1000, 3)), "rgb": rng.integers(0, 255, (1000, 3, 4, 4), np.uint8)}
-    normalizer = ObsNormalizer(OBS_SPACE, ["state"])
-    normalizer.update(obs)
-    normalized = normalizer.normalize(obs)
+    transforms = RowsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE)
+    normalized = transforms.rows(obs)
     assert normalized["state"].dtype == np.float32
     assert np.allclose(normalized["state"].mean(axis=0), 0, atol=1e-3)
     assert np.allclose(normalized["state"].std(axis=0), 1, atol=1e-3)
     assert normalized["rgb"] is obs["rgb"]
-    # The observations of one environment, without the rows, are normalized as the rows are
-    assert np.array_equal(normalizer.normalize({"state": obs["state"][7]})["state"], normalized["state"][7])
-    normalizer.clip = 1.0
-    assert np.abs(normalizer.normalize(obs)["state"]).max() == 1.0
+    # The observation of one environment, without the rows, is transformed as the rows are
+    assert np.array_equal(transforms.one({"state": obs["state"][7]})["state"], normalized["state"][7])
+    clipped = RowsTransforms.from_config(normalization_cfg(obs=True, clip=1.0), OBS_SPACE)
+    assert np.abs(clipped.rows(obs)["state"]).max() == 1.0
 
 
-def test_obs_normalizer_restores_its_statistics():
-    normalizer = ObsNormalizer(OBS_SPACE, ["state"])
-    normalizer.update({"state": np.arange(12.0).reshape(4, 3)})
-    restored = ObsNormalizer(OBS_SPACE, ["state"])
-    restored.load_state_dict(normalizer.state_dict())
+def test_the_rows_stage_restores_its_statistics():
+    transforms = RowsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE)
+    transforms.rows({"state": np.arange(12.0).reshape(4, 3)})
+    restored = RowsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE)
+    restored.load_key_state_dict(transforms.key_state_dict())
     obs = {"state": np.ones((2, 3))}
-    assert np.array_equal(restored.normalize(obs)["state"], normalizer.normalize(obs)["state"])
+    assert np.array_equal(restored.rows(obs, update=False)["state"], transforms.rows(obs, update=False)["state"])
+    # Every key with statistics must find its own
+    with pytest.raises(KeyError, match="state"):
+        restored.load_key_state_dict({})
 
 
 def test_reward_normalizer_divides_the_rewards_by_the_std_of_the_discounted_returns():
@@ -132,14 +138,14 @@ def test_reward_normalizer_divides_the_rewards_by_the_std_of_the_discounted_retu
 
 
 def test_normalizers_are_created_as_configured():
-    assert ObsNormalizer.from_config(normalization_cfg(obs=False), OBS_SPACE) is None
+    # Without a `Standardize`, the observations have no statistics
+    assert RowsTransforms.from_config(normalization_cfg(obs=False), OBS_SPACE).key_state_dict() == {}
     assert RewardNormalizer.from_config(normalization_cfg(rewards=False), 2) is None
     # A configuration saved before the option doesn't normalize
     old_cfg = normalization_cfg()
     old_cfg.env.pop("normalization")
-    assert ObsNormalizer.from_config(old_cfg, OBS_SPACE) is None
     assert RewardNormalizer.from_config(old_cfg, 2) is None
     # Only the vector observations the agent encodes, among the ones of the environment
-    assert list(ObsNormalizer.from_config(normalization_cfg(obs=True), OBS_SPACE).stats) == ["state"]
+    assert list(RowsTransforms.from_config(normalization_cfg(obs=True), OBS_SPACE).key_state_dict()) == ["state"]
     reward_normalizer = RewardNormalizer.from_config(normalization_cfg(rewards=True), 2)
     assert reward_normalizer.gamma == 0.9 and len(reward_normalizer.returns) == 2

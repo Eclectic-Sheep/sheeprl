@@ -18,7 +18,7 @@ network is sized from.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 import gymnasium as gym
 import hydra
@@ -105,24 +105,29 @@ class Transform(nn.Module):
 class Pipeline(nn.Module):
     """The transforms of one key, in the order of the placements (`frame`, then `rows`, then `batch`: validated).
 
-    `space` is the space of the data before the stage `from_stage`: a pipeline built from the space of the store
-    (`from_stage="batch"`) keeps only the `batch` transforms. `frame_space`, `rows_space` and `batch_space` are the
-    spaces after every stage (the space before `from_stage` for the stages it doesn't hold).
+    The pipeline holds the stages from `from_stage` to `to_stage`, and `space` is the space of the data before
+    `from_stage`: e.g. the environments hold the `frame` stage, `GymEnvironment` the `rows` one, and an input builds the
+    `batch` one from the space of the store. `frame_space`, `rows_space` and `batch_space` are the spaces after every
+    stage (for a stage it doesn't hold, the space after the last one before it).
     """
 
-    def __init__(self, transforms: Sequence[Transform], space: gym.Space, from_stage: str = "frame") -> None:
+    def __init__(
+        self, transforms: Sequence[Transform], space: gym.Space, from_stage: str = "frame", to_stage: str = "batch"
+    ) -> None:
         super().__init__()
-        if from_stage not in PLACEMENTS:
-            raise ValueError(f"`from_stage` must be one of {PLACEMENTS}, got `{from_stage}`")
+        if from_stage not in PLACEMENTS or to_stage not in PLACEMENTS:
+            raise ValueError(
+                f"`from_stage` and `to_stage` must be among {PLACEMENTS}, got `{from_stage}`, `{to_stage}`"
+            )
         order = [PLACEMENTS.index(t.where) for t in transforms]
         if order != sorted(order):
             raise ValueError(
                 "The transforms of a pipeline run in the order of their placements (frame, then rows, then batch), "
                 f"got: {', '.join(f'{type(t).__name__} ({t.where})' for t in transforms)}"
             )
-        first = PLACEMENTS.index(from_stage)
+        first, last = PLACEMENTS.index(from_stage), PLACEMENTS.index(to_stage)
         self.stages = nn.ModuleDict(
-            {p: nn.ModuleList([t for t in transforms if t.where == p]) for p in PLACEMENTS[first:]}
+            {p: nn.ModuleList([t for t in transforms if t.where == p]) for p in PLACEMENTS[first : last + 1]}
         )
         self.spaces: Dict[str, gym.Space] = {}
         for placement in PLACEMENTS:
@@ -131,13 +136,11 @@ class Pipeline(nn.Module):
             self.spaces[placement] = space
 
     @classmethod
-    def from_config(cls, transforms_cfg: Sequence[Any], space: gym.Space, from_stage: str = "frame") -> Pipeline:
+    def from_config(
+        cls, transforms_cfg: Sequence[Any], space: gym.Space, from_stage: str = "frame", to_stage: str = "batch"
+    ) -> Pipeline:
         """The pipeline of the transforms configured as Hydra objects (`_target_` and arguments)."""
-        transforms = [hydra.utils.instantiate(cfg, _convert_="all") for cfg in transforms_cfg or ()]
-        for transform in transforms:
-            if not isinstance(transform, Transform):
-                raise TypeError(f"A transform must be a `sheeprl.transforms.Transform`, got {type(transform)}")
-        return cls(transforms, space, from_stage)
+        return cls(instantiate_transforms(transforms_cfg), space, from_stage, to_stage)
 
     @property
     def frame_space(self) -> gym.Space:
@@ -202,3 +205,12 @@ class Pipeline(nn.Module):
     def is_identity(self, placement: str) -> bool:
         """Whether the stage `placement` has no transform."""
         return len(self.transforms(placement)) == 0
+
+
+def instantiate_transforms(transforms_cfg: Sequence[Any]) -> List[Transform]:
+    """The transforms configured as Hydra objects (`_target_` and arguments)."""
+    transforms = [hydra.utils.instantiate(cfg, _convert_="all") for cfg in transforms_cfg or ()]
+    for transform in transforms:
+        if not isinstance(transform, Transform):
+            raise TypeError(f"A transform must be a `sheeprl.transforms.Transform`, got {type(transform)}")
+    return transforms

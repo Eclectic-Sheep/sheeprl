@@ -32,9 +32,10 @@ algo:
   normalize_advantages: True
   layer_norm: False
   max_grad_norm: 0.5
+  # The frames of Atari, a bare observation (the key `state`)
   inputs:
     image:
-      keys: [rgb]
+      keys: [state]
       # The images stacked with the previous ones: the list replaces the one of the algorithm
       transforms:
         - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}

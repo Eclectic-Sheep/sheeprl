@@ -1,11 +1,10 @@
-"""The normalization of the observations and of the rewards of the vectorized environments with running statistics
-(`env.normalization`), as `VecNormalize` of Stable-Baselines3: the vector observations are standardized with their
-running mean and variance, and the rewards are divided by the running standard deviation of the discounted return.
+"""The normalization of the rewards of the vectorized environments with running statistics (`env.normalization`), as
+`VecNormalize` of Stable-Baselines3: the rewards are divided by the running standard deviation of the discounted return
+(the observations are standardized by the `Standardize` transform of `sheeprl.transforms`).
 
 The statistics are those of the environments of all the processes: `sheeprl.core.environment.GymEnvironment` updates
-them at every step with the observations and the rewards of its environments, and merges them with the ones of the
-other processes at the end of the rollout of every iteration (`sync`). The checkpoints save them, and the test plays
-with the ones of the observations, frozen.
+them at every step with the rewards of its environments, and merges them with the ones of the
+other processes at the end of the rollout of every iteration (`sync`). The checkpoints save them.
 
 The other normalizations live where they act:
 
@@ -24,13 +23,11 @@ The other normalizations live where they act:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, NamedTuple, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, NamedTuple, Optional, Tuple
 
-import gymnasium as gym
 import numpy as np
 import torch
 
-from sheeprl.utils.env import legacy_keys, legacy_standardize
 from sheeprl.utils.utils import dotdict
 
 if TYPE_CHECKING:
@@ -113,59 +110,6 @@ class RunningMeanStd:
             np.array(state["mean"], dtype=np.float64), np.array(state["var"], dtype=np.float64), state["count"]
         )
         self.added = SampleMoments(np.zeros_like(self.mean), np.zeros_like(self.mean), 0)
-
-
-class ObsNormalizer:
-    """Standardizes the observations of `keys` with their running mean and variance, then clips them to
-    [-`clip`, `clip`]; the other observations are left as they are. The standardized observations are float32.
-
-    `update` adds the observations of a step to the statistics, `normalize` standardizes observations with the current
-    ones: they work on the observations of the environments (one row per environment) as well as on the observations
-    of a single environment (without the rows), as long as `update` gets rows.
-    """
-
-    def __init__(
-        self, observation_space: gym.spaces.Dict, keys: Sequence[str], clip: float = 10.0, epsilon: float = 1e-8
-    ) -> None:
-        self.stats = {k: RunningMeanStd(observation_space[k].shape) for k in keys}
-        self.clip = clip
-        self.epsilon = epsilon
-
-    @classmethod
-    def from_config(cls, cfg: dotdict, observation_space: gym.spaces.Dict) -> Optional[ObsNormalizer]:
-        """The normalization of the vector observations the agent encodes (`algo.inputs.vector.keys`), if their input
-        has a `Standardize` transform; `None` otherwise."""
-        standardize = legacy_standardize(cfg)
-        if standardize is None:
-            return None
-        clip, epsilon = standardize
-        keys = [k for k in legacy_keys(cfg).vector_keys if k in observation_space.spaces]
-        return cls(observation_space, keys, clip=clip, epsilon=epsilon)
-
-    def update(self, obs: Dict[str, np.ndarray]) -> None:
-        """Add `obs`, one row per environment, to the statistics."""
-        for k, stats in self.stats.items():
-            stats.update(obs[k])
-
-    def sync(self, fabric: Fabric) -> None:
-        """Merge the statistics of all the processes (`RunningMeanStd.sync`)."""
-        for stats in self.stats.values():
-            stats.sync(fabric)
-
-    def normalize(self, obs: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        """`obs` with the observations of the normalized keys standardized (a new dictionary)."""
-        obs = dict(obs)
-        for k, stats in self.stats.items():
-            normalized = (obs[k] - stats.mean) / np.sqrt(stats.var + self.epsilon)
-            obs[k] = np.clip(normalized, -self.clip, self.clip).astype(np.float32)
-        return obs
-
-    def state_dict(self) -> Dict[str, Any]:
-        return {k: stats.state_dict() for k, stats in self.stats.items()}
-
-    def load_state_dict(self, state: Dict[str, Any]) -> None:
-        for k, stats in self.stats.items():
-            stats.load_state_dict(state[k])
 
 
 class RewardNormalizer:

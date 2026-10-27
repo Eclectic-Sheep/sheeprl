@@ -137,6 +137,7 @@ def test_run_algo():
         "exp=ppo",
         "dry_run=True",
         "algo.rollout_steps=1",
+        "env.render_key=rgb",
         "algo.inputs.image.keys=[rgb]",
         "algo.inputs.vector.keys=[state]",
         "checkpoint.save_last=False",

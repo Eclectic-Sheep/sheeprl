@@ -18,9 +18,7 @@ from sheeprl.core.collector import Collector
 from sheeprl.core.environment import GymEnvironment
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.data.store import load_replay_buffer
-from sheeprl.envs.normalization import ObsNormalizer
 from sheeprl.utils import fs
-from sheeprl.utils.env import legacy_standardize
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.timer import phase_timer, training_timer
@@ -54,16 +52,15 @@ def run(fabric: Fabric, cfg: dotdict, algo: Algorithm) -> Tuple[TrainState, str,
         aggregator = hydra.utils.instantiate(cfg.metric.aggregator, _convert_="all").to(fabric.device)
 
     normalization = cfg.env.get("normalization") or {}
-    if algo.off_policy and (legacy_standardize(cfg) is not None or normalization.get("rewards")):
+    if algo.off_policy and normalization.get("rewards"):
         raise ValueError(
-            "`Standardize` and `env.normalization` are supported only by on-policy algorithms: the replay buffer of an "
-            "off-policy algorithm would keep observations and rewards normalized with statistics that change during "
-            "the training"
+            "`env.normalization` is supported only by on-policy algorithms: the replay buffer of an off-policy "
+            "algorithm would keep rewards normalized with statistics that change during the training"
         )
     schedule = TrainSchedule(cfg, fabric.world_size, algo.steps_per_iteration, checkpoint, algo.off_policy)
-    env = GymEnvironment.from_config(fabric, cfg, log_dir, restart_on_exception=algo.restart_crashed_envs)
-    # The test plays with the normalization of the observations of the training
-    algo.obs_normalizer = env.obs_normalizer
+    env = GymEnvironment.from_config(
+        fabric, cfg, log_dir, restart_on_exception=algo.restart_crashed_envs, off_policy=algo.off_policy
+    )
     state, store = algo.build(env.observation_space, env.action_space, schedule, log_dir)
     # The replay buffer of the off-policy algorithms is saved in the checkpoints
     save_buffer = algo.off_policy and cfg.buffer.checkpoint
@@ -108,6 +105,8 @@ def run(fabric: Fabric, cfg: dotdict, algo: Algorithm) -> Tuple[TrainState, str,
     # to end the run and remove its files) while the others still train (and write in their files)
     fabric.barrier()
     env.close()
+    # The test transforms its observations as the training did, with the statistics of its end
+    algo.trained_env_state = env.state_dict()
     return state, log_dir, schedule.policy_step
 
 
@@ -122,8 +121,8 @@ def load_trained_state(
     """The training state of `algo`, restored from `checkpoint`: the trained models, e.g. to evaluate or register them.
 
     The state is built by `algo.build`, as for training. The store of the collected data is not needed: it is built in
-    a temporary directory and discarded. The normalization of the observations the policy was trained with
-    (`Standardize`) is restored in `algo.obs_normalizer`, for the test.
+    a temporary directory and discarded. The state of the environments the policy was trained with (e.g. the statistics
+    of the `Standardize` transforms) is restored in `algo.trained_env_state`, for the test.
     """
     with warnings.catch_warnings():
         # The warnings of the schedule are about the logging and checkpoint intervals of a training
@@ -141,7 +140,5 @@ def load_trained_state(
     finally:
         algo.cfg = training_cfg
     state.load_state_dict(checkpoint)
-    algo.obs_normalizer = ObsNormalizer.from_config(cfg, observation_space)
-    if algo.obs_normalizer is not None:
-        algo.obs_normalizer.load_state_dict(checkpoint["env"]["obs_normalizer"])
+    algo.trained_env_state = checkpoint.get("env", {})
     return state
