@@ -5,12 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, Optional, Sequence
 
 import numpy as np
-import torch
-import torch.nn.functional as F
 from torch import Tensor
 
 from sheeprl.core.collector import Act, Policy
-from sheeprl.utils.obs import prepare_obs
+from sheeprl.models.io import to_device
 
 if TYPE_CHECKING:
     from sheeprl.core.environment import Environment
@@ -18,23 +16,26 @@ if TYPE_CHECKING:
 
 class DreamerPolicy(Policy):
     """The `Policy` of the Dreamers' policies, on their `get_actions`, which updates the latent states of the
-    environments (created by `init_states`, reset by `reset_state`): the observations are moved to `device` (the images
-    `cnn_keys` scaled to [-0.5, 0.5]), the actions are written one-hot for discrete actions (the environments take their
-    indices), and the action masks of the observations (`mask*`, e.g. MineDojo) mask the actions.
+    environments (created by `init_states`, reset by `reset_state`): the observations of the keys of the inputs and of
+    the action masks are moved to `device` with a time dimension of one step, the action masks (`mask_keys`, the extra
+    keys the actor reads, e.g. the ones of MineDojo) mask the actions, and the actions go to the environments and to the
+    store through `codec` (one-hot for discrete actions, while the environments take their indices).
 
-    A subclass is an `nn.Module` with the attributes `device`, `cnn_keys`, `actions_dim` and `actor`.
+    A subclass is an `nn.Module` with the attributes `device`, `keys` (the keys of the inputs of its encoder),
+    `mask_keys`, `codec` and `actor`.
     """
 
+    def obs_to_device(self, obs: Dict[str, np.ndarray]) -> Dict[str, Tensor]:
+        """The observations of the keys of the inputs and of the action masks, on the device of the policy, as
+        `[1, Num_Envs, ...]`."""
+        keys = tuple(self.keys) + tuple(k for k in self.mask_keys if k not in self.keys)
+        return {k: v[None] for k, v in to_device({k: obs[k] for k in keys}, self.device).items()}
+
     def act(self, obs: Dict[str, np.ndarray], greedy: bool = False) -> Act:
-        num_envs = len(next(iter(obs.values())))
-        torch_obs = prepare_obs(self.device, obs, cnn_keys=self.cnn_keys, num_envs=num_envs, time_dim=True)
-        mask = {k: v for k, v in torch_obs.items() if k.startswith("mask")}
+        torch_obs = self.obs_to_device(obs)
+        mask = {k: torch_obs[k] for k in self.mask_keys}
         actions = self.sample_actions(torch_obs, mask if len(mask) > 0 else None, greedy)
-        if self.actor.is_continuous:
-            env_actions = torch.stack(actions, dim=-1)
-        else:
-            env_actions = torch.stack([act.argmax(dim=-1) for act in actions], dim=-1)
-        return Act(env_actions.cpu().numpy(), {"actions": torch.cat(actions, -1).cpu().numpy()})
+        return Act(self.codec.to_env(actions), {"actions": self.codec.to_store(actions)})
 
     def sample_actions(
         self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]], greedy: bool = False
@@ -43,19 +44,9 @@ class DreamerPolicy(Policy):
         return self.get_actions(obs, greedy=greedy, mask=mask)
 
     def random(self, env: Environment) -> Act:
-        """Uniformly random actions; with action masks in the observations (MineDojo), the actions of the policy, since
-        random actions would ignore them."""
-        if any(k.startswith("mask") for k in env.obs):
+        """Uniformly random actions; with action masks (MineDojo), the actions of the policy, since random actions would
+        ignore them."""
+        if len(self.mask_keys) > 0:
             return self.act(env.obs)
-        env_actions = actions = np.array(env.random_actions())
-        if not self.actor.is_continuous:
-            # One row per environment, one column per discrete action: one-hot each column
-            per_action = actions.reshape(env.num_envs, len(self.actions_dim)).T
-            actions = np.concatenate(
-                [
-                    F.one_hot(torch.as_tensor(act), act_dim).numpy()
-                    for act, act_dim in zip(per_action, self.actions_dim)
-                ],
-                axis=-1,
-            )
-        return Act(env_actions, {"actions": actions})
+        env_actions = np.array(env.random_actions())
+        return Act(env_actions, {"actions": self.codec.from_env(env_actions)})

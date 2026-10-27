@@ -39,14 +39,15 @@ from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES
 from sheeprl.algos.dreamer_v3.dreamer_v3 import DreamerV3Writer
 from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3_5.agent import Actor, DreamerV3_5Policy, build_agent
-from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return, mse, symlog_mse
+from sheeprl.algos.dreamer_v3_5.loss import TwoHot, binary_loss, lambda_return
 from sheeprl.algos.dreamer_v3_5.utils import Moments
 from sheeprl.core import Act, Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
+from sheeprl.core.actions import ActionCodec
 from sheeprl.data.buffers import ReplayBuffer
 from sheeprl.data.samplers import SAMPLED_STEPS, CuriousSequenceSampler
 from sheeprl.data.store import ReplayStore
+from sheeprl.models.io import check_reconstructs, log_inputs_and_outputs
 from sheeprl.utils.compile import compiled, mark_gradient_step
-from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -62,10 +63,6 @@ def world_model_loss_kwargs(cfg: dotdict) -> Dict[str, Any]:
     world_model_cfg = cfg.algo.world_model
     scales = cfg.algo.loss_scales
     return {
-        "cnn_keys": tuple(legacy_keys(cfg).image_keys),
-        "mlp_keys": tuple(legacy_keys(cfg).vector_keys),
-        "cnn_decoder_keys": tuple(legacy_keys(cfg).decoder_image_keys),
-        "mlp_decoder_keys": tuple(legacy_keys(cfg).decoder_vector_keys),
         "kl_free_nats": float(world_model_cfg.kl_free_nats),
         "continue_target": float(cfg.algo.gamma) if world_model_cfg.continue_discount else 1.0,
         "reward_grad": bool(world_model_cfg.reward_grad),
@@ -88,10 +85,6 @@ def world_model_loss(
     recurrent_state: Tensor,
     posterior: Tensor,
     *,
-    cnn_keys: Sequence[str],
-    mlp_keys: Sequence[str],
-    cnn_decoder_keys: Sequence[str],
-    mlp_decoder_keys: Sequence[str],
     kl_free_nats: float,
     continue_target: float,
     reward_grad: bool,
@@ -124,9 +117,8 @@ def world_model_loss(
         without gradients: the priorities of Curious Replay).
     """
     sequence_length, batch_size = is_first.shape[:2]
-    encoder_obs = {k: obs[k].float() / 255.0 - 0.5 for k in cnn_keys}
-    encoder_obs.update({k: obs[k].float() for k in mlp_keys})
-    embedded_obs = world_model.encoder(encoder_obs)
+    # The keys of the inputs, which the encoder transforms (e.g. the images scaled to [-0.5, 0.5])
+    embedded_obs = world_model.encoder({k: obs[k] for k in world_model.encoder.keys})
 
     # The parts of the recurrent and representation models that depend on the observations and on the actions, for
     # the whole sequence at once. The actions that lead to the first step of an episode are zeroed
@@ -151,11 +143,12 @@ def world_model_loss(
     priors_logits = world_model.rssm.prior_logits(recurrent_states)
     latent_states = torch.cat((posteriors, recurrent_states), -1)
 
-    # Reconstruction: the images in [0, 1], the vectors in the symlog space
-    reconstructed_obs = world_model.observation_model(latent_states)
-    observation_loss = sum(mse(reconstructed_obs[k], obs[k].float() / 255.0, 3) for k in cnn_decoder_keys) + sum(
-        symlog_mse(reconstructed_obs[k], obs[k], obs[k].dim() - 2) for k in mlp_decoder_keys
-    )
+    # Reconstruction: the squared errors of the images in [0, 1] (the targets of the output `image`), of the vectors in
+    # the symlog space (the domain of the encoder): the negative log-likelihoods of the outputs
+    observation_model = world_model.observation_model
+    reconstructed_obs = observation_model(latent_states)
+    targets = observation_model.targets(obs, world_model.encoder)
+    observation_loss = -sum(observation_model.log_probs(reconstructed_obs, targets).values())
     reward_inputs = latent_states if reward_grad else latent_states.detach()
     reward_loss = TwoHot(world_model.reward_model(reward_inputs)).loss(rewards.squeeze(-1))
     continue_loss = binary_loss(
@@ -374,7 +367,7 @@ def train(
         # Every sequence starts an episode: the world model starts from zeros
         is_first = data["is_first"].float().clone()
         is_first[0] = 1
-    obs = {k: data[k] for k in legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys}
+    obs = {k: data[k] for k in world_model.encoder.keys}
     rewards = data["rewards"].float()
     terminated = data["terminated"].float()
     last = torch.maximum(terminated, data["truncated"].float())
@@ -595,12 +588,13 @@ class DreamerV3_5(Algorithm):
     ) -> Tuple[DreamerV3_5State, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
-        self.actions_dim, self.is_continuous = actions_dim_of(action_space)
+        codec = ActionCodec.from_space(action_space)
+        self.actions_dim, self.is_continuous = codec.dims, codec.continuous
         check_keys(fabric, cfg, obs_space)
 
-        world_model, actor, critic, target_critic, self._policy = build_agent(
-            fabric, self.actions_dim, self.is_continuous, cfg, obs_space
-        )
+        world_model, actor, critic, target_critic, self._policy = build_agent(fabric, codec, cfg, obs_space)
+        check_reconstructs(world_model.observation_model, "DreamerV3.5")
+        log_inputs_and_outputs(fabric, cfg, world_model.encoder, world_model.observation_model)
         optimizer = hydra.utils.instantiate(
             cfg.algo.optimizer,
             params=[*world_model.parameters(), *actor.parameters(), *critic.parameters()],

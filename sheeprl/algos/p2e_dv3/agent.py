@@ -1,5 +1,5 @@
 import copy
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import hydra
 import torch
@@ -14,6 +14,7 @@ from sheeprl.algos.dreamer_v3.agent import MinedojoActor as DV3MinedojoActor
 from sheeprl.algos.dreamer_v3.agent import WorldModel
 from sheeprl.algos.dreamer_v3.agent import build_agent as dv3_build_agent
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
+from sheeprl.core.actions import ActionCodec
 from sheeprl.models.models import MLP
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.utils import dotdict, unwrap_fabric
@@ -27,8 +28,7 @@ MinedojoActor = DV3MinedojoActor
 
 def build_agent(
     fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
+    codec: ActionCodec,
     cfg: dotdict,
     obs_space: Dict[str, Any],
     world_model_state: Optional[Dict[str, torch.Tensor]] = None,
@@ -52,8 +52,7 @@ def build_agent(
 
     Args:
         fabric (Fabric): the fabric object.
-        action_dim (int): the dimension of the actions.
-        is_continuous (bool): whether or not the actions are continuous.
+        codec (ActionCodec): the actions of the agent and of the environments.
         cfg (dotdict): the configs of P2E_DV3.
         obs_space (Dict[str, Any]): The observations space of the environment.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
@@ -85,6 +84,7 @@ def build_agent(
             The critic is under the 'module' key, whereas, the target critic is under the 'target_critic' key.
     """
     world_model_cfg = cfg.algo.world_model
+    actions_dim, is_continuous = codec.dims, codec.continuous
     actor_cfg = cfg.algo.actor
     critic_cfg = cfg.algo.critic
 
@@ -95,8 +95,7 @@ def build_agent(
     # Create task models
     world_model, actor_task, critic_task, target_critic_task, policy = dv3_build_agent(
         fabric,
-        actions_dim=actions_dim,
-        is_continuous=is_continuous,
+        codec=codec,
         cfg=cfg,
         obs_space=obs_space,
         world_model_state=world_model_state,

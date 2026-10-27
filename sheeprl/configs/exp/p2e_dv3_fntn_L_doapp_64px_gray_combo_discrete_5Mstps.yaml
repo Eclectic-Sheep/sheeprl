@@ -40,8 +40,6 @@ algo:
   dense_units: 768
   mlp_layers: 4
   world_model:
-    encoder:
-      cnn_channels_multiplier: 48
     recurrent_model:
       recurrent_state_size: 1024
     transition_model:
@@ -54,6 +52,8 @@ algo:
   inputs:
     image:
       keys: [frame]
+      net:
+        channels_multiplier: 48
     vector:
       keys: [own_character, own_health, own_side, own_wins, opp_character, opp_health, opp_side, opp_wins, stage, timer, action, reward]
   outputs:

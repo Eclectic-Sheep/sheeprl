@@ -33,12 +33,13 @@ from sheeprl.algos.dreamer_v3.dreamer_v3 import (
 from sheeprl.algos.dreamer_v3.utils import Moments, compute_lambda_values
 from sheeprl.algos.p2e_dv3.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
+from sheeprl.core.actions import ActionCodec
 from sheeprl.core.algorithm import load_module_state_dict
 from sheeprl.core.evaluation import run_test
 from sheeprl.data.store import ReplayStore
+from sheeprl.models.io import check_reconstructs, log_inputs_and_outputs
 from sheeprl.utils.compile import compiled
 from sheeprl.utils.distribution import BernoulliSafeMode, MSEDistribution, TwoHotEncodingDistribution
-from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
@@ -444,29 +445,10 @@ class P2EDV3Exploration(Algorithm):
     ) -> Tuple[P2EDV3ExplorationState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
-        self.actions_dim, self.is_continuous = actions_dim_of(action_space)
+        codec = ActionCodec.from_space(action_space)
+        self.actions_dim, self.is_continuous = codec.dims, codec.continuous
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
-        if (
-            len(set(legacy_keys(cfg).image_keys).intersection(set(legacy_keys(cfg).decoder_image_keys))) == 0
-            and len(set(legacy_keys(cfg).vector_keys).intersection(set(legacy_keys(cfg).decoder_vector_keys))) == 0
-        ):
-            raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjointed")
-        if len(set(legacy_keys(cfg).decoder_image_keys) - set(legacy_keys(cfg).image_keys)) > 0:
-            raise RuntimeError(
-                "The CNN keys of the decoder must be contained in the encoder ones. "
-                f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_image_keys))}"
-            )
-        if len(set(legacy_keys(cfg).decoder_vector_keys) - set(legacy_keys(cfg).vector_keys)) > 0:
-            raise RuntimeError(
-                "The MLP keys of the decoder must be contained in the encoder ones. "
-                f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_vector_keys))}"
-            )
-        if cfg.metric.log_level > 0:
-            fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
-            fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
-            fabric.print("Decoder CNN keys:", legacy_keys(cfg).decoder_image_keys)
-            fabric.print("Decoder MLP keys:", legacy_keys(cfg).decoder_vector_keys)
 
         (
             world_model,
@@ -477,7 +459,9 @@ class P2EDV3Exploration(Algorithm):
             actor_exploration,
             critics,
             self._policy,
-        ) = build_agent(fabric, self.actions_dim, self.is_continuous, cfg, obs_space)
+        ) = build_agent(fabric, codec, cfg, obs_space)
+        check_reconstructs(world_model.observation_model, "P2E-DV3")
+        log_inputs_and_outputs(fabric, cfg, world_model.encoder, world_model.observation_model)
 
         def optimizer(optimizer_cfg: dotdict, module: nn.Module) -> Optimizer:
             return fabric.setup_optimizers(

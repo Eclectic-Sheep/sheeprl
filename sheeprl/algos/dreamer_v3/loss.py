@@ -20,8 +20,7 @@ def categorical_kl(p_logits: Tensor, q_logits: Tensor) -> Tensor:
 
 
 def reconstruction_loss(
-    po: Dict[str, Distribution],
-    observations: Tensor,
+    observation_log_probs: Dict[str, Tensor],
     pr: Distribution,
     rewards: Tensor,
     priors_logits: Tensor,
@@ -39,8 +38,8 @@ def reconstruction_loss(
     [https://arxiv.org/abs/2301.04104](https://arxiv.org/abs/2301.04104).
 
     Args:
-        po (Dict[str, Distribution]): the distribution returned by the observation_model (decoder).
-        observations (Tensor): the observations provided by the environment.
+        observation_log_probs (Dict[str, Tensor]): the log-likelihood of every observation key under the
+            distribution of its reconstruction (`MultiDecoder.log_probs`).
         pr (Distribution): the reward distribution returned by the reward_model.
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
         priors_logits (Tensor): the logits of the prior.
@@ -73,7 +72,7 @@ def reconstruction_loss(
             Curious Replay): the reconstruction loss is their mean.
     """
     rewards.device
-    observation_loss = -sum([po[k].log_prob(observations[k]) for k in po.keys()])
+    observation_loss = -sum([log_prob for log_prob in observation_log_probs.values()])
     reward_loss = -pr.log_prob(rewards)
     # KL balancing
     dyn_loss = kl = categorical_kl(posteriors_logits.detach(), priors_logits)

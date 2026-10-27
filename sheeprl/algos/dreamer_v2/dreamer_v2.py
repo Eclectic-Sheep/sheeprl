@@ -36,10 +36,12 @@ from sheeprl.core import (
     run,
     sequence_store,
 )
+from sheeprl.core.actions import ActionCodec
 from sheeprl.data.store import ReplayStore
+from sheeprl.models.io import check_reconstructs, log_inputs_and_outputs
+from sheeprl.transforms.observations import stored_keys
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
-from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.model import ema_
@@ -79,7 +81,8 @@ class DreamerV2Writer(Writer):
     def __init__(self, cfg: dotdict, actions_dim: Sequence[int]) -> None:
         self.cfg = cfg
         self.actions_dim = actions_dim
-        self.obs_keys = legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys
+        # The keys of the inputs, then the extra keys (e.g. the action masks)
+        self.obs_keys = stored_keys(cfg)
         # The row written at the last step; created, and written, from the first observations of the environments
         self.step_data: Optional[Dict[str, np.ndarray]] = None
 
@@ -142,8 +145,6 @@ def world_model_loss(
     world_model: WorldModel,
     data: Dict[str, Tensor],
     *,
-    cnn_keys: Tuple[str, ...],
-    mlp_keys: Tuple[str, ...],
     stochastic_size: int,
     discrete_size: int,
     recurrent_state_size: int,
@@ -164,8 +165,8 @@ def world_model_loss(
     """
     sequence_length, batch_size = data["actions"].shape[:2]
     device = data["actions"].device
-    batch_obs = {k: data[k] / 255 - 0.5 for k in cnn_keys}
-    batch_obs.update({k: data[k] for k in mlp_keys})
+    # The keys of the inputs, which the encoder transforms (e.g. the images scaled to [-0.5, 0.5])
+    batch_obs = {k: data[k] for k in world_model.encoder.keys}
     recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
     posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
 
@@ -211,7 +212,12 @@ def world_model_loss(
     decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
     # Compute the distribution over the reconstructed observations
-    po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
+    # The log-likelihood of every observation under the distribution of its reconstruction (the likelihoods of the
+    # outputs), with the targets in the domain of the transforms of the encoder
+    observation_model = world_model.observation_model
+    observation_log_probs = observation_model.log_probs(
+        decoded_information, observation_model.targets(data, world_model.encoder)
+    )
 
     # Compute the distribution over the rewards
     pr = Independent(Normal(world_model.reward_model(latent_states), 1), 1)
@@ -229,8 +235,7 @@ def world_model_loss(
 
     # World model optimization step
     rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
-        po,
-        batch_obs,
+        observation_log_probs,
         pr,
         data["rewards"],
         priors_logits,
@@ -488,8 +493,6 @@ def train(
         rec_loss, posteriors, recurrent_states, losses = compiled(world_model_loss, fabric, cfg)(
             world_model,
             data,
-            cnn_keys=tuple(legacy_keys(cfg).image_keys),
-            mlp_keys=tuple(legacy_keys(cfg).vector_keys),
             stochastic_size=world_model_cfg.stochastic_size,
             discrete_size=world_model_cfg.discrete_size,
             recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
@@ -568,29 +571,10 @@ def train(
 
 
 def check_keys(fabric: Fabric, cfg: dotdict, obs_space: gym.spaces.Dict) -> None:
-    """The observations must be a dictionary, and the keys of the decoder must be among the ones of the encoder."""
+    """The observations must be a dictionary (the keys of the outputs must be among the ones of the inputs: building the
+    decoder checks it)."""
     if not isinstance(obs_space, gym.spaces.Dict):
         raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
-    if (
-        len(set(legacy_keys(cfg).image_keys).intersection(set(legacy_keys(cfg).decoder_image_keys))) == 0
-        and len(set(legacy_keys(cfg).vector_keys).intersection(set(legacy_keys(cfg).decoder_vector_keys))) == 0
-    ):
-        raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjointed")
-    if len(set(legacy_keys(cfg).decoder_image_keys) - set(legacy_keys(cfg).image_keys)) > 0:
-        raise RuntimeError(
-            "The CNN keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_image_keys))}"
-        )
-    if len(set(legacy_keys(cfg).decoder_vector_keys) - set(legacy_keys(cfg).vector_keys)) > 0:
-        raise RuntimeError(
-            "The MLP keys of the decoder must be contained in the encoder ones. "
-            f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_vector_keys))}"
-        )
-    if cfg.metric.log_level > 0:
-        fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
-        fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
-        fabric.print("Decoder CNN keys:", legacy_keys(cfg).decoder_image_keys)
-        fabric.print("Decoder MLP keys:", legacy_keys(cfg).decoder_vector_keys)
 
 
 class DreamerV2(Algorithm):
@@ -602,20 +586,19 @@ class DreamerV2(Algorithm):
 
     def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
-        # These arguments cannot be changed
-        cfg.env.screen_size = 64
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
     ) -> Tuple[DreamerV2State, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
-        self.actions_dim, self.is_continuous = actions_dim_of(action_space)
+        codec = ActionCodec.from_space(action_space)
+        self.actions_dim, self.is_continuous = codec.dims, codec.continuous
         check_keys(fabric, cfg, obs_space)
 
-        world_model, actor, critic, target_critic, self._policy = build_agent(
-            fabric, self.actions_dim, self.is_continuous, cfg, obs_space
-        )
+        world_model, actor, critic, target_critic, self._policy = build_agent(fabric, codec, cfg, obs_space)
+        check_reconstructs(world_model.observation_model, "DreamerV2")
+        log_inputs_and_outputs(fabric, cfg, world_model.encoder, world_model.observation_model)
 
         world_optimizer = build_optimizer(cfg.algo.world_model.optimizer, world_model.parameters())
         actor_optimizer = build_optimizer(cfg.algo.actor.optimizer, actor.parameters())

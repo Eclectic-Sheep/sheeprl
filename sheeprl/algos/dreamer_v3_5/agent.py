@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
@@ -33,13 +33,13 @@ from torch.distributions import Distribution, Independent, Normal, OneHotCategor
 
 from sheeprl.algos.dreamer_policy import DreamerPolicy
 from sheeprl.algos.dreamer_v2.agent import WorldModel
+from sheeprl.core.actions import ActionCodec
 from sheeprl.core.collector import Act
-from sheeprl.models.models import MultiDecoder, MultiEncoder
+from sheeprl.models.io import MultiDecoder, build_encoder
 from sheeprl.utils.compile import compiled_policy
-from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
-from sheeprl.utils.utils import dotdict, symlog
+from sheeprl.utils.utils import dotdict
 
 # The standard deviation of the standard normal truncated at -2 and 2
 TRUNCATED_NORMAL_STD = 0.87962566103423978
@@ -181,41 +181,37 @@ def mlp(input_size: int, units: int, layers: int, activation: ModuleType = nn.Si
     return nn.Sequential(*modules)
 
 
-class CNNEncoder(nn.Module):
-    """The image encoder: the images, concatenated on the channels, go through `len(stages)` blocks of a convolution
-    (stride 1), a max pooling that halves the resolution, an RMSNorm and the activation, and are flattened.
+def _activation(activation: Union[str, ModuleType]) -> ModuleType:
+    return hydra.utils.get_class(activation) if isinstance(activation, str) else activation
 
-    Args:
-        keys: the keys of the images.
-        input_channels: the channels of every image.
-        image_size: the size (height, width) of the images, divisible by `2 ** len(stages)`.
-        channels_multiplier: the channels of the blocks are `channels_multiplier` times `stages`.
-        stages: the multipliers of the channels of the blocks. Default: (2, 3, 4, 4).
-        kernel_size: the size of the kernels. Default: 5.
-        activation: the activation. Default: SiLU.
-        eps: the epsilon of the RMSNorms. Default: 1e-4.
-    """
+
+class CNNEncoder(nn.Module):
+    """The image encoder of DreamerV3.5, on images of shape `input_shape` (channels, height, width): one block per stage
+    (a convolution of `channels_multiplier` times the multiplier of the stage channels, a max pooling halving the
+    sides, an RMS norm and the activation), the feature maps flattened. The sides of the images must be divisible by
+    2 ** len(stages)."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        input_channels: Sequence[int],
-        image_size: Tuple[int, int],
+        input_shape: Sequence[int],
         channels_multiplier: int,
         stages: Sequence[int] = (2, 3, 4, 4),
         kernel_size: int = 5,
-        activation: ModuleType = nn.SiLU,
+        activation: Union[str, ModuleType] = nn.SiLU,
         eps: float = 1e-4,
     ) -> None:
         super().__init__()
+        self.input_shape = tuple(int(d) for d in input_shape)
         factor = 2 ** len(stages)
-        if image_size[0] % factor != 0 or image_size[1] % factor != 0:
-            raise ValueError(f"The size of the images ({image_size}) must be divisible by 2^{len(stages)}")
-        self.keys = keys
-        self.input_dim = (sum(input_channels), *image_size)
+        if len(self.input_shape) != 3 or self.input_shape[1] % factor != 0 or self.input_shape[2] % factor != 0:
+            raise ValueError(
+                f"The image encoder of DreamerV3.5 takes images (channels, height, width) whose sides are divisible by "
+                f"2 ** len(stages) = {factor}, got {self.input_shape}"
+            )
+        activation = _activation(activation)
         depths = [channels_multiplier * mult for mult in stages]
         layers = []
-        in_channels = self.input_dim[0]
+        in_channels = self.input_shape[0]
         for depth in depths:
             layers += [
                 Conv2d(in_channels, depth, kernel_size),
@@ -226,100 +222,72 @@ class CNNEncoder(nn.Module):
             in_channels = depth
         layers.append(nn.Flatten(-3, -1))
         self.model = nn.Sequential(*layers)
-        self.output_dim = depths[-1] * (image_size[0] // factor) * (image_size[1] // factor)
+        self.output_dim = depths[-1] * (self.input_shape[1] // factor) * (self.input_shape[2] // factor)
 
-    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], dim=-3)
+    def forward(self, x: Tensor) -> Tensor:
         return cnn_forward(self.model, x, x.shape[-3:], (-1,))
 
 
 class MLPEncoder(nn.Module):
-    """The vector encoder: the symlog of the vectors, concatenated, goes through `mlp_layers` blocks of `mlp`.
-
-    Args:
-        keys: the keys of the vectors.
-        input_dims: the size of every vector.
-        mlp_layers: the number of blocks. Default: 3.
-        dense_units: the units of every block. Default: 1024.
-        activation: the activation. Default: SiLU.
-        eps: the epsilon of the RMSNorms. Default: 1e-4.
-        symlog_inputs: whether to squash the vectors with the symlog. Default: True.
-    """
+    """The vector encoder of DreamerV3.5, on vectors of shape `input_shape` (the symlog of the observations is a
+    transform of the input, `sheeprl.transforms.Symlog`): `mlp_layers` blocks of `dense_units` units (linear layer, RMS
+    norm, activation); the vectors themselves without blocks."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        input_dims: Sequence[int],
+        input_shape: Sequence[int],
         mlp_layers: int = 3,
         dense_units: int = 1024,
-        activation: ModuleType = nn.SiLU,
+        activation: Union[str, ModuleType] = nn.SiLU,
         eps: float = 1e-4,
-        symlog_inputs: bool = True,
     ) -> None:
         super().__init__()
-        self.keys = keys
-        self.input_dim = sum(input_dims)
-        self.model = mlp(self.input_dim, dense_units, mlp_layers, activation, eps)
-        self.output_dim = dense_units if mlp_layers > 0 else self.input_dim
-        self.symlog_inputs = symlog_inputs
+        input_shape = tuple(int(d) for d in input_shape)
+        if len(input_shape) != 1:
+            raise ValueError(f"The vector encoder of DreamerV3.5 takes vectors, got the shape {input_shape}")
+        self.model = mlp(input_shape[0], dense_units, mlp_layers, _activation(activation), eps)
+        self.output_dim = dense_units if mlp_layers > 0 else input_shape[0]
 
-    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([symlog(obs[k]) if self.symlog_inputs else obs[k] for k in self.keys], -1)
+    def forward(self, x: Tensor) -> Tensor:
         return self.model(x)
 
 
 class CNNDecoder(nn.Module):
-    """The image decoder. The latent state is projected to feature maps of `2 ** len(stages)` times smaller than the
-    images: with `block_space`, the recurrent state with block-diagonal weights (every block gives a group of channels)
-    plus the stochastic state with a two-layer MLP; otherwise the whole latent state with a linear layer. They go
-    through an RMSNorm and the activation, then `len(stages)` blocks of a nearest-neighbour upsampling that doubles the
-    resolution and a convolution (followed by an RMSNorm and the activation but in the last block). The images are the
-    sigmoid of the output, split on the channels.
-
-    Args:
-        keys: the keys of the images.
-        output_channels: the channels of every image.
-        channels_multiplier: the channels of the blocks (in reverse) are `channels_multiplier` times `stages`.
-        stochastic_size: the size of the (flattened) stochastic state, the first part of the latent state.
-        recurrent_state_size: the size of the recurrent state, the last part of the latent state.
-        image_size: the size (height, width) of the images, divisible by `2 ** len(stages)`.
-        stages: the multipliers of the channels. Default: (2, 3, 4, 4).
-        kernel_size: the size of the kernels. Default: 5.
-        block_space: the blocks of the projection of the recurrent state; 0 to project the whole latent state with
-            a linear layer. Default: 8.
-        dense_units: the units of the projection of the stochastic state are twice them. Default: 1024.
-        activation: the activation. Default: SiLU.
-        eps: the epsilon of the RMSNorms. Default: 1e-4.
-        outscale: the scale of the initialization of the last convolution. Default: 1.
-    """
+    """The image decoder of DreamerV3.5: the latent state projected to the feature maps of the last stage of the encoder
+    (the recurrent state by `block_space` blocks, the stochastic state by an MLP of 2 * `dense_units` units; or the
+    whole latent state by a linear layer with `block_space=0`), then one block per stage (an upsampling doubling the
+    sides, a convolution, an RMS norm and the activation; the last one without norm and activation), and the sigmoid of
+    the output: images of shape `output_shape`, in [0, 1]. The latent state is the stochastic state, then the recurrent
+    one of `recurrent_state_size`."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        output_channels: Sequence[int],
+        latent_size: int,
+        output_shape: Sequence[int],
         channels_multiplier: int,
-        stochastic_size: int,
         recurrent_state_size: int,
-        image_size: Tuple[int, int],
         stages: Sequence[int] = (2, 3, 4, 4),
         kernel_size: int = 5,
         block_space: int = 8,
         dense_units: int = 1024,
-        activation: ModuleType = nn.SiLU,
+        activation: Union[str, ModuleType] = nn.SiLU,
         eps: float = 1e-4,
         outscale: float = 1.0,
     ) -> None:
         super().__init__()
+        self.output_shape = tuple(int(d) for d in output_shape)
+        channels, height, width = self.output_shape
         factor = 2 ** len(stages)
-        if image_size[0] % factor != 0 or image_size[1] % factor != 0:
-            raise ValueError(f"The size of the images ({image_size}) must be divisible by 2^{len(stages)}")
-        self.keys = keys
-        self.output_channels = output_channels
-        self.stochastic_size = stochastic_size
+        if height % factor != 0 or width % factor != 0:
+            raise ValueError(
+                f"The image decoder of DreamerV3.5 reconstructs images whose sides are divisible by 2 ** len(stages) = "
+                f"{factor}, got {self.output_shape}"
+            )
+        activation = _activation(activation)
         self.recurrent_state_size = recurrent_state_size
-        self.output_dim = (sum(output_channels), *image_size)
+        self.stochastic_size = latent_size - recurrent_state_size
         depths = [channels_multiplier * mult for mult in stages]
-        self.initial_shape = (depths[-1], image_size[0] // factor, image_size[1] // factor)
+        self.initial_shape = (depths[-1], height // factor, width // factor)
         units = math.prod(self.initial_shape)
         self.block_space = block_space
         if block_space:
@@ -327,13 +295,13 @@ class CNNDecoder(nn.Module):
                 raise ValueError(f"The channels of the projection ({depths[-1]}) must be a multiple of `block_space`")
             self.recurrent_projection = BlockLinear(recurrent_state_size, units, block_space)
             self.stochastic_projection = nn.Sequential(
-                Linear(stochastic_size, 2 * dense_units),
+                Linear(self.stochastic_size, 2 * dense_units),
                 RMSNorm(2 * dense_units, eps),
                 activation(),
                 Linear(2 * dense_units, units),
             )
         else:
-            self.latent_projection = Linear(stochastic_size + recurrent_state_size, units)
+            self.latent_projection = Linear(latent_size, units)
         self.projection_norm = nn.Sequential(RMSNorm(depths[-1], eps, channels_first=True), activation())
         layers = []
         for in_channels, out_channels in zip(reversed(depths[1:]), reversed(depths[:-1])):
@@ -345,11 +313,11 @@ class CNNDecoder(nn.Module):
             ]
         layers += [
             Upsample(),
-            Conv2d(depths[0], self.output_dim[0], kernel_size, outscale=outscale),
+            Conv2d(depths[0], channels, kernel_size, outscale=outscale),
         ]
         self.model = nn.Sequential(*layers)
 
-    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
+    def forward(self, latent_states: Tensor) -> Tensor:
         batch_shape = latent_states.shape[:-1]
         x = latent_states.reshape(-1, latent_states.shape[-1])
         if self.block_space:
@@ -360,45 +328,32 @@ class CNNDecoder(nn.Module):
             x = self.latent_projection(x)
         x = self.projection_norm(x.view(-1, *self.initial_shape))
         x = torch.sigmoid(self.model(x))
-        x = x.view(*batch_shape, *x.shape[1:])
-        return {k: rec_obs for k, rec_obs in zip(self.keys, torch.split(x, self.output_channels, -3))}
+        return x.view(*batch_shape, *x.shape[1:])
 
 
 class MLPDecoder(nn.Module):
-    """The vector decoder: `mlp_layers` blocks of `mlp` and a linear head per vector, which predicts its symlog.
-
-    Args:
-        keys: the keys of the vectors.
-        output_dims: the size of every vector.
-        latent_state_size: the size of the latent state.
-        mlp_layers: the number of blocks. Default: 3.
-        dense_units: the units of every block. Default: 1024.
-        activation: the activation. Default: SiLU.
-        eps: the epsilon of the RMSNorms. Default: 1e-4.
-        outscale: the scale of the initialization of the heads. Default: 1.
-    """
+    """The vector decoder of DreamerV3.5: `mlp_layers` blocks of `dense_units` units from the latent state, then a
+    linear head to `output_shape` (its values flat, then reshaped) (initialized with `outscale`), in the symlog space."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        output_dims: Sequence[int],
-        latent_state_size: int,
+        latent_size: int,
+        output_shape: Sequence[int],
         mlp_layers: int = 3,
         dense_units: int = 1024,
-        activation: ModuleType = nn.SiLU,
+        activation: Union[str, ModuleType] = nn.SiLU,
         eps: float = 1e-4,
         outscale: float = 1.0,
     ) -> None:
         super().__init__()
-        self.keys = keys
-        self.output_dims = output_dims
-        self.model = mlp(latent_state_size, dense_units, mlp_layers, activation, eps)
-        units = dense_units if mlp_layers > 0 else latent_state_size
-        self.heads = nn.ModuleList([Linear(units, dim, outscale=outscale) for dim in output_dims])
+        self.model = mlp(latent_size, dense_units, mlp_layers, _activation(activation), eps)
+        units = dense_units if mlp_layers > 0 else latent_size
+        self.output_shape = tuple(int(d) for d in output_shape)
+        self.head = Linear(units, math.prod(self.output_shape), outscale=outscale)
 
-    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        x = self.model(latent_states)
-        return {k: head(x) for k, head in zip(self.keys, self.heads)}
+    def forward(self, latent_states: Tensor) -> Tensor:
+        out = self.head(self.model(latent_states))
+        return out.reshape(*out.shape[:-1], *self.output_shape)
 
 
 class RecurrentModel(nn.Module):
@@ -741,19 +696,23 @@ class DreamerV3_5Policy(nn.Module, DreamerPolicy):
         encoder: nn.Module,
         rssm: RSSM,
         actor: nn.Module,
-        actions_dim: Sequence[int],
+        codec: ActionCodec,
         stochastic_size: int,
         recurrent_state_size: int,
         device: str | torch.device,
         discrete_size: int = 64,
-        cnn_keys: Sequence[str] = (),
+        keys: Sequence[str] = (),
+        mask_keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.rssm = rssm
         self.actor = actor
-        self.cnn_keys = cnn_keys
-        self.actions_dim = actions_dim
+        self.codec = codec
+        # The keys of the inputs of the encoder (by default) and the action masks the actor reads
+        self.keys = tuple(keys) or tuple(encoder.keys)
+        self.mask_keys = tuple(mask_keys)
+        self.actions_dim = codec.dims
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.device = device
@@ -797,7 +756,7 @@ class DreamerV3_5Policy(nn.Module, DreamerPolicy):
             The actions: one tensor with the continuous actions (clipped to [-1, 1]), or the one-hots of every
             discrete action.
         """
-        embedded_obs = self.encoder(obs)
+        embedded_obs = self.encoder(obs, phase="act")
         self.recurrent_state, self.stochastic_state, _ = self.rssm.dynamic(
             self.stochastic_state,
             self.recurrent_state,
@@ -813,8 +772,7 @@ class DreamerV3_5Policy(nn.Module, DreamerPolicy):
 
 def build_agent(
     fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
+    codec: ActionCodec,
     cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, Tensor]] = None,
@@ -826,9 +784,8 @@ def build_agent(
 
     Args:
         fabric: the fabric of the run.
-        actions_dim: the size of every discrete action, or of the continuous actions.
-        is_continuous: whether the actions are continuous.
-        cfg: the configuration of the run.
+        codec: the actions of the agent and of the environments.
+        cfg: the configuration of the run: the encoder of `algo.inputs`, the decoder of `algo.outputs`.
         obs_space: the observation space.
         world_model_state: the weights of the world model. Default: initialized.
         actor_state: the weights of the actor. Default: initialized.
@@ -842,6 +799,8 @@ def build_agent(
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
     critic_cfg = cfg.algo.critic
+    codec.check("The actor of DreamerV3.5")
+    actions_dim, is_continuous = codec.dims, codec.continuous
     activation = hydra.utils.get_class(cfg.algo.dense_act)
     eps = cfg.algo.norm_eps
 
@@ -850,37 +809,7 @@ def build_agent(
     stochastic_size = world_model_cfg.stochastic_size * world_model_cfg.discrete_size
     latent_state_size = stochastic_size + recurrent_state_size
 
-    cnn_keys = legacy_keys(cfg).image_keys
-    mlp_keys = legacy_keys(cfg).vector_keys
-    encoder_cfg = world_model_cfg.encoder
-    cnn_encoder = (
-        CNNEncoder(
-            keys=cnn_keys,
-            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_keys],
-            image_size=obs_space[cnn_keys[0]].shape[-2:],
-            channels_multiplier=encoder_cfg.cnn_channels_multiplier,
-            stages=encoder_cfg.cnn_stages,
-            kernel_size=encoder_cfg.cnn_kernel_size,
-            activation=activation,
-            eps=eps,
-        )
-        if cnn_keys is not None and len(cnn_keys) > 0
-        else None
-    )
-    mlp_encoder = (
-        MLPEncoder(
-            keys=mlp_keys,
-            input_dims=[obs_space[k].shape[0] for k in mlp_keys],
-            mlp_layers=encoder_cfg.mlp_layers,
-            dense_units=encoder_cfg.dense_units,
-            activation=activation,
-            eps=eps,
-            symlog_inputs=encoder_cfg.symlog_inputs,
-        )
-        if mlp_keys is not None and len(mlp_keys) > 0
-        else None
-    )
-    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+    encoder = build_encoder(cfg, obs_space)
 
     recurrent_cfg = world_model_cfg.recurrent_model
     recurrent_model = RecurrentModel(
@@ -916,41 +845,7 @@ def build_agent(
         unimix=world_model_cfg.unimix,
     )
 
-    decoder_cfg = world_model_cfg.observation_model
-    cnn_decoder_keys = legacy_keys(cfg).decoder_image_keys
-    mlp_decoder_keys = legacy_keys(cfg).decoder_vector_keys
-    cnn_decoder = (
-        CNNDecoder(
-            keys=cnn_decoder_keys,
-            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cnn_decoder_keys],
-            channels_multiplier=decoder_cfg.cnn_channels_multiplier,
-            stochastic_size=stochastic_size,
-            recurrent_state_size=recurrent_state_size,
-            image_size=obs_space[cnn_decoder_keys[0]].shape[-2:],
-            stages=decoder_cfg.cnn_stages,
-            kernel_size=decoder_cfg.cnn_kernel_size,
-            block_space=decoder_cfg.block_space,
-            dense_units=decoder_cfg.dense_units,
-            activation=activation,
-            eps=eps,
-        )
-        if cnn_decoder_keys is not None and len(cnn_decoder_keys) > 0
-        else None
-    )
-    mlp_decoder = (
-        MLPDecoder(
-            keys=mlp_decoder_keys,
-            output_dims=[obs_space[k].shape[0] for k in mlp_decoder_keys],
-            latent_state_size=latent_state_size,
-            mlp_layers=decoder_cfg.mlp_layers,
-            dense_units=decoder_cfg.dense_units,
-            activation=activation,
-            eps=eps,
-        )
-        if mlp_decoder_keys is not None and len(mlp_decoder_keys) > 0
-        else None
-    )
-    observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
+    observation_model = MultiDecoder.from_config(cfg.algo.outputs, encoder, latent_size=latent_state_size)
 
     def head(cfg_: dotdict, output_size: int, outscale: float) -> nn.Sequential:
         units = cfg_.dense_units if cfg_.mlp_layers > 0 else latent_state_size
@@ -1017,12 +912,13 @@ def build_agent(
         world_model.encoder,
         world_model.rssm,
         actor,
-        actions_dim,
+        codec,
         world_model_cfg.stochastic_size,
         recurrent_state_size,
         fabric.device,
         discrete_size=world_model_cfg.discrete_size,
-        cnn_keys=legacy_keys(cfg).image_keys,
+        keys=world_model.encoder.keys,
+        mask_keys=cfg.algo.extra_keys,
     )
     # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes

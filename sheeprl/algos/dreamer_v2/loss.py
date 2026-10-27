@@ -7,8 +7,7 @@ from torch.distributions.kl import kl_divergence
 
 
 def reconstruction_loss(
-    po: Dict[str, Distribution],
-    observations: Dict[str, Tensor],
+    observation_log_probs: Dict[str, Tensor],
     pr: Distribution,
     rewards: Tensor,
     priors_logits: Tensor,
@@ -26,8 +25,8 @@ def reconstruction_loss(
     [https://arxiv.org/abs/2010.02193](https://arxiv.org/abs/2010.02193).
 
     Args:
-        po (Dict[str, Distribution]): the distribution returned by the observation_model (decoder).
-        observations (Dict[str, Tensor]): the observations provided by the environment.
+        observation_log_probs (Dict[str, Tensor]): the log-likelihood of every observation key under the
+            distribution of its reconstruction (`MultiDecoder.log_probs`).
         pr (Distribution): the reward distribution returned by the reward_model.
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
         priors_logits (Tensor): the logits of the prior.
@@ -55,7 +54,7 @@ def reconstruction_loss(
         continue_loss (Tensor): the value of the continue loss (0 if it is not computed).
         reconstruction_loss (Tensor): the value of the overall reconstruction loss.
     """
-    observation_loss = -sum([po[k].log_prob(observations[k]).mean() for k in po.keys()])
+    observation_loss = -sum([log_prob.mean() for log_prob in observation_log_probs.values()])
     reward_loss = -pr.log_prob(rewards).mean()
     # KL balancing
     lhs = kl = kl_divergence(

@@ -41,6 +41,9 @@ algo:
   inputs:
     image:
       keys: [frame]
+      # 128 x 128 images to 4 x 4 feature maps
+      net:
+        stages: 5
     vector:
       keys: [own_character, own_health, own_side, own_wins, opp_character, opp_health, opp_side, opp_wins, stage, timer, action, reward]
   outputs:

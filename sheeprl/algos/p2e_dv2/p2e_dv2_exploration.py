@@ -25,11 +25,12 @@ from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, actor_objective, build_optimizer, compute_lambda_values
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
+from sheeprl.core.actions import ActionCodec
 from sheeprl.core.evaluation import run_test
 from sheeprl.data.store import ReplayStore
+from sheeprl.models.io import check_reconstructs, log_inputs_and_outputs
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import entropy as policy_entropy
-from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope, get_single_device_fabric, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.model import ema_
@@ -65,8 +66,6 @@ def world_model_loss(
     world_model: WorldModel,
     data: Dict[str, Tensor],
     *,
-    cnn_keys: Tuple[str, ...],
-    mlp_keys: Tuple[str, ...],
     stochastic_size: int,
     discrete_size: int,
     recurrent_state_size: int,
@@ -88,8 +87,8 @@ def world_model_loss(
     """
     sequence_length, batch_size = data["actions"].shape[:2]
     device = data["actions"].device
-    batch_obs = {k: data[k] / 255 - 0.5 for k in cnn_keys}
-    batch_obs.update({k: data[k] for k in mlp_keys})
+    # The keys of the inputs, which the encoder transforms (e.g. the images scaled to [-0.5, 0.5])
+    batch_obs = {k: data[k] for k in world_model.encoder.keys}
     recurrent_state = torch.zeros(1, batch_size, recurrent_state_size, device=device)
     posterior = torch.zeros(1, batch_size, stochastic_size, discrete_size, device=device)
     # The outputs of every step are concatenated at the end of the unroll: writing them in place into preallocated
@@ -118,7 +117,12 @@ def world_model_loss(
     latent_states = torch.cat((posteriors.view(*posteriors.shape[:-2], -1), recurrent_states), -1)
 
     decoded_information: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
-    po = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
+    # The log-likelihood of every observation under the distribution of its reconstruction (the likelihoods of the
+    # outputs), with the targets in the domain of the transforms of the encoder
+    observation_model = world_model.observation_model
+    observation_log_probs = observation_model.log_probs(
+        decoded_information, observation_model.targets(data, world_model.encoder)
+    )
     pr = Independent(Normal(world_model.reward_model(latent_states.detach()), 1), 1)
     if use_continues:
         pc = Independent(Bernoulli(logits=world_model.continue_model(latent_states.detach())), 1)
@@ -129,8 +133,7 @@ def world_model_loss(
     priors_logits = priors_logits.view(*priors_logits.shape[:-1], stochastic_size, discrete_size)
     posteriors_logits = posteriors_logits.view(*posteriors_logits.shape[:-1], stochastic_size, discrete_size)
     rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
-        po,
-        batch_obs,
+        observation_log_probs,
         pr,
         data["rewards"],
         priors_logits,
@@ -323,8 +326,6 @@ def train(
         rec_loss, posteriors, recurrent_states, losses = compiled(world_model_loss, fabric, cfg)(
             world_model,
             data,
-            cnn_keys=tuple(legacy_keys(cfg).image_keys),
-            mlp_keys=tuple(legacy_keys(cfg).vector_keys),
             stochastic_size=world_model_cfg.stochastic_size,
             discrete_size=world_model_cfg.discrete_size,
             recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
@@ -498,7 +499,6 @@ class P2EDV2Exploration(Algorithm):
     def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
         # These arguments cannot be changed
-        cfg.env.screen_size = 64
         cfg.algo.policy.actor_type = "exploration"
 
     def build(
@@ -506,7 +506,8 @@ class P2EDV2Exploration(Algorithm):
     ) -> Tuple[P2EDV2ExplorationState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
-        self.actions_dim, self.is_continuous = actions_dim_of(action_space)
+        codec = ActionCodec.from_space(action_space)
+        self.actions_dim, self.is_continuous = codec.dims, codec.continuous
         check_keys(fabric, cfg, obs_space)
 
         (
@@ -519,7 +520,9 @@ class P2EDV2Exploration(Algorithm):
             critic_exploration,
             target_critic_exploration,
             self._policy,
-        ) = build_agent(fabric, self.actions_dim, self.is_continuous, cfg, obs_space)
+        ) = build_agent(fabric, codec, cfg, obs_space)
+        check_reconstructs(world_model.observation_model, "P2E-DV2")
+        log_inputs_and_outputs(fabric, cfg, world_model.encoder, world_model.observation_model)
 
         def optimizer(optimizer_cfg: dotdict, module: nn.Module) -> Optimizer:
             return fabric.setup_optimizers(build_optimizer(optimizer_cfg, module.parameters()))

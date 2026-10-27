@@ -20,10 +20,11 @@ from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2Writer, check_keys, tra
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, build_optimizer
 from sheeprl.algos.p2e_dv2.agent import build_agent
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, load_replay_buffer, run, sequence_store
+from sheeprl.core.actions import ActionCodec
 from sheeprl.core.evaluation import run_test
 from sheeprl.data.store import ReplayStore
+from sheeprl.models.io import check_reconstructs, log_inputs_and_outputs
 from sheeprl.utils import fs
-from sheeprl.utils.env import actions_dim_of
 from sheeprl.utils.fabric import get_single_device_fabric
 from sheeprl.utils.model import ema_
 from sheeprl.utils.registry import register_algorithm
@@ -84,15 +85,13 @@ class P2EDV2Finetuning(Algorithm):
             cfg.algo.outputs = exploration_cfg.algo.outputs
             cfg.algo.extra_keys = exploration_cfg.algo.extra_keys
 
-        # These arguments cannot be changed
-        cfg.env.screen_size = 64
-
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
     ) -> Tuple[P2EDV2FinetuningState, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
-        self.actions_dim, self.is_continuous = actions_dim_of(action_space)
+        codec = ActionCodec.from_space(action_space)
+        self.actions_dim, self.is_continuous = codec.dims, codec.continuous
         check_keys(fabric, cfg, obs_space)
 
         # The exploration critic and the ensembles are not used: they are built to initialize the models in the same
@@ -101,8 +100,10 @@ class P2EDV2Finetuning(Algorithm):
         # order as the exploration did. The policy plays with the actor of `algo.policy.actor_type` until the training
         # starts (see `batches`)
         world_model, _, actor_task, critic_task, target_critic_task, actor_exploration, _, _, self._policy = (
-            build_agent(fabric, self.actions_dim, self.is_continuous, cfg, obs_space)
+            build_agent(fabric, codec, cfg, obs_space)
         )
+        check_reconstructs(world_model.observation_model, "P2E-DV2")
+        log_inputs_and_outputs(fabric, cfg, world_model.encoder, world_model.observation_model)
 
         def optimizer(optimizer_cfg: dotdict, module: nn.Module) -> Optimizer:
             return fabric.setup_optimizers(build_optimizer(optimizer_cfg, module.parameters()))

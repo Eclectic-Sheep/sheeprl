@@ -27,9 +27,10 @@ from sheeprl.algos.dreamer_v1.utils import compute_lambda_values
 from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2Writer, check_keys
 from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES
 from sheeprl.core import Algorithm, TrainSchedule, TrainState, env_buffer_size, run, sequence_store
+from sheeprl.core.actions import ActionCodec
 from sheeprl.data.store import ReplayStore
+from sheeprl.models.io import check_reconstructs, log_inputs_and_outputs
 from sheeprl.utils.compile import compiled, mark_gradient_step
-from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
@@ -63,8 +64,6 @@ def world_model_loss(
     world_model: WorldModel,
     data: Dict[str, Tensor],
     *,
-    cnn_keys: Tuple[str, ...],
-    mlp_keys: Tuple[str, ...],
     stochastic_size: int,
     recurrent_state_size: int,
     use_continues: bool,
@@ -82,8 +81,8 @@ def world_model_loss(
     """
     sequence_length, batch_size = data["actions"].shape[:2]
     device = data["actions"].device
-    batch_obs = {k: data[k] / 255 - 0.5 for k in cnn_keys}
-    batch_obs.update({k: data[k] for k in mlp_keys})
+    # The keys of the inputs, which the encoder transforms (e.g. the images scaled to [-0.5, 0.5])
+    batch_obs = {k: data[k] for k in world_model.encoder.keys}
 
     # initialize the recurrent_state that must be a tuple of tensors (one for GRU or RNN).
     # the dimension of each vector must be (1, batch_size, recurrent_state_size)
@@ -153,7 +152,12 @@ def world_model_loss(
     # it is necessary an Independent distribution because
     # it is necessary to create (batch_size * sequence_length) independent distributions,
     # each producing a sample of size observations.shape
-    qo = {k: Independent(Normal(rec_obs, 1), len(rec_obs.shape[2:])) for k, rec_obs in decoded_information.items()}
+    # The log-likelihood of every observation under the distribution of its reconstruction (the likelihoods of the
+    # outputs), with the targets in the domain of the transforms of the encoder
+    observation_model = world_model.observation_model
+    observation_log_probs = observation_model.log_probs(
+        decoded_information, observation_model.targets(data, world_model.encoder)
+    )
 
     # compute predictions for the rewards
     # it is necessary an Independent distribution because
@@ -178,8 +182,7 @@ def world_model_loss(
     # world model optimization step
     # compute the overall loss of the world model
     rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss = reconstruction_loss(
-        qo,
-        batch_obs,
+        observation_log_probs,
         qr,
         data["rewards"],
         posteriors_dist,
@@ -410,8 +413,6 @@ def train(
         rec_loss, posteriors, recurrent_states, losses = compiled(world_model_loss, fabric, cfg)(
             world_model,
             data,
-            cnn_keys=tuple(legacy_keys(cfg).image_keys),
-            mlp_keys=tuple(legacy_keys(cfg).vector_keys),
             stochastic_size=world_model_cfg.stochastic_size,
             recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
             use_continues=use_continues,
@@ -501,8 +502,6 @@ class DreamerV1(Algorithm):
 
     def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
-        # These arguments cannot be changed
-        cfg.env.screen_size = 64
         # The policy steps at the end of the iteration, set for its last gradient step (see `batches`)
         self.exploration_step: Optional[int] = None
 
@@ -511,12 +510,13 @@ class DreamerV1(Algorithm):
     ) -> Tuple[DreamerV1State, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
-        self.actions_dim, self.is_continuous = actions_dim_of(action_space)
+        codec = ActionCodec.from_space(action_space)
+        self.actions_dim, self.is_continuous = codec.dims, codec.continuous
         check_keys(fabric, cfg, obs_space)
 
-        world_model, actor, critic, self._policy = build_agent(
-            fabric, self.actions_dim, self.is_continuous, cfg, obs_space, schedule=schedule
-        )
+        world_model, actor, critic, self._policy = build_agent(fabric, codec, cfg, obs_space, schedule=schedule)
+        check_reconstructs(world_model.observation_model, "DreamerV1")
+        log_inputs_and_outputs(fabric, cfg, world_model.encoder, world_model.observation_model)
 
         world_optimizer = hydra.utils.instantiate(
             cfg.algo.world_model.optimizer, params=world_model.parameters(), _convert_="all"

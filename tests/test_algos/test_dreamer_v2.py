@@ -29,6 +29,7 @@ from sheeprl.data.samplers import EpisodeSampler, SequenceSampler
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
+from tests.test_algos.codecs import codec_of
 
 from .compiled import assert_same_step, no_host_reads, recording, same_random_numbers
 
@@ -38,8 +39,7 @@ def kl_loss_of(posteriors_logits, priors_logits, kl_free_nats, kl_free_avg):
     po = {"state": Independent(Normal(torch.zeros(T, B, 2), 1), 1)}
     pr = Independent(Normal(torch.zeros(T, B, 1), 1), 1)
     _, kl, kl_loss, *_ = reconstruction_loss(
-        po,
-        {"state": torch.zeros(T, B, 2)},
+        {"state": po["state"].log_prob(torch.zeros(T, B, 2))},
         pr,
         torch.zeros(T, B, 1),
         priors_logits,
@@ -101,18 +101,13 @@ def test_the_buffer_holds_buffer_size_steps_of_the_process(buffer_type, tmp_path
 def test_the_cnn_decoder_normalizes_its_three_hidden_layers(output_channels):
     # The LayerNorms were one per output channel: only 3 channels (one RGB image) built a decoder
     decoder = CNNDecoder(
-        keys=[f"rgb{i}" for i in range(len(output_channels))],
-        output_channels=output_channels,
-        channels_multiplier=2,
-        latent_state_size=10,
-        cnn_encoder_output_dim=16,
-        image_size=(64, 64),
-        layer_norm=True,
+        latent_size=10, output_shape=(sum(output_channels), 64, 64), channels_multiplier=2, layer_norm=True
     )
     norms = [m for m in decoder.modules() if isinstance(m, nn.LayerNorm)]
     assert [n.normalized_shape for n in norms] == [(8,), (4,), (2,)]
     reconstructed = decoder(torch.randn(2, 3, 10))
-    assert [reconstructed[f"rgb{i}"].shape for i in range(len(output_channels))] == [
+    assert reconstructed.shape == (2, 3, sum(output_channels), 64, 64)
+    assert [part.shape for part in torch.split(reconstructed, output_channels, dim=-3)] == [
         (2, 3, c, 64, 64) for c in output_channels
     ]
 
@@ -349,7 +344,7 @@ def small_dreamer_v2(overrides=(), actions_dim=(3,), continuous=False, accelerat
                 "algo.inputs.vector.keys=[state]",
                 "algo.dense_units=8",
                 "algo.mlp_layers=2",
-                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.inputs.image.net.channels_multiplier=2",
                 "algo.world_model.recurrent_model.recurrent_state_size=16",
                 "algo.world_model.representation_model.hidden_size=8",
                 "algo.world_model.transition_model.hidden_size=8",
@@ -366,7 +361,7 @@ def small_dreamer_v2(overrides=(), actions_dim=(3,), continuous=False, accelerat
         }
     )
     world_model, actor, critic, target_critic, _ = build_agent(
-        Fabric(accelerator=accelerator, devices=1), actions_dim, continuous, cfg, obs_space
+        Fabric(accelerator=accelerator, devices=1), codec_of(actions_dim, continuous), cfg, obs_space
     )
     return cfg, (world_model, actor, critic, target_critic)
 
@@ -466,8 +461,6 @@ def test_the_losses_compile_into_single_graphs_without_host_reads(monkeypatch, c
     _, posteriors, recurrent_states, _ = graph(dreamer_v2.world_model_loss)(
         world_model,
         data,
-        cnn_keys=("rgb",),
-        mlp_keys=("state",),
         stochastic_size=world_model_cfg.stochastic_size,
         discrete_size=world_model_cfg.discrete_size,
         recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,

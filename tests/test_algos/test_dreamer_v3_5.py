@@ -37,6 +37,7 @@ from sheeprl.data.samplers import SequenceSampler
 from sheeprl.data.store import ReplayStore
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict, symexp
+from tests.test_algos.codecs import codec_of
 
 from .compiled import same_random_numbers
 
@@ -284,7 +285,7 @@ def small_dreamer_v3_5(overrides=(), accelerator="cpu", precision="32-true", act
             "algo.world_model.recurrent_model.recurrent_state_size=16",
             "algo.world_model.recurrent_model.hidden_size=8",
             "algo.world_model.recurrent_model.blocks=4",
-            "algo.world_model.observation_model.block_space=2",
+            "algo.outputs.image.net.block_space=2",
             "algo.world_model.stochastic_size=4",
             "algo.world_model.discrete_size=5",
             "algo.horizon=3",
@@ -304,7 +305,9 @@ def small_dreamer_v3_5(overrides=(), accelerator="cpu", precision="32-true", act
     continuous = actions == "continuous"
     actions_dim = [2] if continuous else [3]
     torch.manual_seed(0)
-    world_model, actor, critic, target_critic, policy = build_agent(fabric, actions_dim, continuous, cfg, obs_space)
+    world_model, actor, critic, target_critic, policy = build_agent(
+        fabric, codec_of(actions_dim, continuous), cfg, obs_space
+    )
     if peaked:
         with torch.no_grad():
             for head in (world_model.reward_model, critic, target_critic):

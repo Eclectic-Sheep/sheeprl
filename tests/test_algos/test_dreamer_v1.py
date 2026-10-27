@@ -29,6 +29,7 @@ from sheeprl.algos.dreamer_v2.agent import Actor
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.distribution import SafeTanhTransform
 from sheeprl.utils.utils import dotdict
+from tests.test_algos.codecs import codec_of
 
 from .compiled import assert_same_step, no_host_reads, recording, same_random_numbers
 
@@ -84,8 +85,9 @@ def test_the_continue_loss_is_the_mean_negative_log_likelihood():
     qo = {"state": Independent(Normal(torch.zeros(T, B, 2), 1), 1)}
     qr = Independent(Normal(torch.zeros(T, B, 1), 1), 1)
     states = Independent(Normal(torch.zeros(T, B, 5), 1), 1)
+    log_probs = {"state": qo["state"].log_prob(torch.randn(T, B, 2))}
     rec_loss, *_, continue_loss = reconstruction_loss(
-        qo, {"state": torch.randn(T, B, 2)}, qr, torch.zeros(T, B, 1), states, states, 3.0, 1.0, qc, targets, 2.0
+        log_probs, qr, torch.zeros(T, B, 1), states, states, 3.0, 1.0, qc, targets, 2.0
     )
     assert rec_loss.shape == continue_loss.shape == ()
     torch.testing.assert_close(continue_loss, -2.0 * qc.log_prob(targets).mean())
@@ -129,11 +131,12 @@ def test_the_policy_samples_the_posterior_with_the_minimum_std_of_the_world_mode
 
     monkeypatch.setattr(agent, "compute_stochastic_state", compute_stochastic_state)
     policy = DreamerV1Policy(
-        encoder=lambda obs: torch.zeros(1, 2, 5),
+        encoder=lambda obs, **kwargs: torch.zeros(1, 2, 5),
         recurrent_model=RecurrentModel(4 + 3, 8),
         representation_model=nn.Linear(8 + 5, 8),
         actor=lambda latent_state, greedy, mask: ([torch.zeros(1, 2, 3)], None),
-        actions_dim=[3],
+        codec=codec_of([3]),
+        keys=("state",),
         stochastic_size=4,
         recurrent_state_size=8,
         device="cpu",
@@ -177,7 +180,7 @@ def test_the_policy_follows_the_updates_of_the_agent(accelerator):
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
     fabric = Fabric(accelerator=accelerator, devices=1)
-    world_model, actor, _, policy = build_agent(fabric, [3], False, cfg, obs_space)
+    world_model, actor, _, policy = build_agent(fabric, codec_of([3], False), cfg, obs_space)
     assert policy.min_std == 0.3
     policy.init_states(2)
     with torch.no_grad():
@@ -267,7 +270,7 @@ def dreamer_v1_cfg(exp: str, overrides=()) -> Dict[str, Any]:
                 "algo.inputs.image.keys=[rgb]",
                 "algo.inputs.vector.keys=[]",
                 "algo.dense_units=8",
-                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.inputs.image.net.channels_multiplier=2",
                 "algo.world_model.recurrent_model.recurrent_state_size=16",
                 "algo.world_model.representation_model.hidden_size=16",
                 "algo.world_model.transition_model.hidden_size=16",
@@ -332,11 +335,14 @@ def test_the_weights_are_initialized_as_the_layers_of_keras(exp):
     cfg = dreamer_v1_cfg(exp, ["algo.dense_units=512"])
     fabric = Fabric(accelerator="cpu", devices=1)
     if exp == "dreamer_v1":
-        world_model, actor, critic, _ = build_agent(fabric, [3], False, cfg, IMAGES)
+        world_model, actor, critic, _ = build_agent(fabric, codec_of([3], False), cfg, IMAGES)
         actors_and_critics = [actor, critic]
     else:
-        world_model, _, *actors_and_critics, _ = p2e_dv1_build_agent(fabric, [3], False, cfg, IMAGES)
-    layers = [world_model.reward_model.module.model[2], world_model.encoder.module.cnn_encoder.model[0].model[2]]
+        world_model, _, *actors_and_critics, _ = p2e_dv1_build_agent(fabric, codec_of([3], False), cfg, IMAGES)
+    layers = [
+        world_model.reward_model.module.model[2],
+        world_model.encoder.module.inputs["image"].net.model[0].model[2],
+    ]
     for model in actors_and_critics:
         mlp = model.module.model
         layers.append((mlp if isinstance(mlp, nn.Sequential) else mlp.model)[2])
@@ -366,7 +372,7 @@ def test_the_imagination_starts_from_the_steps_that_are_not_terminal(monkeypatch
         ],
     )
     fabric = Fabric(accelerator="cpu", devices=1)
-    world_model, actor, critic, _ = build_agent(fabric, [3], False, cfg, IMAGES)
+    world_model, actor, critic, _ = build_agent(fabric, codec_of([3], False), cfg, IMAGES)
     rssm = world_model.rssm
     posteriors, starts = [], []
 
@@ -410,7 +416,7 @@ def compilable_dreamer_v1(continuous, overrides=(), accelerator="cpu"):
     )
     fabric = Fabric(accelerator=accelerator, devices=1)
     torch.manual_seed(0)
-    world_model, actor, critic, _ = build_agent(fabric, [2] if continuous else [3], continuous, cfg, IMAGES)
+    world_model, actor, critic, _ = build_agent(fabric, codec_of([2] if continuous else [3], continuous), cfg, IMAGES)
     optimizers = fabric.setup_optimizers(
         *(
             instantiate(optimizer, params=model.parameters(), _convert_="all")
@@ -451,8 +457,6 @@ def test_the_losses_compile_into_single_graphs_without_host_reads(monkeypatch, c
     _, posteriors, recurrent_states, _ = graph(dreamer_v1.world_model_loss)(
         world_model,
         data,
-        cnn_keys=("rgb",),
-        mlp_keys=(),
         stochastic_size=world_model_cfg.stochastic_size,
         recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
         use_continues=True,

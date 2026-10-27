@@ -22,6 +22,7 @@ from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3.utils import init_weights
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
+from tests.test_algos.codecs import codec_of
 
 from .compiled import same_random_numbers
 
@@ -56,7 +57,7 @@ def test_the_cnn_decoder_is_normalized_as_configured():
                 "algo.inputs.image.keys=[rgb]",
                 "algo.inputs.vector.keys=[state]",
                 "algo.dense_units=8",
-                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.inputs.image.net.channels_multiplier=2",
                 "algo.world_model.recurrent_model.recurrent_state_size=8",
                 "algo.world_model.representation_model.hidden_size=8",
                 "algo.world_model.transition_model.hidden_size=8",
@@ -70,8 +71,9 @@ def test_the_cnn_decoder_is_normalized_as_configured():
             "state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32),
         }
     )
-    world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
-    cnn_decoder, mlp_decoder = world_model.observation_model.cnn_decoder, world_model.observation_model.mlp_decoder
+    world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), codec_of([3], False), cfg, obs_space)
+    outputs = world_model.observation_model.outputs
+    cnn_decoder, mlp_decoder = outputs["image"].net, outputs["vector"].net
     assert {m.eps for m in cnn_decoder.modules() if isinstance(m, nn.LayerNorm)} == {0.123}
     assert {m.eps for m in mlp_decoder.modules() if isinstance(m, nn.LayerNorm)} == {1e-3}
 
@@ -89,7 +91,7 @@ def test_the_cnn_decoder_projects_the_latent_state_with_the_official_initializat
                 "algo.inputs.image.keys=[rgb]",
                 "algo.inputs.vector.keys=[]",
                 "algo.dense_units=8",
-                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.inputs.image.net.channels_multiplier=2",
                 "algo.world_model.recurrent_model.recurrent_state_size=8",
                 "algo.world_model.representation_model.hidden_size=8",
                 "algo.world_model.transition_model.hidden_size=8",
@@ -98,8 +100,8 @@ def test_the_cnn_decoder_projects_the_latent_state_with_the_official_initializat
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"rgb": gym.spaces.Box(0, 255, shape=(3, 64, 64), dtype=np.uint8)})
     torch.manual_seed(0)
-    world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
-    layer = world_model.observation_model.cnn_decoder.model[0]
+    world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), codec_of([3], False), cfg, obs_space)
+    layer = world_model.observation_model.outputs["image"].net.model[0]
     weight = layer.weight.detach()
     limit = math.sqrt(3 / ((layer.in_features + layer.out_features) / 2))
     assert weight.abs().max().item() <= limit
@@ -130,7 +132,7 @@ def test_the_policy_resets_the_environments_one_by_one(recwarn):
         )
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
-    *_, policy = build_agent(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
+    *_, policy = build_agent(Fabric(accelerator="cpu", devices=1), codec_of([3], False), cfg, obs_space)
     policy.init_states(3)
     initial = policy.recurrent_state.clone()
     policy.recurrent_state[:, 1] += 1.0
@@ -168,7 +170,7 @@ def initial_states_after_a_gradient_step(fabric: Fabric) -> bool:
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
     fabric.seed_everything(0)
-    world_model, actor, critic, target_critic, _ = build_agent(fabric, [3], False, cfg, obs_space)
+    world_model, actor, critic, target_critic, _ = build_agent(fabric, codec_of([3], False), cfg, obs_space)
     optimizers = fabric.setup_optimizers(
         *[torch.optim.Adam(m.parameters(), lr=1e-2) for m in (world_model, actor, critic)]
     )
@@ -233,7 +235,7 @@ def test_the_actors_of_dreamer_v3_and_p2e_dv3_follow_the_configuration_of_the_ac
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
     _, _, actor_task, _, _, actor_exploration, *_ = build_p2e_agent(
-        Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space
+        Fabric(accelerator="cpu", devices=1), codec_of([3], False), cfg, obs_space
     )
     for actor in (actor_task.module, actor_exploration.module):
         assert actor.max_std == 0.7
@@ -342,7 +344,7 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuo
                 "algo.inputs.image.keys=[rgb]",
                 "algo.inputs.vector.keys=[state]",
                 "algo.dense_units=8",
-                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.inputs.image.net.channels_multiplier=2",
                 "algo.world_model.recurrent_model.recurrent_state_size=8",
                 "algo.world_model.representation_model.hidden_size=8",
                 "algo.world_model.transition_model.hidden_size=8",
@@ -362,7 +364,9 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuo
     )
     actions_dim = [2] if continuous else [3]
     torch.manual_seed(0)
-    world_model, actor, critic, target_critic, policy = build_agent(fabric, actions_dim, continuous, cfg, obs_space)
+    world_model, actor, critic, target_critic, policy = build_agent(
+        fabric, codec_of(actions_dim, continuous), cfg, obs_space
+    )
     optimizers = fabric.setup_optimizers(
         *[torch.optim.Adam(module.parameters(), lr=1e-4) for module in (world_model, actor, critic)]
     )

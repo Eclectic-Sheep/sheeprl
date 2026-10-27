@@ -36,17 +36,17 @@ from sheeprl.core import (
     run,
     sequence_store,
 )
+from sheeprl.core.actions import ActionCodec
 from sheeprl.data.samplers import SAMPLED_STEPS, CuriousSequenceSampler
 from sheeprl.data.store import ReplayStore
+from sheeprl.models.io import check_reconstructs, log_inputs_and_outputs
+from sheeprl.transforms.observations import stored_keys
 from sheeprl.utils.compile import compiled, mark_gradient_step
 from sheeprl.utils.distribution import (
     BernoulliSafeMode,
-    MSEDistribution,
-    SymlogDistribution,
     TwoHotEncodingDistribution,
 )
 from sheeprl.utils.distribution import entropy as policy_entropy
-from sheeprl.utils.env import actions_dim_of, legacy_keys
 from sheeprl.utils.fabric import autocast_cache_scope, update
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.model import ema_
@@ -91,7 +91,8 @@ class DreamerV3Writer(Writer):
     def __init__(self, cfg: dotdict, actions_dim: Sequence[int]) -> None:
         self.cfg = cfg
         self.actions_dim = actions_dim
-        self.obs_keys = legacy_keys(cfg).image_keys + legacy_keys(cfg).vector_keys
+        # The keys of the inputs, then the extra keys (e.g. the action masks)
+        self.obs_keys = stored_keys(cfg)
         # The row of the next step; created from the first observations of the environments
         self.step_data: Optional[Dict[str, np.ndarray]] = None
 
@@ -168,10 +169,6 @@ def world_model_loss_kwargs(cfg: dotdict) -> Dict[str, Any]:
     """The configuration of `world_model_loss`, as plain values."""
     world_model_cfg = cfg.algo.world_model
     return {
-        "cnn_keys": tuple(legacy_keys(cfg).image_keys),
-        "mlp_keys": tuple(legacy_keys(cfg).vector_keys),
-        "cnn_decoder_keys": tuple(legacy_keys(cfg).decoder_image_keys),
-        "mlp_decoder_keys": tuple(legacy_keys(cfg).decoder_vector_keys),
         "stochastic_size": world_model_cfg.stochastic_size,
         "discrete_size": world_model_cfg.discrete_size,
         "decoupled_rssm": bool(world_model_cfg.decoupled_rssm),
@@ -187,10 +184,6 @@ def world_model_loss(
     world_model: WorldModel,
     data: Dict[str, Tensor],
     *,
-    cnn_keys: Sequence[str],
-    mlp_keys: Sequence[str],
-    cnn_decoder_keys: Sequence[str],
-    mlp_decoder_keys: Sequence[str],
     stochastic_size: int,
     discrete_size: int,
     decoupled_rssm: bool,
@@ -223,8 +216,8 @@ def world_model_loss(
     # Dones:         0        d1       d2       d3
     # Is-first       1        i1       i2       i3
     sequence_length, batch_size = data["actions"].shape[:2]
-    batch_obs = {k: data[k] / 255.0 - 0.5 for k in cnn_keys}
-    batch_obs.update({k: data[k] for k in mlp_keys})
+    # The keys of the inputs, which the encoder transforms (e.g. the images scaled to [-0.5, 0.5])
+    batch_obs = {k: data[k] for k in world_model.encoder.keys}
 
     # Given how the environment interaction works, we remove the last actions
     # and add the first one as the zero action
@@ -282,14 +275,11 @@ def world_model_loss(
     # Compute predictions for the observations
     reconstructed_obs: Dict[str, torch.Tensor] = world_model.observation_model(latent_states)
 
-    # Compute the distribution over the reconstructed observations
-    po = {k: MSEDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:])) for k in cnn_decoder_keys}
-    po.update(
-        {
-            k: SymlogDistribution(reconstructed_obs[k], dims=len(reconstructed_obs[k].shape[2:]))
-            for k in mlp_decoder_keys
-        }
-    )
+    # The log-likelihood of every observation under the distribution of its reconstruction (the likelihoods of the
+    # outputs), with the targets in the domain of the transforms of the encoder
+    observation_model = world_model.observation_model
+    targets = observation_model.targets(data, world_model.encoder)
+    observation_log_probs = observation_model.log_probs(reconstructed_obs, targets)
 
     # Compute the distributions over the rewards and over the terminal steps
     heads_input = latent_states.detach() if detach_heads else latent_states
@@ -303,8 +293,7 @@ def world_model_loss(
 
     # World model optimization step. Eq. 4 in the paper
     rec_loss, kl, state_loss, reward_loss, observation_loss, continue_loss, step_losses = reconstruction_loss(
-        po,
-        batch_obs,
+        observation_log_probs,
         pr,
         data["rewards"],
         priors_logits,
@@ -734,43 +723,19 @@ class DreamerV3(Algorithm):
 
     def __init__(self, fabric: Fabric, cfg: dotdict) -> None:
         super().__init__(fabric, cfg)
-        # These arguments cannot be changed
-        cfg.env.frame_stack = -1
-        if 2 ** int(np.log2(cfg.env.screen_size)) != cfg.env.screen_size:
-            raise ValueError(f"The screen size must be a power of 2, got: {cfg.env.screen_size}")
 
     def build(
         self, obs_space: gym.spaces.Dict, action_space: gym.Space, schedule: TrainSchedule, log_dir: str
     ) -> Tuple[DreamerV3State, ReplayStore]:
         cfg = self.cfg
         fabric = self.fabric
-        self.actions_dim, self.is_continuous = actions_dim_of(action_space)
+        codec = ActionCodec.from_space(action_space)
+        self.actions_dim, self.is_continuous = codec.dims, codec.continuous
         if not isinstance(obs_space, gym.spaces.Dict):
             raise RuntimeError(f"Unexpected observation type, should be of type Dict, got: {obs_space}")
-        if (
-            len(set(legacy_keys(cfg).image_keys).intersection(set(legacy_keys(cfg).decoder_image_keys))) == 0
-            and len(set(legacy_keys(cfg).vector_keys).intersection(set(legacy_keys(cfg).decoder_vector_keys))) == 0
-        ):
-            raise RuntimeError("The CNN keys or the MLP keys of the encoder and decoder must not be disjointed")
-        if len(set(legacy_keys(cfg).decoder_image_keys) - set(legacy_keys(cfg).image_keys)) > 0:
-            raise RuntimeError(
-                "The CNN keys of the decoder must be contained in the encoder ones. "
-                f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_image_keys))}"
-            )
-        if len(set(legacy_keys(cfg).decoder_vector_keys) - set(legacy_keys(cfg).vector_keys)) > 0:
-            raise RuntimeError(
-                "The MLP keys of the decoder must be contained in the encoder ones. "
-                f"Those keys are decoded without being encoded: {list(set(legacy_keys(cfg).decoder_vector_keys))}"
-            )
-        if cfg.metric.log_level > 0:
-            fabric.print("Encoder CNN keys:", legacy_keys(cfg).image_keys)
-            fabric.print("Encoder MLP keys:", legacy_keys(cfg).vector_keys)
-            fabric.print("Decoder CNN keys:", legacy_keys(cfg).decoder_image_keys)
-            fabric.print("Decoder MLP keys:", legacy_keys(cfg).decoder_vector_keys)
-
-        world_model, actor, critic, target_critic, self._policy = build_agent(
-            fabric, self.actions_dim, self.is_continuous, cfg, obs_space
-        )
+        world_model, actor, critic, target_critic, self._policy = build_agent(fabric, codec, cfg, obs_space)
+        check_reconstructs(world_model.observation_model, "DreamerV3")
+        log_inputs_and_outputs(fabric, cfg, world_model.encoder, world_model.observation_model)
 
         world_optimizer = hydra.utils.instantiate(
             cfg.algo.world_model.optimizer, params=world_model.parameters(), _convert_="all"

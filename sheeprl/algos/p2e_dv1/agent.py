@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Sequence, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import gymnasium
 import hydra
@@ -14,6 +14,7 @@ from sheeprl.algos.dreamer_v1.agent import MinedojoActor as DV1MinedojoActor
 from sheeprl.algos.dreamer_v1.agent import WorldModel
 from sheeprl.algos.dreamer_v1.agent import build_agent as dv1_build_agent
 from sheeprl.algos.dreamer_v1.agent import init_weights
+from sheeprl.core.actions import ActionCodec
 from sheeprl.core.schedule import TrainSchedule
 from sheeprl.models.models import MLP
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
@@ -28,8 +29,7 @@ MinedojoActor = DV1MinedojoActor
 
 def build_agent(
     fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
+    codec: ActionCodec,
     cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, torch.Tensor]] = None,
@@ -44,8 +44,7 @@ def build_agent(
 
     Args:
         fabric (Fabric): the fabric object.
-        actions_dim (Sequence[int]): the dimension of the actions.
-        is_continuous (bool): whether or not the actions are continuous.
+        codec (ActionCodec): the actions of the agent and of the environments.
         cfg (dotdict): the hyper-parameters of DreamerV1.
         obs_space (Dict[str, Any]): the observation space.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
@@ -72,6 +71,7 @@ def build_agent(
         The policy (DreamerV1Policy): the policy object.
     """
     world_model_cfg = cfg.algo.world_model
+    actions_dim, is_continuous = codec.dims, codec.continuous
     actor_cfg = cfg.algo.actor
     critic_cfg = cfg.algo.critic
 
@@ -81,8 +81,7 @@ def build_agent(
     # Create exploration models
     world_model, actor_exploration, critic_exploration, policy = dv1_build_agent(
         fabric,
-        actions_dim=actions_dim,
-        is_continuous=is_continuous,
+        codec=codec,
         cfg=cfg,
         obs_space=obs_space,
         world_model_state=world_model_state,
@@ -138,7 +137,7 @@ def build_agent(
                         + cfg.algo.world_model.recurrent_model.recurrent_state_size
                         + cfg.algo.world_model.stochastic_size
                     ),
-                    output_dim=world_model.encoder.cnn_output_dim + world_model.encoder.mlp_output_dim,
+                    output_dim=world_model.encoder.output_dim,
                     hidden_sizes=[cfg.algo.ensembles.dense_units] * cfg.algo.ensembles.mlp_layers,
                     activation=hydra.utils.get_class(cfg.algo.ensembles.dense_act),
                 ).apply(init_weights)

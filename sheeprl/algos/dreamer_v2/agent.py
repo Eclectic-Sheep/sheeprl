@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import math
 import copy
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
@@ -22,7 +23,9 @@ from torch.distributions import (
 
 from sheeprl.algos.dreamer_policy import DreamerPolicy
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state, init_weights
-from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell, MultiDecoder, MultiEncoder
+from sheeprl.core.actions import ActionCodec
+from sheeprl.models.io import MultiDecoder, build_encoder
+from sheeprl.models.models import CNN, MLP, DeCNN, LayerNormChannelLast, LayerNormGRUCell
 from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.distribution import SafeTanhTransform, TruncatedNormal
 from sheeprl.utils.utils import dotdict
@@ -30,48 +33,47 @@ from sheeprl.utils.utils import dotdict
 # The epsilon of the LayerNorms: the one of the `LayerNormalization` of Keras, which the official implementation uses
 # (https://github.com/danijar/dreamerv2), also inside its GRU
 LAYER_NORM_EPS = 1e-3
-from sheeprl.utils.env import legacy_keys
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
 
 
-class CNNEncoder(nn.Module):
-    """The Dreamer-V2 image encoder. This is composed of 4 `nn.Conv2d` with
-    kernel_size=3, stride=2 and padding=1. No bias is used if a `nn.LayerNorm`
-    is used after the convolution. This 4-stages model assumes that the image
-    is a 64x64. If more than one image is to be encoded, then those will
-    be concatenated on the channel dimension and fed to the encoder.
+def _activation(activation: Union[str, ModuleType]) -> ModuleType:
+    return hydra.utils.get_class(activation) if isinstance(activation, str) else activation
 
-    Args:
-        keys (Sequence[str]): the keys representing the image observations to encode.
-        input_channels (Sequence[int]): the input channels, one for each image observation to encode.
-        image_size (Tuple[int, int]): the image size as (Height,Width).
-        channels_multiplier (int): the multiplier for the output channels. Given the 4 stages, the 4 output channels
-            will be [1, 2, 4, 8] * `channels_multiplier`.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
-        activation (ModuleType, optional): the activation function.
-            Defaults to nn.ELU.
-    """
+
+def encoder_output_shape(image_shape: Sequence[int], channels_multiplier: int) -> Tuple[int, int, int]:
+    """The shape of the feature maps of `CNNEncoder` on images of shape `image_shape`: four convolutions with kernel 4
+    and stride 2 (64 x 64 images to 2 x 2 maps) of [1, 2, 4, 8] * `channels_multiplier` channels."""
+    _, height, width = image_shape
+    for _ in range(4):
+        height, width = (height - 4) // 2 + 1, (width - 4) // 2 + 1
+    return 8 * channels_multiplier, height, width
+
+
+class CNNEncoder(nn.Module):
+    """The image encoder of DreamerV2 (and DreamerV1), on images of shape `input_shape` (channels, height, width): four
+    convolutions with kernel 4 and stride 2, of [1, 2, 4, 8] * `channels_multiplier` channels, optionally normalized
+    (`layer_norm`) and activated; the feature maps flattened."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        input_channels: Sequence[int],
-        image_size: Tuple[int, int],
+        input_shape: Sequence[int],
         channels_multiplier: int,
         layer_norm: bool = False,
-        activation: ModuleType = nn.ELU,
+        activation: Union[str, ModuleType] = nn.ELU,
     ) -> None:
         super().__init__()
-        self.keys = keys
-        self.input_dim = (sum(input_channels), *image_size)
+        self.input_shape = tuple(int(d) for d in input_shape)
+        if len(self.input_shape) != 3:
+            raise ValueError(
+                f"The image encoder of DreamerV2 takes images (channels, height, width), got {input_shape}"
+            )
         self.model = nn.Sequential(
             CNN(
-                input_channels=sum(input_channels),
+                input_channels=self.input_shape[0],
                 hidden_channels=(torch.tensor([1, 2, 4, 8]) * channels_multiplier).tolist(),
                 layer_args={"kernel_size": 4, "stride": 2},
-                activation=activation,
+                activation=_activation(activation),
                 norm_layer=[LayerNormChannelLast for _ in range(4)] if layer_norm else None,
                 norm_args=(
                     [{"normalized_shape": (2**i) * channels_multiplier, "eps": LAYER_NORM_EPS} for i in range(4)]
@@ -82,49 +84,33 @@ class CNNEncoder(nn.Module):
             nn.Flatten(-3, -1),
         )
         with torch.no_grad():
-            self.output_dim = self.model(torch.zeros(1, *self.input_dim)).shape[-1]
+            self.output_dim = self.model(torch.zeros(1, *self.input_shape)).shape[-1]
 
-    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], -3)  # channels dimension
+    def forward(self, x: Tensor) -> Tensor:
         return cnn_forward(self.model, x, x.shape[-3:], (-1,))
 
 
 class MLPEncoder(nn.Module):
-    """The Dreamer-V3 vector encoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
-    If more than one vector is to be encoded, then those will concatenated on the last
-    dimension before being fed to the encoder.
-
-    Args:
-        keys (Sequence[str]): the keys representing the vector observations to encode.
-        input_dims (Sequence[int]): the dimensions of every vector to encode.
-        mlp_layers (int, optional): how many mlp layers.
-            Defaults to 4.
-        dense_units (int, optional): the dimension of every mlp.
-            Defaults to 512.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
-        activation (ModuleType, optional): the activation function after every layer.
-            Defaults to nn.ELU.
-    """
+    """The vector encoder of DreamerV2 (and DreamerV1), on vectors of shape `input_shape`: `mlp_layers` linear layers of
+    `dense_units` units, optionally normalized (`layer_norm`) and activated."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        input_dims: Sequence[int],
+        input_shape: Sequence[int],
         mlp_layers: int = 4,
         dense_units: int = 512,
         layer_norm: bool = False,
-        activation: ModuleType = nn.ELU,
+        activation: Union[str, ModuleType] = nn.ELU,
     ) -> None:
         super().__init__()
-        self.keys = keys
-        self.input_dim = sum(input_dims)
+        input_shape = tuple(int(d) for d in input_shape)
+        if len(input_shape) != 1:
+            raise ValueError(f"The vector encoder of DreamerV2 takes vectors, got the shape {input_shape}")
         self.model = MLP(
-            self.input_dim,
+            input_shape[0],
             None,
             [dense_units] * mlp_layers,
-            activation=activation,
+            activation=_activation(activation),
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
             norm_args=(
                 [{"normalized_shape": dense_units, "eps": LAYER_NORM_EPS} for _ in range(mlp_layers)]
@@ -134,57 +120,39 @@ class MLPEncoder(nn.Module):
         )
         self.output_dim = dense_units
 
-    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], -1)
+    def forward(self, x: Tensor) -> Tensor:
         return self.model(x)
 
 
 class CNNDecoder(nn.Module):
-    """The almost-exact inverse of the `CNNEncoder` class, where in 4 stages it reconstructs
-    the observation image to 64x64. If multiple images are to be reconstructed,
-    then it will create a dictionary with an entry for every reconstructed image.
-    No bias is used if a `nn.LayerNorm` is used after the `nn.Conv2dTranspose` layer.
-
-    Args:
-        keys (Sequence[str]): the keys of the image observation to be reconstructed.
-        output_channels (Sequence[int]): the output channels, one for every image observation.
-        channels_multiplier (int): the channels multiplier, same for the encoder network.
-        latent_state_size (int): the size of the latent state. Before applying the decoder,
-            a `nn.Linear` layer is used to project the latent state to a feature vector.
-        cnn_encoder_output_dim (int): the output of the image encoder.
-        image_size (Tuple[int, int]): the final image size.
-        activation (nn.Module, optional): the activation function.
-            Defaults to nn.ELU.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
-    """
+    """The almost-exact inverse of `CNNEncoder`: a linear layer from the latent state to the size of the features of the
+    encoder, then four transposed convolutions (kernels 5, 5, 6 and 6, stride 2) from 1 x 1 to the 64 x 64 images of
+    shape `output_shape`, the last one without normalization and activation."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        output_channels: Sequence[int],
+        latent_size: int,
+        output_shape: Sequence[int],
         channels_multiplier: int,
-        latent_state_size: int,
-        cnn_encoder_output_dim: int,
-        image_size: Tuple[int, int],
-        activation: nn.Module = nn.ELU,
         layer_norm: bool = False,
+        activation: Union[str, ModuleType] = nn.ELU,
     ) -> None:
         super().__init__()
-        self.keys = keys
-        self.output_channels = output_channels
-        self.cnn_encoder_output_dim = cnn_encoder_output_dim
-        self.image_size = image_size
-        self.output_dim = (sum(output_channels), *image_size)
-        # The hidden layers, each one followed by an activation (and a LayerNorm), then the output layer
+        self.output_shape = tuple(int(d) for d in output_shape)
+        if self.output_shape[1:] != (64, 64):
+            raise ValueError(
+                f"The image decoder of DreamerV2 reconstructs 64 x 64 images, got the shape {self.output_shape}"
+            )
+        cnn_encoder_output_dim = int(np.prod(encoder_output_shape(self.output_shape, channels_multiplier)))
         hidden_channels = [4 * channels_multiplier, 2 * channels_multiplier, channels_multiplier]
         n_hidden = len(hidden_channels)
+        activation = _activation(activation)
         self.model = nn.Sequential(
-            nn.Linear(latent_state_size, cnn_encoder_output_dim),
+            nn.Linear(latent_size, cnn_encoder_output_dim),
             nn.Unflatten(1, (cnn_encoder_output_dim, 1, 1)),
             DeCNN(
                 input_channels=cnn_encoder_output_dim,
-                hidden_channels=hidden_channels + [self.output_dim[0]],
+                hidden_channels=hidden_channels + [self.output_shape[0]],
                 layer_args=[
                     {"kernel_size": 5, "stride": 2},
                     {"kernel_size": 5, "stride": 2},
@@ -201,53 +169,29 @@ class CNNDecoder(nn.Module):
             ),
         )
 
-    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        reconstructed_obs = {}
-        x = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
-        reconstructed_obs.update(
-            {k: rec_obs for k, rec_obs in zip(self.keys, torch.split(x, self.output_channels, -3))}
-        )
-        return reconstructed_obs
+    def forward(self, latent_states: Tensor) -> Tensor:
+        return cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_shape)
 
 
 class MLPDecoder(nn.Module):
-    """The exact inverse of the MLPEncoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
-    If more than one vector is to be decoded, then it will create a dictionary with an entry
-    for every reconstructed vector.
-
-    Args:
-        keys (Sequence[str]): the keys representing the vector observations to decode.
-        output_dims (Sequence[int]): the dimensions of every vector to decode.
-        latent_state_size (int): the dimension of the latent state.
-        mlp_layers (int, optional): how many mlp layers.
-            Defaults to 4.
-        dense_units (int, optional): the dimension of every mlp.
-            Defaults to 512.
-        layer_norm (bool, optional): whether to apply the layer normalization.
-            Defaults to True.
-        activation (ModuleType, optional): the activation function after every layer.
-            Defaults to nn.ELU.
-    """
+    """The inverse of `MLPEncoder`: `mlp_layers` linear layers of `dense_units` units from the latent state, optionally
+    normalized (`layer_norm`) and activated, then a linear head to `output_shape` (its values flat, then reshaped)."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        output_dims: Sequence[str],
-        latent_state_size: int,
+        latent_size: int,
+        output_shape: Sequence[int],
         mlp_layers: int = 4,
         dense_units: int = 512,
-        activation: ModuleType = nn.ELU,
         layer_norm: bool = False,
+        activation: Union[str, ModuleType] = nn.ELU,
     ) -> None:
         super().__init__()
-        self.output_dims = output_dims
-        self.keys = keys
         self.model = MLP(
-            latent_state_size,
+            latent_size,
             None,
             [dense_units] * mlp_layers,
-            activation=activation,
+            activation=_activation(activation),
             norm_layer=[nn.LayerNorm for _ in range(mlp_layers)] if layer_norm else None,
             norm_args=(
                 [{"normalized_shape": dense_units, "eps": LAYER_NORM_EPS} for _ in range(mlp_layers)]
@@ -255,13 +199,12 @@ class MLPDecoder(nn.Module):
                 else None
             ),
         )
-        self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
+        self.output_shape = tuple(int(d) for d in output_shape)
+        self.head = nn.Linear(dense_units, math.prod(self.output_shape))
 
-    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        reconstructed_obs = {}
-        x = self.model(latent_states)
-        reconstructed_obs.update({k: h(x) for k, h in zip(self.keys, self.heads)})
-        return reconstructed_obs
+    def forward(self, latent_states: Tensor) -> Tensor:
+        out = self.head(self.model(latent_states))
+        return out.reshape(*out.shape[:-1], *self.output_shape)
 
 
 class RecurrentModel(nn.Module):
@@ -792,21 +735,25 @@ class DreamerV2Policy(nn.Module, DreamerPolicy):
         recurrent_model: nn.Module | _FabricModule,
         representation_model: nn.Module | _FabricModule,
         actor: nn.Module | _FabricModule,
-        actions_dim: Sequence[int],
+        codec: ActionCodec,
         stochastic_size: int,
         recurrent_state_size: int,
         device: str | torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
-        cnn_keys: Sequence[str] = (),
+        keys: Sequence[str] = (),
+        mask_keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.actor = actor
-        self.cnn_keys = cnn_keys
-        self.actions_dim = actions_dim
+        self.codec = codec
+        # The keys of the inputs of the encoder (by default) and the action masks the actor reads
+        self.keys = tuple(keys) or tuple(encoder.keys)
+        self.mask_keys = tuple(mask_keys)
+        self.actions_dim = codec.dims
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.device = device
@@ -844,7 +791,7 @@ class DreamerV2Policy(nn.Module, DreamerPolicy):
         Returns:
             The actions the agent has to perform.
         """
-        embedded_obs = self.encoder(obs)
+        embedded_obs = self.encoder(obs, phase="act")
         self.recurrent_state = self.recurrent_model(
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
@@ -860,8 +807,7 @@ class DreamerV2Policy(nn.Module, DreamerPolicy):
 
 def build_agent(
     fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
+    codec: ActionCodec,
     cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, Tensor]] = None,
@@ -873,9 +819,8 @@ def build_agent(
 
     Args:
         fabric (Fabric): the fabric object.
-        actions_dim (Sequence[int]): the dimension of the actions.
-        is_continuous (bool): whether or not the actions are continuous.
-        cfg (dotdict): the configs.
+        codec (ActionCodec): the actions of the agent and of the environments.
+        cfg (dotdict): the configs: the encoder of `algo.inputs`, the decoder of `algo.outputs`.
         obs_space (Dict[str, Any]): the observation space.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
             Default to None.
@@ -896,45 +841,21 @@ def build_agent(
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
     critic_cfg = cfg.algo.critic
+    codec.check("The actor of DreamerV2")
+    actions_dim, is_continuous = codec.dims, codec.continuous
 
     # Sizes
     stochastic_size = world_model_cfg.stochastic_size * world_model_cfg.discrete_size
     latent_state_size = stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Define models
-    cnn_encoder = (
-        CNNEncoder(
-            keys=legacy_keys(cfg).image_keys,
-            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in legacy_keys(cfg).image_keys],
-            image_size=obs_space[legacy_keys(cfg).image_keys[0]].shape[-2:],
-            channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
-            layer_norm=world_model_cfg.encoder.layer_norm,
-            activation=hydra.utils.get_class(world_model_cfg.encoder.cnn_act),
-        )
-        if legacy_keys(cfg).image_keys is not None and len(legacy_keys(cfg).image_keys) > 0
-        else None
-    )
-    mlp_encoder = (
-        MLPEncoder(
-            keys=legacy_keys(cfg).vector_keys,
-            input_dims=[obs_space[k].shape[0] for k in legacy_keys(cfg).vector_keys],
-            mlp_layers=world_model_cfg.encoder.mlp_layers,
-            dense_units=world_model_cfg.encoder.dense_units,
-            activation=hydra.utils.get_class(world_model_cfg.encoder.dense_act),
-            layer_norm=world_model_cfg.encoder.layer_norm,
-        )
-        if legacy_keys(cfg).vector_keys is not None and len(legacy_keys(cfg).vector_keys) > 0
-        else None
-    )
-    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+    encoder = build_encoder(cfg, obs_space)
     recurrent_model = RecurrentModel(
         **world_model_cfg.recurrent_model,
         input_size=int(sum(actions_dim) + stochastic_size),
     )
     representation_model = MLP(
-        input_dims=(
-            world_model_cfg.recurrent_model.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim
-        ),
+        input_dims=(world_model_cfg.recurrent_model.recurrent_state_size + encoder.output_dim),
         output_dim=stochastic_size,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
         activation=hydra.utils.get_class(world_model_cfg.representation_model.dense_act),
@@ -966,34 +887,7 @@ def build_agent(
         distribution_cfg=cfg.distribution,
         discrete=world_model_cfg.discrete_size,
     )
-    cnn_decoder = (
-        CNNDecoder(
-            keys=legacy_keys(cfg).decoder_image_keys,
-            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in legacy_keys(cfg).decoder_image_keys],
-            channels_multiplier=world_model_cfg.observation_model.cnn_channels_multiplier,
-            latent_state_size=latent_state_size,
-            cnn_encoder_output_dim=cnn_encoder.output_dim,
-            image_size=obs_space[legacy_keys(cfg).decoder_image_keys[0]].shape[-2:],
-            activation=hydra.utils.get_class(world_model_cfg.observation_model.cnn_act),
-            layer_norm=world_model_cfg.observation_model.layer_norm,
-        )
-        if legacy_keys(cfg).decoder_image_keys is not None and len(legacy_keys(cfg).decoder_image_keys) > 0
-        else None
-    )
-    mlp_decoder = (
-        MLPDecoder(
-            keys=legacy_keys(cfg).decoder_vector_keys,
-            output_dims=[obs_space[k].shape[0] for k in legacy_keys(cfg).decoder_vector_keys],
-            latent_state_size=latent_state_size,
-            mlp_layers=world_model_cfg.observation_model.mlp_layers,
-            dense_units=world_model_cfg.observation_model.dense_units,
-            activation=hydra.utils.get_class(world_model_cfg.observation_model.dense_act),
-            layer_norm=world_model_cfg.observation_model.layer_norm,
-        )
-        if legacy_keys(cfg).decoder_vector_keys is not None and len(legacy_keys(cfg).decoder_vector_keys) > 0
-        else None
-    )
-    observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
+    observation_model = MultiDecoder.from_config(cfg.algo.outputs, encoder, latent_size=latent_state_size)
     reward_model = MLP(
         input_dims=latent_state_size,
         output_dim=1,
@@ -1086,12 +980,13 @@ def build_agent(
         copy.deepcopy(world_model.rssm.recurrent_model),
         copy.deepcopy(world_model.rssm.representation_model),
         copy.deepcopy(actor),
-        actions_dim,
+        codec,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
         policy_fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
-        cnn_keys=legacy_keys(cfg).image_keys,
+        keys=encoder.keys,
+        mask_keys=cfg.algo.extra_keys,
     )
 
     # Setup models with Fabric

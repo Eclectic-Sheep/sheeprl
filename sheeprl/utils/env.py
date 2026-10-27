@@ -3,7 +3,7 @@ import shutil
 import tempfile
 import warnings
 from functools import partial
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
 
 import gymnasium as gym
 import hydra
@@ -209,38 +209,3 @@ def get_dummy_env(id: str):
     else:
         raise ValueError(f"Unrecognized dummy environment: {id}")
     return env
-
-
-class LegacyKeys(NamedTuple):
-    image_keys: List[str]
-    vector_keys: List[str]
-    decoder_image_keys: List[str]
-    decoder_vector_keys: List[str]
-
-
-def legacy_keys(cfg: dotdict) -> LegacyKeys:
-    """Transitional, removed once every algorithm builds its inputs from `algo.inputs` (`sheeprl.models.io`): the keys
-    of the inputs `image` and `vector` and of the outputs `image` and `vector`, for the code written for the former
-    `algo.cnn_keys` and `algo.mlp_keys`."""
-
-    def keys(section: Any, name: str) -> List[str]:
-        return list(((section or {}).get(name) or {}).get("keys") or [])
-
-    inputs, outputs = cfg.algo.get("inputs"), cfg.algo.get("outputs")
-    return LegacyKeys(keys(inputs, "image"), keys(inputs, "vector"), keys(outputs, "image"), keys(outputs, "vector"))
-
-
-def actions_dim_of(action_space: gym.Space) -> Tuple[Tuple[int, ...], bool]:
-    """The dimensions of the actions (one per discrete action) and whether they are continuous, as Python integers:
-    `torch.compile` reads the NumPy ones (of `Discrete.n`) as tensors."""
-    is_continuous = isinstance(action_space, gym.spaces.Box)
-    is_multidiscrete = isinstance(action_space, gym.spaces.MultiDiscrete)
-    actions_dim = tuple(
-        int(dim)
-        for dim in (
-            action_space.shape
-            if is_continuous
-            else (action_space.nvec.tolist() if is_multidiscrete else [action_space.n])
-        )
-    )
-    return actions_dim, is_continuous

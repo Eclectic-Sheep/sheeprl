@@ -130,6 +130,13 @@ class MultiEncoder(nn.Module):
         features = [inp(obs, phase, **kwargs) for inp in self.inputs.values()]
         return features[0] if len(features) == 1 else torch.cat(features, dim=-1)
 
+    def store_space(self, key: str) -> gym.Space:
+        """The space of `key` in the store (before the `batch` transforms)."""
+        for inp in self.inputs.values():
+            if key in inp.keys:
+                return inp.pipelines[inp.keys.index(key)].spaces["rows"]
+        raise KeyError(f"No input reads the key `{key}`: the keys of the inputs are {list(self.keys)}")
+
     def batch_space(self, key: str) -> gym.Space:
         """The space of `key` after the `batch` transforms of the first input that reads it."""
         for inp in self.inputs.values():
@@ -159,9 +166,11 @@ def build_encoder(cfg: Any, store_space: gym.spaces.Dict) -> MultiEncoder:
 
 
 class Output(nn.Module):
-    """A group of encoded keys reconstructed together: one network from the latent state to their concatenation (in the
-    domain of the `batch` transforms of the encoder), split per key. `likelihood`, if any, makes the distribution of the
-    reconstruction of a key, which scores the targets (`log_prob`)."""
+    """A group of encoded keys reconstructed together: one network from the latent state to their concatenation, split
+    per key. The targets of the reconstructions are the keys in the domain of the `batch` transforms of the encoder, or,
+    with `target_pipelines`, of the output's own transforms (e.g. images scaled to [0, 1] while the encoder reads them
+    in [-0.5, 0.5]). `likelihood`, if any, makes the distribution of the reconstruction of a key, which scores its
+    target (`log_prob`)."""
 
     def __init__(
         self,
@@ -170,6 +179,7 @@ class Output(nn.Module):
         net: nn.Module,
         cat_dim: int,
         likelihood: Optional[Callable[..., Any]] = None,
+        target_pipelines: Optional[Sequence[Pipeline]] = None,
     ) -> None:
         super().__init__()
         self.keys = tuple(keys)
@@ -177,36 +187,53 @@ class Output(nn.Module):
         self.net = net
         self.cat_dim = cat_dim
         self.likelihood = likelihood
+        self.target_pipelines = nn.ModuleList(target_pipelines) if target_pipelines is not None else None
         axis = cat_dim % len(self.shapes[0])
         self.split_sizes = [s[axis] for s in self.shapes]
 
     @classmethod
     def from_config(cls, cfg: Any, encoder: MultiEncoder, latent_size: int) -> Output:
-        """The output of `cfg` (`keys`, `net`, optionally `likelihood` and `cat_dim`): the shape of every key is the
-        one the encoder gives it after its `batch` transforms."""
+        """The output of `cfg` (`keys`, `net`, optionally `likelihood`, `transforms` of its targets and `cat_dim`): the
+        shape of every key is the one the encoder gives it after its `batch` transforms."""
         keys = list(cfg["keys"])
         shapes = [tuple(encoder.batch_space(k).shape) for k in keys]
+        target_pipelines = None
+        if cfg.get("transforms") is not None:
+            target_pipelines = [
+                Pipeline.from_config(cfg["transforms"], encoder.store_space(k), "batch", "batch") for k in keys
+            ]
         cat_dim = _concat_dim(shapes, keys, cfg.get("cat_dim"))
         output_shape = _concat_shape(shapes, cat_dim, f"The output of the keys {keys}")
         net = hydra.utils.instantiate(
             cfg["net"], latent_size=int(latent_size), output_shape=list(output_shape), _convert_="all"
         )
         likelihood = hydra.utils.instantiate(cfg["likelihood"]) if cfg.get("likelihood") else None
-        return cls(keys, shapes, net, cat_dim, likelihood)
+        return cls(keys, shapes, net, cat_dim, likelihood, target_pipelines)
 
     def forward(self, latent: Tensor) -> Dict[str, Tensor]:
         out = self.net(latent)
         return dict(zip(self.keys, torch.split(out, self.split_sizes, dim=self.cat_dim)))
 
+    def targets(self, obs: Dict[str, Tensor], encoder: MultiEncoder) -> Dict[str, Tensor]:
+        """The targets of the reconstructions of the keys of `obs` (as stored)."""
+        if self.target_pipelines is None:
+            return encoder.targets(obs, self.keys)
+        dtype = torch.get_default_dtype()
+        return {k: p.batch(obs[k], "train").to(dtype) for k, p in zip(self.keys, self.target_pipelines)}
+
+    def log_probs(self, reconstructions: Dict[str, Tensor], targets: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        """The log-likelihood of the target of every key under the distribution of its reconstruction."""
+        if self.likelihood is None:
+            raise RuntimeError(f"The output of the keys {list(self.keys)} has no likelihood")
+        return {
+            k: self.likelihood(reconstructions[k], dims=len(shape)).log_prob(targets[k])
+            for k, shape in zip(self.keys, self.shapes)
+        }
+
     def log_prob(self, reconstructions: Dict[str, Tensor], targets: Dict[str, Tensor]) -> Tensor:
         """The sum over the keys of the log-likelihood of their targets under the distribution of their
         reconstruction."""
-        if self.likelihood is None:
-            raise RuntimeError(f"The output of the keys {list(self.keys)} has no likelihood")
-        return sum(
-            self.likelihood(reconstructions[k], dims=len(shape)).log_prob(targets[k])
-            for k, shape in zip(self.keys, self.shapes)
-        )
+        return sum(self.log_probs(reconstructions, targets).values())
 
 
 class MultiDecoder(nn.Module):
@@ -234,5 +261,36 @@ class MultiDecoder(nn.Module):
             reconstructions.update(out(latent))
         return reconstructions
 
+    def targets(self, obs: Dict[str, Tensor], encoder: MultiEncoder) -> Dict[str, Tensor]:
+        """The targets of the reconstructions of all the keys of `obs` (as stored)."""
+        targets: Dict[str, Tensor] = {}
+        for out in self.outputs.values():
+            targets.update(out.targets(obs, encoder))
+        return targets
+
+    def log_probs(self, reconstructions: Dict[str, Tensor], targets: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        """The log-likelihood of every key, in the order of the outputs."""
+        log_probs: Dict[str, Tensor] = {}
+        for out in self.outputs.values():
+            log_probs.update(out.log_probs(reconstructions, targets))
+        return log_probs
+
     def log_prob(self, reconstructions: Dict[str, Tensor], targets: Dict[str, Tensor]) -> Tensor:
         return sum(out.log_prob(reconstructions, targets) for out in self.outputs.values())
+
+
+def log_inputs_and_outputs(
+    fabric: Any, cfg: Any, encoder: MultiEncoder, decoder: Optional[MultiDecoder] = None
+) -> None:
+    """Print the keys of the inputs and of the outputs, with `metric.log_level`."""
+    if cfg.metric.log_level > 0:
+        for name, inp in encoder.inputs.items():
+            fabric.print(f"Input `{name}`: {list(inp.keys)}")
+        for name, out in (decoder.outputs.items() if decoder is not None else ()):
+            fabric.print(f"Output `{name}`: {list(out.keys)}")
+
+
+def check_reconstructs(decoder: MultiDecoder, algorithm: str) -> None:
+    """An algorithm with a decoder reconstructs at least one key."""
+    if len(decoder.keys) == 0:
+        raise RuntimeError(f"{algorithm} reconstructs at least one key: set the keys of an output (`algo.outputs`)")

@@ -83,11 +83,11 @@ def test_check_input_compiles_an_input_of_images_in_one_graph():
     check_input(cfg, STORE_SPACE, compile=True)
 
 
-def experiment_inputs(exp: str) -> dotdict:
+def experiment_inputs(exp: str, *overrides: str) -> dotdict:
     with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
         cfg = compose(
             config_name="config",
-            overrides=[f"exp={exp}", "algo.inputs.image.keys=[rgb]", "algo.inputs.vector.keys=[state]"],
+            overrides=[f"exp={exp}", "algo.inputs.image.keys=[rgb]", "algo.inputs.vector.keys=[state]", *overrides],
         )
     return dotdict(OmegaConf.to_container(cfg, resolve=True)).algo.inputs
 
@@ -95,6 +95,15 @@ def experiment_inputs(exp: str) -> dotdict:
 @pytest.mark.parametrize("exp", ["ppo", "a2c", "ppo_recurrent"])
 def test_the_inputs_of_the_on_policy_algorithms_compile_in_one_graph(exp):
     for spec in experiment_inputs(exp).values():
+        check_input(spec, STORE_SPACE, compile=True)
+
+
+@pytest.mark.parametrize("exp", ["dreamer_v1", "dreamer_v2", "dreamer_v3", "dreamer_v3_5"])
+def test_the_inputs_of_the_dreamers_compile_in_one_graph(exp):
+    # Shrunk: the shipped sizes compile the same graph, only slower
+    inputs = experiment_inputs(exp, "algo.inputs.image.net.channels_multiplier=4", "algo.dense_units=8")
+    assert set(inputs) == {"image", "vector"}
+    for spec in inputs.values():
         check_input(spec, STORE_SPACE, compile=True)
 
 
@@ -154,3 +163,19 @@ def test_a_decoder_reconstructs_its_keys_in_the_domain_of_the_encoder_and_scores
         reconstructions["state"], 1
     ).log_prob(targets["state"])
     torch.testing.assert_close(log_prob, expected)
+
+
+def test_a_grid_is_reconstructed_by_an_mlp_and_scored_by_a_bernoulli_likelihood():
+    # Issue #237: the 125 values of the decoder reshaped to the grid are the logits of its cells, which are 0 or 1
+    conv = {"_target_": "sheeprl.models.ConvEncoder", "channels": [4], "features_dim": 4}
+    encoder = MultiEncoder.from_config({"grid": {"keys": ["fov"], "net": conv}}, STORE_SPACE)
+    mlp = {"_target_": "sheeprl.algos.dreamer_v3.agent.MLPDecoder", "mlp_layers": 1, "dense_units": 8}
+    bernoulli = {"_target_": "sheeprl.utils.distribution.BernoulliLogits", "_partial_": True}
+    decoder = MultiDecoder.from_config(
+        {"grid": {"keys": ["fov"], "net": mlp, "likelihood": bernoulli}}, encoder, latent_size=6
+    )
+    logits = decoder(torch.randn(3, 2, 6))["fov"]
+    assert logits.shape == (3, 2, 5, 5, 5)
+    targets = encoder.targets({"fov": torch.randint(0, 2, (3, 2, 5, 5, 5)).float()}, decoder.keys)
+    expected = -nn.functional.binary_cross_entropy_with_logits(logits, targets["fov"], reduction="none")
+    torch.testing.assert_close(decoder.log_prob({"fov": logits}, targets), expected.sum(dim=(-3, -2, -1)))

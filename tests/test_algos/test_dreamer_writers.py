@@ -12,6 +12,7 @@ from sheeprl.algos.dreamer_v2.dreamer_v2 import DreamerV2Writer
 from sheeprl.algos.dreamer_v3.dreamer_v3 import DreamerV3Writer
 from sheeprl.core import Collector, EnvStep
 from sheeprl.utils.utils import dotdict
+from tests.test_algos.codecs import codec_of
 
 CFG = dotdict(
     {
@@ -26,9 +27,11 @@ CFG = dotdict(
 class StandInPolicy(DreamerPolicy):
     """A Dreamer policy whose actions come from `get_actions`, which records its resets."""
 
-    def __init__(self, actions_dim, get_actions=None):
+    def __init__(self, actions_dim, get_actions=None, mask_keys=()):
         self.device = "cpu"
-        self.cnn_keys = []
+        self.keys = ("state",)
+        self.mask_keys = tuple(mask_keys)
+        self.codec = codec_of(actions_dim)
         self.actions_dim = actions_dim
         self.actor = SimpleNamespace(is_continuous=False)
         self.get_actions = get_actions
@@ -166,7 +169,7 @@ def test_masked_actions_are_never_random():
     def random_actions():
         raise AssertionError("random actions with action masks")
 
-    policy = StandInPolicy([3], get_actions)
+    policy = StandInPolicy([3], get_actions, mask_keys=["mask_action_type"])
     env = SimpleNamespace(
         num_envs=num_envs,
         obs={"state": np.zeros((num_envs, 2)), "mask_action_type": np.ones((num_envs, 3))},
