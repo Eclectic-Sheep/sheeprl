@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
@@ -36,7 +36,7 @@ from sheeprl.models.models import MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.fabric import setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
-from sheeprl.utils.utils import symlog
+from sheeprl.utils.utils import dotdict, symlog
 
 # The standard deviation of the standard normal truncated at -2 and 2
 TRUNCATED_NORMAL_STD = 0.87962566103423978
@@ -803,7 +803,7 @@ def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
@@ -940,7 +940,7 @@ def build_agent(
     )
     observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
 
-    def head(cfg_: Dict[str, Any], output_size: int, outscale: float) -> nn.Sequential:
+    def head(cfg_: dotdict, output_size: int, outscale: float) -> nn.Sequential:
         units = cfg_.dense_units if cfg_.mlp_layers > 0 else latent_state_size
         return nn.Sequential(
             *mlp(latent_state_size, cfg_.dense_units, cfg_.mlp_layers, activation, eps),

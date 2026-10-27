@@ -10,7 +10,7 @@ from torch import Tensor, nn
 
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
-from sheeprl.utils.utils import unwrap_fabric
+from sheeprl.utils.utils import dotdict, unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -95,7 +95,7 @@ def prepare_obs(
 def test(
     player: "PlayerDV3",
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     log_dir: str,
     test_name: str = "",
     greedy: bool = True,
@@ -106,7 +106,7 @@ def test(
     Args:
         player (PlayerDV3): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
-        cfg (DictConfig): the hyper-parameters.
+        cfg (dotdict): the hyper-parameters.
         log_dir (str): the logging directory.
         test_name (str): the name of the test.
             Default to "".
@@ -188,7 +188,7 @@ def uniform_init_weights(given_scale):
 
 
 def log_models_from_checkpoint(
-    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: dotdict, state: Dict[str, Any]
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))

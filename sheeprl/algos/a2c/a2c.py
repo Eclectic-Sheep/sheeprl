@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, Dict
+from typing import Dict
 
 import gymnasium as gym
 import hydra
@@ -20,7 +20,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import phase_timer, timer, training_timer
-from sheeprl.utils.utils import gae_function, normalize_tensor, save_configs
+from sheeprl.utils.utils import dotdict, gae_function, normalize_tensor, save_configs
 
 
 def train(
@@ -29,7 +29,7 @@ def train(
     optimizer: torch.optim.Optimizer,
     data: Dict[str, torch.Tensor],
     aggregator: MetricAggregator,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
 ):
     """Train the agent on the data collected from the environment."""
 
@@ -112,7 +112,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by PPO agent, since it does not take "

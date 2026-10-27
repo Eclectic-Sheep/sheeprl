@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import warnings
-from typing import Any, Dict, Tuple
+from typing import Dict, Tuple
 
 import gymnasium as gym
 import hydra
@@ -27,7 +27,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import phase_timer, timer, training_timer
-from sheeprl.utils.utils import off_policy_schedule, save_configs
+from sheeprl.utils.utils import dotdict, off_policy_schedule, save_configs
 
 
 def next_target_fn(
@@ -59,7 +59,7 @@ def train(
     alpha_optimizer: Optimizer,
     rb: ReplayBuffer,
     aggregator: MetricAggregator | None,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     per_rank_gradient_steps: int,
 ):
     # Sample a minibatch in a distributed way: Line 5 - Algorithm 2
@@ -161,7 +161,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by DroQ agent, since it does not take "

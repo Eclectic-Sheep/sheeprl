@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import copy
 import warnings
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import gymnasium as gym
 import hydra
@@ -41,7 +41,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import phase_timer, timer, training_timer
-from sheeprl.utils.utils import off_policy_schedule, save_configs
+from sheeprl.utils.utils import dotdict, off_policy_schedule, save_configs
 
 # Decomment the following two lines if you cannot start an experiment with DMC environments
 # os.environ["PYOPENGL_PLATFORM"] = ""
@@ -324,7 +324,7 @@ def train(
     critic_optimizer: Optimizer,
     data: Dict[str, Tensor],
     aggregator: MetricAggregator | None,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     actions_dim: Sequence[int],
 ) -> None:
     """Runs one-step update of the agent.
@@ -372,7 +372,7 @@ def train(
         critic_optimizer (Optimizer): the critic optimizer.
         data (Dict[str, Tensor]): the batch of data to use for training.
         aggregator (MetricAggregator, optional): the aggregator to print the metrics.
-        cfg (DictConfig): the configs.
+        cfg (dotdict): the configs.
         actions_dim (Sequence[int]): the actions dimension.
     """
 
@@ -478,7 +478,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size

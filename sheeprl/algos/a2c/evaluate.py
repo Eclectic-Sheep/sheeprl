@@ -10,10 +10,11 @@ from sheeprl.algos.ppo.utils import test
 from sheeprl.utils.env import make_env
 from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.registry import register_evaluation
+from sheeprl.utils.utils import dotdict
 
 
 @register_evaluation(algorithms="a2c")
-def evaluate_a2c(fabric: Fabric, cfg: Dict[str, Any], state: Dict[str, Any]):
+def evaluate_a2c(fabric: Fabric, cfg: dotdict, state: Dict[str, Any]):
     logger = get_logger(fabric, cfg)
     if logger and fabric.is_global_zero:
         fabric._loggers = [logger]

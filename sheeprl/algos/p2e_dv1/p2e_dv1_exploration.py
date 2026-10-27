@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import warnings
-from typing import Any, Dict
+from typing import Dict
 
 import gymnasium as gym
 import hydra
@@ -28,7 +28,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import phase_timer, timer, training_timer
-from sheeprl.utils.utils import off_policy_schedule, save_configs, unwrap_fabric
+from sheeprl.utils.utils import dotdict, off_policy_schedule, save_configs, unwrap_fabric
 
 # Decomment the following line if you are using MineDojo on an headless machine
 # os.environ["MINEDOJO_HEADLESS"] = "1"
@@ -44,7 +44,7 @@ def train(
     critic_task_optimizer: _FabricOptimizer,
     data: Dict[str, Tensor],
     aggregator: MetricAggregator | None,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     ensembles: _FabricModule,
     ensemble_optimizer: _FabricOptimizer,
     actor_exploration: _FabricModule,
@@ -87,7 +87,7 @@ def train(
         critic_task_optimizer (_FabricOptimizer): the critic optimizer for solving the task.
         data (Dict[str, Tensor]): the batch of data to use for training.
         aggregator (MetricAggregator, optional): the aggregator to print the metrics.
-        cfg (DictConfig): the configs.
+        cfg (dotdict): the configs.
         ensembles (_FabricModule): the ensemble models.
         ensemble_optimizer (_FabricOptimizer): the optimizer of the ensemble models.
         actor_exploration (_FabricModule): the actor for exploration.
@@ -349,7 +349,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from math import log, prod, sqrt
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import gymnasium
 import hydra
@@ -17,7 +17,7 @@ from sheeprl.models.models import MLP, MultiEncoder, NatureCNN
 from sheeprl.utils.compile import compiled_player
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import per_layer_ortho_init_weights
-from sheeprl.utils.utils import safetanh
+from sheeprl.utils.utils import dotdict, safetanh
 
 
 def tanh_log_abs_det_jacobian(x: Tensor) -> Tensor:
@@ -111,13 +111,13 @@ class PPOAgent(nn.Module):
         self,
         actions_dim: Sequence[int],
         obs_space: gymnasium.spaces.Dict,
-        encoder_cfg: Dict[str, Any],
-        actor_cfg: Dict[str, Any],
-        critic_cfg: Dict[str, Any],
+        encoder_cfg: dotdict,
+        actor_cfg: dotdict,
+        critic_cfg: dotdict,
         cnn_keys: Sequence[str],
         mlp_keys: Sequence[str],
         screen_size: int,
-        distribution_cfg: Dict[str, Any],
+        distribution_cfg: dotdict,
         is_continuous: bool = False,
     ):
         super().__init__()
@@ -353,7 +353,7 @@ def build_agent(
     fabric: Fabric,
     actions_dim: Sequence[int],
     is_continuous: bool,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     agent_state: Optional[Dict[str, Tensor]] = None,
 ) -> Tuple[PPOAgent, PPOPlayer]:

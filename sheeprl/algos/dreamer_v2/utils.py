@@ -15,7 +15,7 @@ from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer, Sequ
 from sheeprl.utils import fs
 from sheeprl.utils.env import make_env
 from sheeprl.utils.imports import _IS_MLFLOW_AVAILABLE
-from sheeprl.utils.utils import unwrap_fabric
+from sheeprl.utils.utils import dotdict, unwrap_fabric
 
 if TYPE_CHECKING:
     from mlflow.models.model import ModelInfo
@@ -86,7 +86,7 @@ def init_weights(m: nn.Module, mode: str = "uniform"):
             nn.init.constant_(m.bias.data, 0)
 
 
-def build_optimizer(optimizer_cfg: Dict[str, Any], params: Any) -> torch.optim.Optimizer:
+def build_optimizer(optimizer_cfg: dotdict, params: Any) -> torch.optim.Optimizer:
     """The optimizer of `optimizer_cfg` for `params`, with the weight decay of DreamerV2: before every step the weights
     are multiplied by `1 - weight_decay`, whatever the learning rate (`Optimizer._apply_weight_decay` of
     https://github.com/danijar/dreamerv2). Adam is built as AdamW with the weight decay divided by the learning rate,
@@ -106,7 +106,7 @@ MAX_SAMPLED_BATCHES = 16
 
 
 def sample_batches(
-    fabric: Fabric, cfg: Dict[str, Any], buffer: EnvIndependentReplayBuffer | EpisodeBuffer, n_steps: int
+    fabric: Fabric, cfg: dotdict, buffer: EnvIndependentReplayBuffer | EpisodeBuffer, n_steps: int
 ) -> Iterator[Dict[str, Tensor]]:
     """The batches of sequences of the `n_steps` gradient steps of an iteration, sampled `MAX_SAMPLED_BATCHES` at a
     time: with `buffer.online`, they start with the sequences of the online queue of the buffer."""
@@ -125,7 +125,7 @@ def sample_batches(
             yield {k: v[i].float() for k, v in sample.items()}
 
 
-def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> int:
+def env_buffer_size(fabric: Fabric, cfg: dotdict, dry_run_size: int) -> int:
     """The capacity of the replay buffer of every environment: `buffer.size` split among the environments of all the
     processes, or `dry_run_size` in a dry run. It must hold a sequence of `algo.per_rank_sequence_length` steps (a dry
     run makes it large enough)."""
@@ -142,7 +142,7 @@ def env_buffer_size(fabric: Fabric, cfg: Dict[str, Any], dry_run_size: int) -> i
 
 
 def build_buffer(
-    fabric: Fabric, cfg: Dict[str, Any], log_dir: str, dry_run_size: int
+    fabric: Fabric, cfg: dotdict, log_dir: str, dry_run_size: int
 ) -> EnvIndependentReplayBuffer | EpisodeBuffer:
     """The replay buffer of `buffer.type`: one buffer of sequences per environment (`sequential`), or a buffer of
     whole episodes (`episode`), sampled with their ends prioritized with `buffer.prioritize_ends`.
@@ -238,7 +238,7 @@ def prepare_obs(
 def test(
     player: "PlayerDV2" | "PlayerDV1",
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     log_dir: str,
     test_name: str = "",
     greedy: bool = True,
@@ -249,7 +249,7 @@ def test(
     Args:
         player (PlayerDV2 | PlayerDV1): the agent which contains all the models needed to play.
         fabric (Fabric): the fabric instance.
-        cfg (Dict[str, Any]): the hyper-parameters.
+        cfg (dotdict): the hyper-parameters.
         log_dir (str): the logging directory.
         test_name (str): the name of the test.
             Default to "".
@@ -284,7 +284,7 @@ def test(
 
 
 def log_models_from_checkpoint(
-    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: Dict[str, Any], state: Dict[str, Any]
+    fabric: Fabric, env: gym.Env | gym.Wrapper, cfg: dotdict, state: Dict[str, Any]
 ) -> Sequence["ModelInfo"]:
     if not _IS_MLFLOW_AVAILABLE:
         raise ModuleNotFoundError(str(_IS_MLFLOW_AVAILABLE))

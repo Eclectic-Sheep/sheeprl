@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import warnings
-from typing import Any, Dict, Tuple
+from typing import Dict, Tuple
 
 import gymnasium as gym
 import hydra
@@ -26,7 +26,7 @@ from sheeprl.utils.logger import get_log_dir, get_logger
 from sheeprl.utils.metric import MetricAggregator
 from sheeprl.utils.registry import register_algorithm
 from sheeprl.utils.timer import phase_timer, timer, training_timer
-from sheeprl.utils.utils import off_policy_schedule, save_configs
+from sheeprl.utils.utils import dotdict, off_policy_schedule, save_configs
 
 
 def critic_loss_fn(
@@ -61,7 +61,7 @@ def train(
     data: Dict[str, Tensor],
     aggregator: MetricAggregator | None,
     iteration: int,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     policy_steps_per_iter: int,
 ):
     # The losses are compiled when `algo.compile.enabled` is set
@@ -100,7 +100,7 @@ def train(
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     if "minedojo" in cfg.env.wrapper._target_.lower():
         raise ValueError(
             "MineDojo is not currently supported by SAC agent, since it does not take "
@@ -240,6 +240,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
     total_iters = int(cfg.algo.total_steps // policy_steps_per_iter) if not cfg.dry_run else 1
     if cfg.checkpoint.resume_from:
         cfg.algo.per_rank_batch_size = state["batch_size"] // fabric.world_size
+    # One gradient step per iteration and no pretraining in the benchmarks: only `exp=sac_benchmarks` sets the key
+    run_benchmarks = cfg.get("run_benchmarks", False)
     # Random actions in the iterations up to `learning_starts`, training from `train_starts`
     learning_starts, train_starts, pretrain_steps, total_iters, ratio = off_policy_schedule(
         cfg,
@@ -324,8 +326,8 @@ def main(fabric: Fabric, cfg: Dict[str, Any]):
         # Train the agent
         if iter_num >= train_starts:
             ratio_steps = policy_step - (train_starts - 1) * policy_steps_per_iter
-            per_rank_gradient_steps = ratio(ratio_steps / world_size) if not cfg.run_benchmarks else 1
-            if iter_num == train_starts and not cfg.run_benchmarks:
+            per_rank_gradient_steps = ratio(ratio_steps / world_size) if not run_benchmarks else 1
+            if iter_num == train_starts and not run_benchmarks:
                 # The pretraining on the filled buffer
                 per_rank_gradient_steps += pretrain_steps
             if per_rank_gradient_steps > 0:

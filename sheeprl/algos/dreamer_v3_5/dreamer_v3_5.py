@@ -57,7 +57,7 @@ LATENT_KEYS = ("deter", "stoch")
 STEP_ID_KEY = "stepid"
 
 
-def world_model_loss_kwargs(cfg: Dict[str, Any]) -> Dict[str, Any]:
+def world_model_loss_kwargs(cfg: dotdict) -> Dict[str, Any]:
     """The configuration of `world_model_loss`, as plain values."""
     world_model_cfg = cfg.algo.world_model
     scales = cfg.algo.loss_scales
@@ -323,7 +323,7 @@ def actor_critic_loss(
 
 def train(
     fabric: Fabric,
-    cfg: Dict[str, Any],
+    cfg: dotdict,
     world_model: WorldModel,
     actor: nn.Module,
     critic: nn.Module,
@@ -504,7 +504,7 @@ def step_counters(rb: EnvIndependentReplayBuffer) -> np.ndarray:
 
 
 @register_algorithm()
-def main(fabric: Fabric, cfg: Dict[str, Any]):
+def main(fabric: Fabric, cfg: dotdict):
     device = fabric.device
     rank = fabric.global_rank
     world_size = fabric.world_size
