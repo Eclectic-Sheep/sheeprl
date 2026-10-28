@@ -101,7 +101,9 @@ def test_sac_ae_has_the_hyper_parameters_of_the_official_code():
     assert algo.encoder.cnn_channels_multiplier == algo.decoder.cnn_channels_multiplier == 1
     assert algo.encoder.features_dim == 50
     assert algo.per_rank_pretrain_steps == algo.learning_starts == 1000
-    assert (cfg.env.screen_size, cfg.env.frame_stack) == (84, 3)
+    assert cfg.env.screen_size == 84
+    assert [t._target_.split(".")[-1] for t in algo.inputs.image.transforms] == ["Image", "FrameStack", "Scale"]
+    assert (algo.inputs.image.transforms[1].n, algo.inputs.image.transforms[2].shift) == (3, 0)
     assert (algo.per_rank_batch_size, algo.actor.hidden_size, algo.critic.hidden_size) == (128, 1024, 1024)
     assert (algo.tau, algo.encoder.tau, algo.alpha.alpha) == (0.01, 0.05, 0.1)
     assert algo.actor.per_rank_update_freq == algo.critic.per_rank_target_network_update_freq == 2

@@ -3,11 +3,13 @@ from __future__ import annotations
 import copy
 import time
 from collections import deque
-from typing import Any, Callable, Dict, List, Optional, Sequence, SupportsFloat, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, SupportsFloat, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
 from gymnasium.core import Env, RenderFrame
+
+from sheeprl.transforms.base import Pipeline
 
 
 class MaskVelocityWrapper(gym.ObservationWrapper):
@@ -47,9 +49,44 @@ class MaskVelocityWrapper(gym.ObservationWrapper):
         return observation * self.mask
 
 
+class _BoxNormalizer:
+    """The bounded dimensions of the `Box` space `space` exposed as [-1, 1] (`self.space`): `__call__` clips an action
+    of the exposed space and rescales it to the bounds of `space`."""
+
+    def __init__(self, space: gym.spaces.Box) -> None:
+        self.env_dtype = space.dtype
+        self._mask = np.isfinite(space.low) & np.isfinite(space.high)
+        self._low = np.where(self._mask, space.low, -1)
+        self._high = np.where(self._mask, space.high, 1)
+        # The dimensions already in [-1, 1] are not recomputed: they get the same actions, bit for bit
+        self._rescale = self._mask & ((self._low != -1) | (self._high != 1))
+        self.space = gym.spaces.Box(
+            low=np.where(self._mask, -1, space.low),
+            high=np.where(self._mask, 1, space.high),
+            shape=space.shape,
+            dtype=space.dtype,
+        )
+
+    def __call__(self, action: np.ndarray) -> np.ndarray:
+        action = np.clip(action, self.space.low, self.space.high)
+        env_action = (action + 1) / 2 * (self._high - self._low) + self._low
+        return np.where(self._rescale, env_action, action).astype(self.env_dtype, copy=False)
+
+
+def has_box_actions(space: gym.Space) -> bool:
+    """Whether the action space `space` is a `Box`, or a tuple or a dictionary of spaces with a `Box` among its
+    parts."""
+    if isinstance(space, gym.spaces.Tuple):
+        return any(has_box_actions(part) for part in space.spaces)
+    if isinstance(space, gym.spaces.Dict):
+        return any(has_box_actions(part) for part in space.spaces.values())
+    return isinstance(space, gym.spaces.Box)
+
+
 class NormalizeAction(gym.ActionWrapper):
     """Exposes the bounded dimensions of a `Box` action space as [-1, 1], rescaled to the bounds of the environment,
-    and clips the actions to the exposed space. The unbounded dimensions are left as they are.
+    and clips the actions to the exposed space. The unbounded dimensions are left as they are. In a tuple or a
+    dictionary of action spaces, the `Box` parts are normalized and the other parts left as they are.
 
     The `NormalizeAction` and `ClipAction` wrappers of DreamerV3
     (https://github.com/danijar/dreamerv3/blob/bfcdfc183d2c1543a3bf3cdda6edb7fae29b6a01/embodied/core/wrappers.py).
@@ -57,25 +94,43 @@ class NormalizeAction(gym.ActionWrapper):
 
     def __init__(self, env: gym.Env):
         super().__init__(env)
-        space = env.action_space
-        if not isinstance(space, gym.spaces.Box):
-            raise ValueError(f"Only `Box` action spaces can be normalized, got: {space}")
-        self._mask = np.isfinite(space.low) & np.isfinite(space.high)
-        self._low = np.where(self._mask, space.low, -1)
-        self._high = np.where(self._mask, space.high, 1)
-        # The dimensions already in [-1, 1] are not recomputed: they get the same actions, bit for bit
-        self._rescale = self._mask & ((self._low != -1) | (self._high != 1))
-        self.action_space = gym.spaces.Box(
-            low=np.where(self._mask, -1, space.low),
-            high=np.where(self._mask, 1, space.high),
-            shape=space.shape,
-            dtype=space.dtype,
-        )
+        if not has_box_actions(env.action_space):
+            raise ValueError(f"Only `Box` actions can be normalized, got: {env.action_space}")
+        self._normalizers = self._build(env.action_space)
+        self.action_space = self._exposed(env.action_space, self._normalizers)
 
-    def action(self, action: np.ndarray) -> np.ndarray:
-        action = np.clip(action, self.action_space.low, self.action_space.high)
-        env_action = (action + 1) / 2 * (self._high - self._low) + self._low
-        return np.where(self._rescale, env_action, action).astype(self.env.action_space.dtype, copy=False)
+    @classmethod
+    def _build(cls, space: gym.Space) -> Any:
+        if isinstance(space, gym.spaces.Box):
+            return _BoxNormalizer(space)
+        if isinstance(space, gym.spaces.Tuple):
+            return tuple(cls._build(part) for part in space.spaces)
+        if isinstance(space, gym.spaces.Dict):
+            return {key: cls._build(part) for key, part in space.spaces.items()}
+        return None
+
+    @classmethod
+    def _exposed(cls, space: gym.Space, normalizers: Any) -> gym.Space:
+        if isinstance(space, gym.spaces.Box):
+            return normalizers.space
+        if isinstance(space, gym.spaces.Tuple):
+            return gym.spaces.Tuple([cls._exposed(part, n) for part, n in zip(space.spaces, normalizers)])
+        if isinstance(space, gym.spaces.Dict):
+            return gym.spaces.Dict({key: cls._exposed(part, normalizers[key]) for key, part in space.spaces.items()})
+        return space
+
+    @classmethod
+    def _normalize(cls, action: Any, normalizers: Any) -> Any:
+        if isinstance(normalizers, _BoxNormalizer):
+            return normalizers(action)
+        if isinstance(normalizers, tuple):
+            return tuple(cls._normalize(part, n) for part, n in zip(action, normalizers))
+        if isinstance(normalizers, dict):
+            return {key: cls._normalize(action[key], n) for key, n in normalizers.items()}
+        return action
+
+    def action(self, action: Any) -> Any:
+        return self._normalize(action, self._normalizers)
 
 
 class ActionRepeat(gym.Wrapper):
@@ -156,63 +211,84 @@ class RestartOnException(gym.Wrapper):
             return new_obs, info
 
 
-class FrameStack(gym.Wrapper):
-    def __init__(self, env: Env, num_stack: int, cnn_keys: Sequence[str], dilation: int = 1) -> None:
+# The separator of the parts of the nested observations in their flat keys (`agent.pos`): not `/`, since the buffers
+# name their memory-mapped files after the keys
+NESTED_KEY_SEPARATOR = "."
+
+
+def _leaves(space: gym.Space, path: Tuple[Any, ...] = ()) -> List[Tuple[Tuple[Any, ...], gym.Space]]:
+    """The parts of `space` that are not `Dict` or `Tuple` spaces, with their paths (keys and indices)."""
+    if isinstance(space, gym.spaces.Dict):
+        return [leaf for key, part in space.spaces.items() for leaf in _leaves(part, (*path, key))]
+    if isinstance(space, gym.spaces.Tuple):
+        return [leaf for i, part in enumerate(space.spaces) for leaf in _leaves(part, (*path, i))]
+    return [(path, space)]
+
+
+def has_nested_observations(space: gym.spaces.Dict) -> bool:
+    """Whether some observations of the dictionary `space` are dictionaries or tuples."""
+    return any(isinstance(part, (gym.spaces.Dict, gym.spaces.Tuple)) for part in space.spaces.values())
+
+
+class FlattenNestedKeys(gym.ObservationWrapper):
+    """The parts of the nested observations as flat keys: the part `pos` of the dictionary `agent` is the key
+    `agent.pos`, the parts of a tuple are numbered (`sensors.0`, `sensors.1`). The observations that are neither
+    dictionaries nor tuples keep their keys. Two parts with the same flat key are an error."""
+
+    def __init__(self, env: Env) -> None:
         super().__init__(env)
-        if num_stack <= 0:
-            raise ValueError(f"Invalid value for num_stack, expected a value greater than zero, got {num_stack}")
         if not isinstance(env.observation_space, gym.spaces.Dict):
-            raise RuntimeError(
-                f"Expected an observation space of type gym.spaces.Dict, got: {type(env.observation_space)}"
-            )
-        self._num_stack = num_stack
-        self._cnn_keys = []
-        self._dilation = dilation
-        self.observation_space = copy.deepcopy(self.env.observation_space)
-        for k, v in self.env.observation_space.spaces.items():
-            if cnn_keys and len(v.shape) == 3:
-                self._cnn_keys.append(k)
-                self.observation_space[k] = gym.spaces.Box(
-                    np.repeat(self.env.observation_space[k].low[None, ...], num_stack, axis=0),
-                    np.repeat(self.env.observation_space[k].high[None, ...], num_stack, axis=0),
-                    (self._num_stack, *self.env.observation_space[k].shape),
-                    self.env.observation_space[k].dtype,
-                )
+            raise TypeError(f"FlattenNestedKeys takes a dictionary of observations, got {env.observation_space}")
+        self._paths: Dict[str, Tuple[Any, ...]] = {}
+        spaces: Dict[str, gym.Space] = {}
+        for path, space in _leaves(env.observation_space):
+            key = NESTED_KEY_SEPARATOR.join(str(part) for part in path)
+            if key in spaces:
+                raise ValueError(f"Two parts of the observations have the flat key `{key}`: rename one of them")
+            self._paths[key] = path
+            spaces[key] = space
+        self.observation_space = gym.spaces.Dict(spaces)
 
-        if self._cnn_keys is None or len(self._cnn_keys) == 0:
-            raise RuntimeError("Specify at least one valid cnn key to be stacked")
-        self._frames = {k: deque(maxlen=num_stack * dilation) for k in self._cnn_keys}
+    def observation(self, observation: Dict[str, Any]) -> Dict[str, Any]:
+        flat = {}
+        for key, path in self._paths.items():
+            value: Any = observation
+            for part in path:
+                value = value[part]
+            flat[key] = value
+        return flat
 
-    def _get_obs(self, key):
-        frames_subset = list(self._frames[key])[self._dilation - 1 :: self._dilation]
-        assert len(frames_subset) == self._num_stack
-        return np.stack(list(frames_subset), axis=0)
 
-    def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
-        obs, reward, done, truncated, infos = self.env.step(action)
-        for k in self._cnn_keys:
-            self._frames[k].append(obs[k])
-            if (
-                "env_domain" in infos
-                and infos["env_domain"] == "DIAMBRA"
-                and len(set(["round_done", "stage_done", "game_done"]).intersection(infos.keys())) == 3
-                and (infos["round_done"] or infos["stage_done"] or infos["game_done"])
-                and not (done or truncated)
-            ):
-                for _ in range(self._num_stack * self._dilation - 1):
-                    self._frames[k].append(obs[k])
-            obs[k] = self._get_obs(k)
-        return obs, reward, done, truncated, infos
+class TransformsWrapper(gym.Wrapper):
+    """The `frame` stage of the observation keys (`sheeprl.transforms`): every key the agent stores goes through the
+    `frame` transforms of its pipeline, once per step of the environment; the other keys are dropped. The transforms get
+    the `info` of the step with its `terminated` and `truncated`, and are reset (and seeded) with the environment."""
+
+    def __init__(self, env: Env, pipelines: Dict[str, Pipeline]) -> None:
+        super().__init__(env)
+        self.pipelines = pipelines
+        self.observation_space = gym.spaces.Dict({k: p.frame_space for k, p in pipelines.items()})
+        self._needs_info = any(p.needs_info for p in pipelines.values())
+
+    def _transform(
+        self, obs: Dict[str, Any], info: Dict[str, Any], terminated: bool, truncated: bool
+    ) -> Dict[str, Any]:
+        info = {**info, "terminated": terminated, "truncated": truncated} if self._needs_info else None
+        return {k: p.frame(obs[k], info) for k, p in self.pipelines.items()}
 
     def reset(
-        self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None, **kwargs
+        self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[Any, Dict[str, Any]]:
-        obs, infos = self.env.reset(seed=seed, **kwargs)
-        [self._frames[k].clear() for k in self._cnn_keys]
-        for k in self._cnn_keys:
-            [self._frames[k].append(obs[k]) for _ in range(self._num_stack * self._dilation)]
-            obs[k] = self._get_obs(k)
-        return obs, infos
+        obs, info = self.env.reset(seed=seed, options=options)
+        for pipeline in self.pipelines.values():
+            pipeline.reset()
+            if seed is not None:
+                pipeline.seed(seed)
+        return self._transform(obs, info, False, False), info
+
+    def step(self, action: Any) -> Tuple[Any, SupportsFloat, bool, bool, Dict[str, Any]]:
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        return self._transform(obs, info, terminated, truncated), reward, terminated, truncated, info
 
 
 class RewardAsObservationWrapper(gym.Wrapper):
@@ -305,6 +381,11 @@ class ActionsAsObservationWrapper(gym.Wrapper):
         self._num_stack = num_stack
         self._dilation = dilation
         self._actions = deque(maxlen=num_stack * dilation)
+        if isinstance(self.env.action_space, (gym.spaces.Tuple, gym.spaces.Dict)):
+            raise NotImplementedError(
+                f"The actions as observations of a tuple or a dictionary of action spaces are not supported, got: "
+                f"{self.env.action_space}"
+            )
         self._is_continuous = isinstance(self.env.action_space, gym.spaces.Box)
         self._is_multidiscrete = isinstance(self.env.action_space, gym.spaces.MultiDiscrete)
         self.observation_space = copy.deepcopy(self.env.observation_space)

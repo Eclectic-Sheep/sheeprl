@@ -38,6 +38,28 @@ encoder:
   # Orthogonal weights (gain 1) and zero biases for the linear layers
   ortho_init: False
 
+# Inputs: the images resized and scaled to [-0.5, 0.5] into the CNN of the Nature paper, the vectors into an MLP; the
+# features of both concatenated
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    net:
+      _target_: sheeprl.models.NatureCNN
+      features_dim: ${algo.encoder.cnn_features_dim}
+  vector:
+    keys: []
+    transforms: []
+    net:
+      _target_: sheeprl.models.MLPEncoder
+      features_dim: ${algo.encoder.mlp_features_dim}
+      dense_units: ${algo.encoder.dense_units}
+      mlp_layers: ${algo.encoder.mlp_layers}
+      dense_act: ${algo.encoder.dense_act}
+      layer_norm: ${algo.encoder.layer_norm}
+
 # Actor
 actor:
   dense_units: ${algo.dense_units}
@@ -60,10 +82,3 @@ critic:
 optimizer:
   lr: 1e-3
   eps: 1e-4
-# Compile the step of the player with `torch.compile` (`player`): faster steps in the environments, after a compilation
-# at the start. `mode` is the one of `torch.compile`: `reduce-overhead` also replays its kernels with CUDA graphs (with
-# `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used)
-compile:
-  enabled: False
-  mode: reduce-overhead
-  player: True

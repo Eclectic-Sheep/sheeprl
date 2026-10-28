@@ -4,7 +4,6 @@ defaults:
 
 # Override from `default` config
 id: doapp
-frame_stack: 1
 sync_env: False
 action_repeat: 1
 

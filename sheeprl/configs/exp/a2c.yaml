@@ -11,8 +11,9 @@ algo:
   total_steps: 25000
   rollout_steps: 5
   per_rank_batch_size: ${algo.rollout_steps}
-  mlp_keys:
-    encoder: [state]
+  inputs:
+    vector:
+      keys: [state]
 
 # Buffer
 buffer:

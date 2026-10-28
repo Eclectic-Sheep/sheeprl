@@ -130,12 +130,10 @@ def run_algorithm(cfg: dotdict):
             )
         kwargs["exploration_cfg"] = exploration_cfg
         # Take environment configs from exploration
-        cfg.env.frame_stack = exploration_cfg.env.frame_stack
         cfg.env.screen_size = exploration_cfg.env.screen_size
         cfg.env.action_repeat = exploration_cfg.env.action_repeat
         cfg.env.grayscale = exploration_cfg.env.grayscale
-        cfg.env.clip_rewards = exploration_cfg.env.clip_rewards
-        cfg.env.frame_stack_dilation = exploration_cfg.env.frame_stack_dilation
+        cfg.algo.rewards = exploration_cfg.algo.rewards
         cfg.env.max_episode_steps = exploration_cfg.env.max_episode_steps
         cfg.env.reward_as_observation = exploration_cfg.env.reward_as_observation
         _env_target = cfg.env.wrapper._target_.lower()
@@ -309,7 +307,8 @@ def check_configs(cfg: dotdict):
     if not (_IS_MLFLOW_AVAILABLE or cfg.model_manager.disabled):
         warnings.warn(
             "MLFlow is not installed. "
-            "Please install it with 'pip install mlflow' if you want to use the MLFlow logger and log models. "
+            "Please install it with 'uv pip install \"sheeprl[mlflow]\"' if you want to use the MLFlow logger and log "
+            "models. "
             "Setting `cfg.model_manager.disabled=True`",
             UserWarning,
         )
@@ -318,6 +317,11 @@ def check_configs(cfg: dotdict):
     learning_starts = cfg.algo.get("learning_starts")
     if learning_starts is not None and learning_starts < 0:
         raise ValueError("The `algo.learning_starts` parameter must be greater or equal to zero.")
+    if cfg.algo.get("compile") is not None and not isinstance(cfg.algo.compile, dict):
+        raise ValueError(
+            f"Invalid value '{cfg.algo.compile}' for the `algo.compile` parameter: it must be a mapping with the "
+            "`enabled` and `mode` keys. Enable the compilation with `algo.compile.enabled=True`."
+        )
 
     if cfg.env.action_repeat < 1:
         cfg.env.action_repeat = 1

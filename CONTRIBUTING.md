@@ -8,7 +8,7 @@ Thank you for your interest in contributing to SheepRL! This document outlines t
 2. Clone your fork: `git clone https://github.com/your-username/sheeprl.git`
 3. Create a feature branch: `git checkout -b feature/your-feature-name`
 4. Make your changes
-5. Install dependencies: `pip install -r requirements.txt`
+5. Install the dependencies with [uv](https://docs.astral.sh/uv/): `uv venv && source .venv/bin/activate && uv pip install -e ".[dev,test]"`
 6. Test your changes
 7. Commit your changes: `git commit -m "feat: your feature description"`
 8. Push to your fork: `git push origin feature/your-feature-name`

@@ -30,18 +30,11 @@ algo:
   total_steps: 50000000
   replay_ratio: 0.015625
   learning_starts: 65536
-  cnn_keys:
-    encoder:
-      - rgb
-  mlp_keys:
-    encoder:
-      - life_stats
-      - inventory
-      - max_inventory
-      - compass
-      - reward
-    decoder:
-      - life_stats
-      - inventory
-      - max_inventory
-      - compass
+  inputs:
+    image:
+      keys: [rgb]
+    vector:
+      keys: [life_stats, inventory, max_inventory, compass, reward]
+  outputs:
+    vector:
+      keys: [life_stats, inventory, max_inventory, compass]

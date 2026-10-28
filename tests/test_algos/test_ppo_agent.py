@@ -7,8 +7,12 @@ import pytest
 import torch
 from torch import nn
 
-from sheeprl.algos.ppo.agent import PPOAgent, PPOPlayer
+from sheeprl.algos.ppo.agent import PPOAgent, PPOPolicy
+from sheeprl.core.actions import ActionCodec
+from sheeprl.models.io import MultiEncoder
 from sheeprl.utils.utils import dotdict
+
+OBS_SPACE = gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (8,), np.float32)})
 
 
 def build_agent(
@@ -16,25 +20,16 @@ def build_agent(
 ) -> PPOAgent:
     torch.manual_seed(0)
     networks = {"dense_units": 64, "mlp_layers": 2, "dense_act": "torch.nn.Tanh", "layer_norm": False}
+    net = {"_target_": "sheeprl.models.MLPEncoder", **networks, "mlp_layers": encoder_layers, "features_dim": 64}
+    inputs = {"vector": {"keys": ["state"], "transforms": [], "net": net}}
+    action_space = gym.spaces.Box(-1, 1, (4,), np.float32) if is_continuous else gym.spaces.Discrete(4)
     return PPOAgent(
-        actions_dim=[4],
-        obs_space=gym.spaces.Dict({"state": gym.spaces.Box(-1, 1, (8,), np.float32)}),
-        encoder_cfg=dotdict(
-            {
-                **networks,
-                "mlp_layers": encoder_layers,
-                "cnn_features_dim": 512,
-                "mlp_features_dim": 64,
-                "ortho_init": ortho_init,
-            }
-        ),
+        codec=ActionCodec.from_space(action_space),
+        feature_extractor=MultiEncoder.from_config(inputs, OBS_SPACE),
         actor_cfg=dotdict({**networks, "ortho_init": ortho_init}),
         critic_cfg=dotdict({**networks, "ortho_init": ortho_init}),
-        cnn_keys=[],
-        mlp_keys=["state"],
-        screen_size=64,
         distribution_cfg=dotdict({"type": distribution}),
-        is_continuous=is_continuous,
+        ortho_init=ortho_init,
     )
 
 
@@ -76,32 +71,33 @@ def test_ppo_default_init_is_not_orthogonal(encoder_layers):
         assert not torch.allclose(singular_values, singular_values[0].expand_as(singular_values))
 
 
-def tanh_normal_player(mean: float, std: float) -> Tuple[PPOPlayer, PPOAgent]:
+def tanh_normal_policy(mean: float, std: float) -> Tuple[PPOPolicy, PPOAgent]:
     """A tanh-normal policy whose normal, before the tanh, has mean `mean` and standard deviation `std` everywhere."""
     agent = build_agent(ortho_init=False, is_continuous=True, distribution="tanh_normal")
     head = agent.actor.actor_heads[0]
     with torch.no_grad():
         head.weight.zero_()
         head.bias.copy_(torch.tensor([mean] * 4 + [np.log(std)] * 4))
-    return PPOPlayer(agent.feature_extractor, agent.actor, agent.critic), agent
+    return PPOPolicy(agent.feature_extractor, agent.actor, agent.critic, agent.codec), agent
 
 
 def test_ppo_tanh_normal_greedy_actions_are_squashed():
     # The greedy action is the tanh of the mean (it was its atanh, out of the action bounds)
-    player, _ = tanh_normal_player(mean=2.0, std=0.5)
-    (actions,) = player.get_actions({"state": torch.zeros(3, 8)}, greedy=True)
+    policy, _ = tanh_normal_policy(mean=2.0, std=0.5)
+    (actions,) = policy.get_actions({"state": torch.zeros(3, 8)}, greedy=True)
     torch.testing.assert_close(actions, torch.full((3, 4), np.tanh(2.0), dtype=torch.float32))
 
 
 @pytest.mark.parametrize("mean", [0.5, 8.0])
 def test_ppo_tanh_normal_log_probs_of_the_played_actions(mean):
     torch.manual_seed(1)
-    player, agent = tanh_normal_player(mean=mean, std=0.5)
+    policy, agent = tanh_normal_policy(mean=mean, std=0.5)
     obs = {"state": torch.zeros(1000, 8)}
-    actions, logprobs, _ = player(obs)
+    actions, logprobs, _ = policy(obs)
     # The environments play the tanh of the stored actions
-    torch.testing.assert_close(player.env_actions(actions).squeeze(-1), actions[0].tanh().clamp(-1 + 1e-6, 1 - 1e-6))
-    # The agent computes the log-probabilities the player computed, also where the tanh saturates (mean 8: the stored
+    played = torch.as_tensor(policy.env_actions(actions))
+    torch.testing.assert_close(played, actions[0].tanh().clamp(-1 + 1e-6, 1 - 1e-6))
+    # The agent computes the log-probabilities the policy computed, also where the tanh saturates (mean 8: the stored
     # tanh lost the action, and the ratio of PPO started far from 1)
     _, new_logprobs, _, _ = agent(obs, actions)
     torch.testing.assert_close(new_logprobs, logprobs)
@@ -115,14 +111,14 @@ def test_ppo_tanh_normal_log_probs_of_the_played_actions(mean):
         torch.testing.assert_close(logprobs.double(), dist.log_prob(u.tanh()).sum(-1, keepdim=True), atol=1e-4, rtol=0)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="The player is replayed by CUDA graphs on the GPU")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="The policy is replayed by CUDA graphs on the GPU")
 @pytest.mark.parametrize("is_continuous", [False, True])
-def test_the_compiled_player_plays_as_the_eager_one(monkeypatch, is_continuous):
+def test_the_compiled_policy_plays_as_the_eager_one(monkeypatch, is_continuous):
     # The same weights, observations and random numbers: the same actions, log-probabilities and values, with and
     # without `torch.compile` and its CUDA graphs, whose outputs are copies (the next replay overwrites them)
     from lightning import Fabric
 
-    from sheeprl.utils.compile import compiled_player
+    from sheeprl.utils.compile import compiled_policy
 
     from .compiled import same_random_numbers
 
@@ -131,9 +127,9 @@ def test_the_compiled_player_plays_as_the_eager_one(monkeypatch, is_continuous):
     cfg = dotdict(
         {"algo": {"compile": {"enabled": True, "mode": "reduce-overhead"}}, "fabric": {"precision": "32-true"}}
     )
-    eager = PPOPlayer(agent.feature_extractor, agent.actor, agent.critic)
-    compiled = PPOPlayer(agent.feature_extractor, agent.actor, agent.critic)
-    compiled.forward = compiled_player(compiled.forward, Fabric(accelerator="cuda", devices=1), cfg)
+    eager = PPOPolicy(agent.feature_extractor, agent.actor, agent.critic, agent.codec)
+    compiled = PPOPolicy(agent.feature_extractor, agent.actor, agent.critic, agent.codec)
+    compiled.forward = compiled_policy(compiled.forward, Fabric(accelerator="cuda", devices=1), cfg)
     obs = {"state": torch.randn(4, 8, device="cuda")}
     played = []
     for module in (eager, compiled):
@@ -145,3 +141,38 @@ def test_the_compiled_player_plays_as_the_eager_one(monkeypatch, is_continuous):
             torch.testing.assert_close(a, e)
         torch.testing.assert_close(logprobs, eager_logprobs, rtol=1e-4, atol=1e-5)
         torch.testing.assert_close(values, eager_values, rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.parametrize("distribution", ["auto", "tanh_normal"])
+def test_the_log_probability_of_mixed_actions_is_the_sum_over_their_heads(distribution):
+    from torch.distributions import Independent, Normal, OneHotCategorical
+
+    from sheeprl.algos.ppo.agent import tanh_log_abs_det_jacobian
+
+    torch.manual_seed(0)
+    networks = {"dense_units": 16, "mlp_layers": 1, "dense_act": "torch.nn.Tanh", "layer_norm": False}
+    net = {"_target_": "sheeprl.models.MLPEncoder", **networks, "features_dim": 16}
+    space = gym.spaces.Tuple([gym.spaces.Discrete(3), gym.spaces.Box(-1, 1, (2,), np.float32)])
+    agent = PPOAgent(
+        codec=ActionCodec.from_space(space),
+        feature_extractor=MultiEncoder.from_config({"vector": {"keys": ["state"], "net": net}}, OBS_SPACE),
+        actor_cfg=dotdict({**networks, "ortho_init": False}),
+        critic_cfg=dotdict({**networks, "ortho_init": False}),
+        distribution_cfg=dotdict({"type": distribution}),
+    )
+    # One head per action: the logits of the discrete one, the means and log-stds of the continuous one
+    assert [head.out_features for head in agent.actor.actor_heads] == [3, 4]
+    obs = {"state": torch.randn(5, 8)}
+    actions, log_prob, entropy, _ = agent(obs)
+    assert actions[0].shape == (5, 3) and actions[1].shape == (5, 2)
+    logits, normal_out = agent.actor(agent.feature_extractor(obs))
+    mean, log_std = normal_out.chunk(2, -1)
+    normal = Independent(Normal(mean, log_std.exp()), 1)
+    expected = OneHotCategorical(logits=logits).log_prob(actions[0]) + normal.log_prob(actions[1])
+    if distribution == "tanh_normal":
+        expected = expected - tanh_log_abs_det_jacobian(actions[1])
+    torch.testing.assert_close(log_prob.squeeze(-1), expected)
+    torch.testing.assert_close(entropy.squeeze(-1), OneHotCategorical(logits=logits).entropy() + normal.entropy())
+    # Evaluated again from the stored actions, as in the loss
+    _, log_prob_again, _, _ = agent(obs, actions)
+    torch.testing.assert_close(log_prob_again, log_prob)

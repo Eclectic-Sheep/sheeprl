@@ -13,6 +13,7 @@ from lightning import Fabric
 from omegaconf import OmegaConf
 
 from sheeprl.cli import resume_from_checkpoint
+from sheeprl.core import loop
 from sheeprl.utils.env import make_env
 from sheeprl.utils.utils import dotdict
 
@@ -60,7 +61,7 @@ def test_dreamers_play_normalized_actions(exp):
     # sampled in [-1, 1] too (they were sampled in ±2, and the policy could never reach the bounds)
     # Vector observations only: rendering Pendulum needs the PNG support of pygame, which some installations miss
     cfg = config(
-        [f"exp={exp}", "env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]", "algo.cnn_keys.encoder=[]"]
+        [f"exp={exp}", "env=gym", "env.id=Pendulum-v1", "algo.inputs.vector.keys=[state]", "algo.inputs.image.keys=[]"]
     )
     env = make_env(cfg, seed=0, rank=0)()
     assert env.action_space == gym.spaces.Box(-1, 1, (1,), np.float32)
@@ -74,7 +75,13 @@ def test_other_algorithms_and_old_configs_play_the_actions_as_they_are():
     assert "normalize_actions" not in sac.algo
     # A DreamerV3 configuration saved before the option: its checkpoints play as they were trained
     dreamer = config(
-        ["exp=dreamer_v3", "env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]", "algo.cnn_keys.encoder=[]"]
+        [
+            "exp=dreamer_v3",
+            "env=gym",
+            "env.id=Pendulum-v1",
+            "algo.inputs.vector.keys=[state]",
+            "algo.inputs.image.keys=[]",
+        ]
     )
     del dreamer.algo["normalize_actions"]
     for cfg in (sac, dreamer):
@@ -87,7 +94,7 @@ def test_other_algorithms_and_old_configs_play_the_actions_as_they_are():
 @pytest.mark.parametrize("algo", ["p2e_dv3", "p2e_dv2", "p2e_dv1"])
 @pytest.mark.parametrize("explored_with", [True, False, None])
 def test_p2e_finetuning_normalizes_the_actions_as_the_exploration(explored_with, algo):
-    overrides = ["env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]"]
+    overrides = ["env=gym", "env.id=Pendulum-v1", "algo.inputs.vector.keys=[state]"]
     exploration_cfg = config([f"exp={algo}_exploration", *overrides])
     if explored_with is None:
         # An exploration saved before the option didn't normalize the actions
@@ -103,7 +110,8 @@ def test_p2e_finetuning_normalizes_the_actions_as_the_exploration(explored_with,
     # The finetuning takes the options of its exploration before anything else: it is stopped right after
     with (
         mock.patch.object(Fabric, "load", return_value={}),
-        mock.patch.object(finetuning, "get_logger", side_effect=Stop),
+        # The finetuning stops where the training loop of the core creates the logger
+        mock.patch.object(loop, "get_logger", side_effect=Stop),
         pytest.raises(Stop),
     ):
         finetuning.main(Fabric(accelerator="cpu", devices=1), cfg, exploration_cfg)
@@ -114,7 +122,7 @@ def test_p2e_finetuning_normalizes_the_actions_as_the_exploration(explored_with,
 def test_a_resumed_run_normalizes_the_actions_as_the_run_it_resumes(saved_with, tmp_path):
     # A run saved before the option played the actions of the policy as they were: resumed, it took the default of the
     # new configuration and played them rescaled
-    overrides = ["exp=dreamer_v3", "env=gym", "env.id=Pendulum-v1", "algo.mlp_keys.encoder=[state]"]
+    overrides = ["exp=dreamer_v3", "env=gym", "env.id=Pendulum-v1", "algo.inputs.vector.keys=[state]"]
     old_cfg = config(overrides)
     if saved_with is None:
         del old_cfg.algo["normalize_actions"]

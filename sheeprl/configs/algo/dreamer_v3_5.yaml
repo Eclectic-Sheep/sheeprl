@@ -28,20 +28,60 @@ per_rank_sequence_length: 64
 # The steps before every sampled sequence whose latent state (kept in the replay buffer) starts the training of the
 # sequence; 0 to start the sequences from zeros (the `replay_context` of the official configuration)
 replay_context: 1
-# Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start.
-# `mode` is the one of `torch.compile`: `reduce-overhead` also replays the kernels of every loss with CUDA graphs
-# (with `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used).
-# `player` also compiles the step of the player: faster steps in the environments
-compile:
-  enabled: False
-  mode: reduce-overhead
-  player: True
 
-# Encoder and decoder keys
-cnn_keys:
-  decoder: ${algo.cnn_keys.encoder}
-mlp_keys:
-  decoder: ${algo.mlp_keys.encoder}
+# Inputs: the images resized and scaled to [-0.5, 0.5] into the CNN of the world model (the sides of the images must be
+# divisible by 2 ** len(cnn_stages)), the vectors squashed with the symlog into its MLP. Outputs: the same keys
+# reconstructed by the observation model, scored with the squared error: the images to their pixels in [0, 1], the
+# vectors to their symlog (the domain of the encoder)
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    net:
+      _target_: sheeprl.algos.dreamer_v3_5.agent.CNNEncoder
+      channels_multiplier: ${algo.cnn_channels_multiplier}
+      stages: ${algo.cnn_stages}
+      kernel_size: ${algo.cnn_kernel_size}
+      activation: ${algo.dense_act}
+      eps: ${algo.norm_eps}
+  vector:
+    keys: []
+    transforms: [{_target_: sheeprl.transforms.Symlog}]
+    net:
+      _target_: sheeprl.algos.dreamer_v3_5.agent.MLPEncoder
+      mlp_layers: 3
+      dense_units: ${algo.dense_units}
+      activation: ${algo.dense_act}
+      eps: ${algo.norm_eps}
+outputs:
+  image:
+    keys: ${algo.inputs.image.keys}
+    # The targets of the reconstructions: the pixels in [0, 1]
+    transforms: [{_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0}]
+    net:
+      _target_: sheeprl.algos.dreamer_v3_5.agent.CNNDecoder
+      channels_multiplier: ${algo.cnn_channels_multiplier}
+      stages: ${algo.cnn_stages}
+      kernel_size: ${algo.cnn_kernel_size}
+      # The blocks of the projection of the recurrent state to the first feature maps; 0 to project the whole latent
+      # state with a linear layer
+      block_space: 8
+      dense_units: ${algo.dense_units}
+      recurrent_state_size: ${algo.world_model.recurrent_model.recurrent_state_size}
+      activation: ${algo.dense_act}
+      eps: ${algo.norm_eps}
+    likelihood: {_target_: sheeprl.utils.distribution.MSEDistribution, _partial_: true}
+  vector:
+    keys: ${algo.inputs.vector.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v3_5.agent.MLPDecoder
+      mlp_layers: 3
+      dense_units: ${algo.dense_units}
+      activation: ${algo.dense_act}
+      eps: ${algo.norm_eps}
+    likelihood: {_target_: sheeprl.utils.distribution.MSEDistribution, _partial_: true}
 
 # Model related parameters
 dense_units: 1024
@@ -75,15 +115,6 @@ world_model:
   # The reward loss trains the latent states (`reward_grad`)
   reward_grad: True
 
-  # Encoder
-  encoder:
-    cnn_channels_multiplier: ${algo.cnn_channels_multiplier}
-    cnn_stages: ${algo.cnn_stages}
-    cnn_kernel_size: ${algo.cnn_kernel_size}
-    mlp_layers: 3
-    dense_units: ${algo.dense_units}
-    symlog_inputs: True
-
   # Recurrent model: a GRU with block-diagonal weights
   recurrent_model:
     recurrent_state_size: 8192
@@ -101,17 +132,6 @@ world_model:
   representation_model:
     hidden_size: ${algo.world_model.recurrent_model.hidden_size}
     layers: 1
-
-  # Decoder
-  observation_model:
-    cnn_channels_multiplier: ${algo.cnn_channels_multiplier}
-    cnn_stages: ${algo.cnn_stages}
-    cnn_kernel_size: ${algo.cnn_kernel_size}
-    # The blocks of the projection of the recurrent state to the first feature maps; 0 to project the whole latent
-    # state with a linear layer
-    block_space: 8
-    mlp_layers: 3
-    dense_units: ${algo.dense_units}
 
   # Reward model
   reward_model:

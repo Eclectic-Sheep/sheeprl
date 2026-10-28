@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -106,3 +106,106 @@ class MultiDiscreteDummyEnv(BaseDummyEnv):
         super().__init__(
             image_size=image_size, n_steps=n_steps, vector_shape=vector_shape, dict_obs_space=dict_obs_space
         )
+
+
+class MixedDummyEnv(BaseDummyEnv):
+    """Mixed actions: a tuple of a discrete action of 3 choices and a continuous one of 2 dimensions in [-2, 2]. A step
+    checks that it gets the actions with the structure of the action space."""
+
+    def __init__(
+        self,
+        image_size: Tuple[int, int, int] = (3, 64, 64),
+        n_steps: int = 4,
+        vector_shape: Tuple[int] = (10,),
+        dict_obs_space: bool = True,
+    ):
+        self.action_space = gym.spaces.Tuple(
+            (gym.spaces.Discrete(3), gym.spaces.Box(-2, 2, shape=(2,), dtype=np.float32))
+        )
+        super().__init__(
+            image_size=image_size, n_steps=n_steps, vector_shape=vector_shape, dict_obs_space=dict_obs_space
+        )
+
+    def step(self, action):
+        choice, values = action
+        if not (0 <= int(choice) < 3 and np.shape(values) == (2,)):
+            raise ValueError(f"Mixed actions are a choice in [0, 3) and 2 values, got {action}")
+        return super().step(action)
+
+
+class GridDummyEnv(gym.Env):
+    """Grids of 0 and 1 (the field of view of issue #237): `fov`, five channels of a 5 x 5 field of view, and `plane`, a
+    single 5 x 5 one, both float32, random at every step; a discrete action; episodes of `n_steps` steps and reward 1
+    when the action is the sum of the center cell of `fov` over its channels, modulo 2."""
+
+    def __init__(self, n_steps: int = 8, seed: Optional[int] = None):
+        self.observation_space = gym.spaces.Dict(
+            {
+                "fov": gym.spaces.Box(0, 1, (5, 5, 5), np.float32),
+                "plane": gym.spaces.Box(0, 1, (5, 5), np.float32),
+            }
+        )
+        self.action_space = gym.spaces.Discrete(2)
+        self._n_steps = n_steps
+        self._rng = np.random.default_rng(seed)
+        self._obs: Dict[str, np.ndarray] = {}
+        self._current_step = 0
+
+    def _new_obs(self) -> Dict[str, np.ndarray]:
+        self._obs = {
+            "fov": self._rng.integers(0, 2, (5, 5, 5)).astype(np.float32),
+            "plane": self._rng.integers(0, 2, (5, 5)).astype(np.float32),
+        }
+        return self._obs
+
+    def reset(self, seed=None, options=None):
+        if seed is not None:
+            self._rng = np.random.default_rng(seed)
+        self._current_step = 0
+        return self._new_obs(), {}
+
+    def step(self, action):
+        reward = float(int(action) == int(self._obs["fov"][:, 2, 2].sum()) % 2)
+        self._current_step += 1
+        return self._new_obs(), reward, self._current_step == self._n_steps, False, {}
+
+    def render(self):
+        pass
+
+
+class NestedDummyEnv(gym.Env):
+    """Nested observations: `agent`, a dictionary of its `position` (3 values) and of its `inventory` (4 counts), and
+    `sensors`, a tuple of two readings of 2 values each, random at every step; a discrete action; episodes of `n_steps`
+    steps, with reward 0."""
+
+    def __init__(self, n_steps: int = 8, seed: Optional[int] = None):
+        self.observation_space = gym.spaces.Dict(
+            {
+                "agent": gym.spaces.Dict(
+                    {
+                        "position": gym.spaces.Box(-1, 1, (3,), np.float32),
+                        "inventory": gym.spaces.Box(0, 10, (4,), np.float32),
+                    }
+                ),
+                "sensors": gym.spaces.Tuple(
+                    (gym.spaces.Box(0, 1, (2,), np.float32), gym.spaces.Box(0, 1, (2,), np.float32))
+                ),
+            }
+        )
+        self.action_space = gym.spaces.Discrete(2)
+        self._n_steps = n_steps
+        self._current_step = 0
+        self.observation_space.seed(seed)
+
+    def reset(self, seed=None, options=None):
+        if seed is not None:
+            self.observation_space.seed(seed)
+        self._current_step = 0
+        return self.observation_space.sample(), {}
+
+    def step(self, action):
+        self._current_step += 1
+        return self.observation_space.sample(), 0.0, self._current_step == self._n_steps, False, {}
+
+    def render(self):
+        pass

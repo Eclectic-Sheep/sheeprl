@@ -2,6 +2,7 @@
 ones, and the target critics move towards the critics with the formula of the loop over their weights."""
 
 import copy
+from types import SimpleNamespace
 
 import gymnasium as gym
 import hydra
@@ -18,6 +19,7 @@ from sheeprl.algos.sac import sac
 from sheeprl.algos.sac.agent import build_agent as sac_build_agent
 from sheeprl.algos.sac_ae import sac_ae
 from sheeprl.algos.sac_ae.agent import build_agent as sac_ae_build_agent
+from sheeprl.models.io import build_encoder
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
 
@@ -48,7 +50,7 @@ def small_agent(algo, overrides=(), accelerator="cpu", precision="32-true"):
     action_space = gym.spaces.Box(-1, 1, (2,), np.float32)
     build_agent = sac_build_agent if algo == "sac" else droq_build_agent
     torch.manual_seed(0)
-    agent, _ = build_agent(fabric, cfg, obs_space, action_space)
+    agent, _ = build_agent(fabric, cfg, build_encoder(cfg, obs_space), action_space)
     optimizers = fabric.setup_optimizers(
         *(
             optimizer(c.optimizer, params)
@@ -129,15 +131,28 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, algo)
             aggregator, losses, grads = recording(module, patch)
             torch.manual_seed(1)
             if algo == "sac":
-                sac.train(fabric, agent, *optimizers, copy.copy(data), aggregator, 0, cfg, 1)
+                for name, value in sac.train(fabric, agent, *optimizers, copy.copy(data), 0, cfg, 1).items():
+                    aggregator.update(name, value)
             else:
 
-                class Buffer:
-                    def sample_tensors(self, batch_size, **kwargs):
-                        n = batch_size // B
-                        return {k: v.repeat(n, *([1] * (v.dim() - 1)))[None] for k, v in data.items()}
+                class Store:
+                    # Every batch is `data` (`ReplayStore.sample`); the actor's sampler shares the generator
+                    sampler = SimpleNamespace(rng=None, queue=None)
 
-                droq.train(fabric, agent, *optimizers, Buffer(), aggregator, cfg, 2)
+                    def sample(self, batch_size, n_samples=1, **kwargs):
+                        return {k: v[None].repeat(n_samples, *([1] * v.dim())) for k, v in data.items()}
+
+                    def batches(self, n_steps, batch_size, max_sampled=None):
+                        for _ in range(n_steps):
+                            yield {k: v.float() for k, v in data.items()}
+
+                # Two gradient steps of DroQ: two updates of the critics, then one of the actor
+                droq_algo = droq.DroQ(fabric, cfg)
+                actor_optimizer, qf_optimizer, alpha_optimizer = optimizers
+                state = sac.SACState(agent, qf_optimizer, actor_optimizer, alpha_optimizer)
+                for step, batch in enumerate(droq_algo.batches(state, Store(), 2, 1)):
+                    for name, value in droq_algo.train_step(state, batch, step).items():
+                        aggregator.update(name, value)
         results.append((losses, grads))
     assert_same_step(*results)
 
@@ -149,9 +164,9 @@ def small_sac_ae(overrides=(), accelerator="cpu"):
             overrides=[
                 "exp=sac_ae",
                 "env.screen_size=64",
-                "algo.cnn_keys.encoder=[rgb]",
-                "algo.mlp_keys.encoder=[]",
-                "algo.mlp_keys.decoder=[]",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[]",
+                "algo.outputs.vector.keys=[]",
                 "algo.hidden_size=8",
                 "algo.cnn_channels_multiplier=1",
                 "algo.encoder.features_dim=8",
@@ -194,11 +209,12 @@ def test_the_losses_of_sac_ae_compile_into_single_graphs_without_synchronization
     no_host_reads(monkeypatch)
     # Without the validation of the arguments of the distributions, as in training
     monkeypatch.setattr(torch.distributions.Distribution, "_validate_args", False)
-    obs, next_obs = {"rgb": data["rgb"] / 255}, {"rgb": data["next_rgb"] / 255}
+    # The encoder scales the images
+    obs, next_obs = {"rgb": data["rgb"]}, {"rgb": data["next_rgb"]}
     graph = lambda fn: torch.compile(fn, backend="eager", fullgraph=True)  # noqa: E731
     graph(sac_ae.critic_loss_fn)(agent, obs, next_obs, data["actions"], data["rewards"], data["terminated"], 0.99)
     graph(sac_ae.actor_loss_fn)(agent, obs)
-    graph(sac_ae.reconstruction_loss_fn)(encoder, decoder, obs, data, ("rgb",), (), 1e-6)
+    graph(sac_ae.reconstruction_loss_fn)(encoder, decoder, obs, {"rgb": data["rgb"] / 255 - 0.5}, ("rgb",), 1e-6)
 
 
 def test_the_target_critic_of_sac_ae_moves_as_with_the_loop_over_its_weights():
@@ -233,6 +249,7 @@ def test_the_compiled_losses_of_sac_ae_are_the_ones_of_the_eager_losses(monkeypa
         with monkeypatch.context() as patch:
             aggregator, losses, grads = recording(sac_ae, patch)
             torch.manual_seed(1)
-            sac_ae.train(fabric, *models, *optimizers, copy.copy(data), aggregator, 0, cfg)
+            for name, value in sac_ae.train(fabric, *models, *optimizers, copy.copy(data), 0, cfg).items():
+                aggregator.update(name, value)
         results.append((losses, grads))
     assert_same_step(*results)

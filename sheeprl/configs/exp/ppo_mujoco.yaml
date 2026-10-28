@@ -37,10 +37,11 @@ algo:
   dense_act: torch.nn.Tanh
   layer_norm: False
   max_grad_norm: 0.0
-  mlp_keys:
-    encoder: ["state"]
-  cnn_keys:
-    encoder: []
+  inputs:
+    image:
+      keys: []
+    vector:
+      keys: [state]
 
   # Encoder
   encoder:

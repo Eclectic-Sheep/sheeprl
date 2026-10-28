@@ -57,7 +57,9 @@ sheeprl/configs
 ├── env_config.yaml
 ├── eval_config.yaml
 ├── exp
+│   ├── a2c_atari.yaml
 │   ├── a2c_benchmarks.yaml
+│   ├── a2c_mujoco.yaml
 │   ├── a2c.yaml
 │   ├── default.yaml
 │   ├── dreamer_v1_benchmarks.yaml
@@ -74,6 +76,7 @@ sheeprl/configs
 │   ├── dreamer_v3_L_doapp_128px_gray_combo_discrete.yaml
 │   ├── dreamer_v3_L_doapp.yaml
 │   ├── dreamer_v3_L_navigate.yaml
+│   ├── dreamer_v3_minedojo.yaml
 │   ├── dreamer_v3_super_mario_bros.yaml
 │   ├── dreamer_v3_XL_crafter.yaml
 │   ├── dreamer_v3.yaml
@@ -86,7 +89,10 @@ sheeprl/configs
 │   ├── p2e_dv3_exploration.yaml
 │   ├── p2e_dv3_finetuning.yaml
 │   ├── p2e_dv3_fntn_L_doapp_64px_gray_combo_discrete_5Mstps.yaml
+│   ├── ppo_atari.yaml
 │   ├── ppo_benchmarks.yaml
+│   ├── ppo_lunar_lander.yaml
+│   ├── ppo_mujoco.yaml
 │   ├── ppo_recurrent.yaml
 │   ├── ppo_super_mario_bros.yaml
 │   ├── ppo.yaml
@@ -199,7 +205,7 @@ run_name: ${now:%Y-%m-%d_%H-%M-%S}_${exp_name}_${seed}
 root_dir: ${algo.name}/${env.id}
 ```
 
-By default we want the user to specify the experiment config, represented by `- exp: ???` in the above example. The three-question-marks symbol tells hydra to expect that an `exp` config is specified at runtime by the user (e.g. `sheeprl.py exp=dreamer_v3`: one can look at every exp configs in `sheeprl/config/exp/` folder).
+By default we want the user to specify the experiment config, represented by `- exp: ???` in the above example. The three-question-marks symbol tells hydra to expect that an `exp` config is specified at runtime by the user (e.g. `sheeprl.py exp=dreamer_v3`: one can look at every exp configs in `sheeprl/configs/exp/` folder).
 
 ### Algorithms
 
@@ -220,27 +226,77 @@ name: dreamer_v3
 gamma: 0.996996996996997
 lmbda: 0.95
 horizon: 15
+# The bounded dimensions of continuous actions exposed as [-1, 1] (the range of the actor), rescaled to the bounds of
+# the environment, as DreamerV3 does (`sheeprl.envs.wrappers.NormalizeAction`)
+normalize_actions: True
 
 # Training recipe
 replay_ratio: 1
 learning_starts: 1024
+per_rank_pretrain_steps: 0
 per_rank_sequence_length: ???
 
-# Encoder and decoder keys
-cnn_keys:
-  decoder: ${algo.cnn_keys.encoder}
-mlp_keys:
-  decoder: ${algo.mlp_keys.encoder}
+# Inputs: the images resized and scaled to [-0.5, 0.5] into the CNN of the world model (`stages` convolutions of
+# stride 2: the sides of the images must be divisible by 2 ** stages), the vectors squashed with the symlog into its
+# MLP. Outputs: the same keys reconstructed by the observation model, both scored with the mean squared error to the
+# keys as the encoder reads them (the vectors in the symlog space)
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.CNNEncoder
+      channels_multiplier: 96
+      stages: 4
+      activation: ${algo.cnn_act}
+      layer_norm: ${algo.cnn_layer_norm}
+  vector:
+    keys: []
+    transforms: [{_target_: sheeprl.transforms.Symlog}]
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.MLPEncoder
+      mlp_layers: ${algo.mlp_layers}
+      dense_units: ${algo.dense_units}
+      activation: ${algo.dense_act}
+      layer_norm: ${algo.mlp_layer_norm}
+outputs:
+  image:
+    keys: ${algo.inputs.image.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.CNNDecoder
+      channels_multiplier: ${algo.inputs.image.net.channels_multiplier}
+      stages: ${algo.inputs.image.net.stages}
+      activation: ${algo.cnn_act}
+      layer_norm: ${algo.cnn_layer_norm}
+    likelihood: {_target_: sheeprl.utils.distribution.MSEDistribution, _partial_: true}
+  vector:
+    keys: ${algo.inputs.vector.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.MLPDecoder
+      mlp_layers: ${algo.mlp_layers}
+      dense_units: ${algo.dense_units}
+      activation: ${algo.dense_act}
+      layer_norm: ${algo.mlp_layer_norm}
+    # The squared errors below the tolerance count as zero, as in the symlog likelihood of the official implementation
+    likelihood: {_target_: sheeprl.utils.distribution.MSEDistribution, _partial_: true, tol: 1e-8}
 
 # Model related parameters
-layer_norm: True
+cnn_layer_norm:
+  cls: sheeprl.models.models.LayerNormChannelLast
+  kw: 
+    eps: 1e-3
+mlp_layer_norm:
+  cls: sheeprl.models.models.LayerNorm
+  kw: 
+    eps: 1e-3
 dense_units: 1024
 mlp_layers: 5
 dense_act: torch.nn.SiLU
 cnn_act: torch.nn.SiLU
 unimix: 0.01
 hafner_initialization: True
-decoupled_rssm: False
 
 # World model
 world_model:
@@ -252,48 +308,32 @@ world_model:
   kl_regularizer: 1.0
   continue_scale_factor: 1.0
   clip_gradients: 1000.0
-
-  # Encoder
-  encoder:
-    cnn_channels_multiplier: 96
-    cnn_act: ${algo.cnn_act}
-    dense_act: ${algo.dense_act}
-    mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
-    dense_units: ${algo.dense_units}
+  decoupled_rssm: False
+  learnable_initial_recurrent_state: True
 
   # Recurrent model
   recurrent_model:
     recurrent_state_size: 4096
-    layer_norm: True
+    layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
 
   # Prior
   transition_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: ${algo.mlp_layer_norm}
 
   # Posterior
   representation_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
-    layer_norm: ${algo.layer_norm}
-
-  # Decoder
-  observation_model:
-    cnn_channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
-    cnn_act: ${algo.cnn_act}
-    dense_act: ${algo.dense_act}
-    mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
-    dense_units: ${algo.dense_units}
+    layer_norm: ${algo.mlp_layer_norm}
 
   # Reward model
   reward_model:
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
     bins: 255
 
@@ -302,7 +342,7 @@ world_model:
     learnable: True
     dense_act: ${algo.dense_act}
     mlp_layers: ${algo.mlp_layers}
-    layer_norm: ${algo.layer_norm}
+    layer_norm: ${algo.mlp_layer_norm}
     dense_units: ${algo.dense_units}
 
   # World model optimizer
@@ -310,19 +350,29 @@ world_model:
     lr: 1e-4
     eps: 1e-8
     weight_decay: 0
+    # One kernel for the whole update of the weights
+    fused: True
 
 # Actor
 actor:
   cls: sheeprl.algos.dreamer_v3.agent.Actor
   ent_coef: 3e-4
+  # The weight of the REINFORCE gradients in the objective, the rest being the dynamics backpropagation. null: the
+  # dynamics for continuous actions, REINFORCE for discrete ones (`actor_grad_cont: backprop` and `actor_grad_disc:
+  # reinforce` of DreamerV3). The dynamics backpropagation doesn't differentiate the predicted terminations (the mode
+  # of the continue model): set it to 1 when the returns depend on the actions mostly through the terminations, e.g.
+  # a constant reward until the episode ends
+  objective_mix: null
   min_std: 0.1
-  init_std: 0.0
-  objective_mix: 1.0
+  max_std: 1.0
+  init_std: 2.0
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
-  layer_norm: ${algo.layer_norm}
+  layer_norm: ${algo.mlp_layer_norm}
   dense_units: ${algo.dense_units}
   clip_gradients: 100.0
+  unimix: ${algo.unimix}
+  action_clip: 1.0
 
   # Disttributed percentile model (used to scale the values)
   moments:
@@ -332,17 +382,19 @@ actor:
       low: 0.05
       high: 0.95
 
-  # Actor optimizer
+  # Actor optimizer (the learning rate of the actor and of the critic of the official implementation of 2023)
   optimizer:
     lr: 3e-5
     eps: 1e-5
     weight_decay: 0
+    # One kernel for the whole update of the weights
+    fused: True
 
 # Critic
 critic:
   dense_act: ${algo.dense_act}
   mlp_layers: ${algo.mlp_layers}
-  layer_norm: ${algo.layer_norm}
+  layer_norm: ${algo.mlp_layer_norm}
   dense_units: ${algo.dense_units}
   per_rank_target_network_update_freq: 1
   tau: 0.02
@@ -354,10 +406,8 @@ critic:
     lr: 3e-5
     eps: 1e-5
     weight_decay: 0
-
-# Player agent (it interacts with the environment)
-player:
-  discrete_size: ${algo.world_model.discrete_size}
+    # One kernel for the whole update of the weights
+    fused: True
 ```
 
 The `defaults` section contains the list of the default configurations to be "imported" by Hydra during the initialization. For more information check the official Hydra documentation about [group defaults](https://hydra.cc/docs/1.1/tutorials/basic/your_first_app/defaults/). The semantic of the following declaration
@@ -379,20 +429,87 @@ is:
 The default configuration for all the algorithms is the following:
 
 ```yaml
+# sheeprl/configs/algo/default.yaml
 name: ???
 total_steps: ???
 per_rank_batch_size: ???
+run_test: True
 
-# Encoder and decoder keys
-cnn_keys:
-  encoder: []
-mlp_keys:
-  encoder: []
+# The observations the agent reads (`howto/inputs_and_outputs.md`): named inputs, each a group of observation keys
+# with the transforms of every key (`sheeprl/transforms`) and one network on their concatenation. Every algorithm
+# ships the inputs `image` and `vector` without keys: the experiment sets them, and an input without keys is skipped
+inputs: {}
+# The class of the encoder of the inputs (`sheeprl.models.io.build_encoder`), a subclass of `sheeprl.models.io.Encoder`:
+# `MultiEncoder` concatenates their features
+encoder:
+  _target_: sheeprl.models.io.MultiEncoder
+# The observations reconstructed from the latent state (the algorithms with a decoder): named outputs, each a group of
+# encoded keys with one network and, for the Dreamers, the likelihood of the reconstructions
+outputs: {}
+# The class of the decoder of the outputs (`sheeprl.models.io.build_decoder`), a subclass of `sheeprl.models.io.Decoder`:
+# `MultiDecoder` reconstructs every output with its own network
+decoder:
+  _target_: sheeprl.models.io.MultiDecoder
+# The observation keys stored as they are and never encoded, read by the algorithm (e.g. the action masks of MineDojo)
+extra_keys: []
+# The transforms of the rewards of the environments, applied before they are stored (`sheeprl/transforms/rewards.py`),
+# e.g. `[{_target_: sheeprl.transforms.ScaleByReturnStd, gamma: "${algo.gamma}"}, {_target_: sheeprl.transforms.Tanh}]`
+# for the rewards divided by the std of the discounted return, then squashed. The ones with statistics are for the
+# on-policy algorithms only
+rewards:
+  transforms: []
+
+# Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start (a few minutes the
+# first time, then mostly reused from the cache of PyTorch). `mode` is the one of `torch.compile`: `reduce-overhead`
+# also replays the kernels of every loss with CUDA graphs (with `fabric.precision` `32-true` or `bf16-mixed`; with
+# another precision the default mode is used). `policy` also compiles the step of the policy: faster steps in the
+# environments
+compile:
+  enabled: False
+  mode: reduce-overhead
+  policy: True
 ```
 
 > [!WARNING]
 >
 > Every algorithm config **must** contain the field `name`, the total number of steps `total_steps` and the batch size `per_rank_batch_size`
+
+The `run_test` field specifies whether to test the trained agent at the end of the training. The `inputs`, `encoder`, `outputs`, `extra_keys` and `rewards` fields say which observations the agent reads and reconstructs, and how the observations and the rewards are transformed: they are explained in the [inputs and outputs howto](./inputs_and_outputs.md).
+
+The DreamerV1, DreamerV2, DreamerV3 and P2E configs set `normalize_actions: True`: the bounded dimensions of a continuous (`Box`) action space are exposed to the agent in $[-1, 1]$ and rescaled to the bounds of the environment by the `sheeprl.envs.wrappers.NormalizeAction` wrapper.
+
+### Buffer
+
+The buffer config contains the parameters of the buffer where the agent stores the data collected in the environments:
+
+```yaml
+# sheeprl/configs/buffer/default.yaml
+
+size: ???
+memmap: True
+validate_args: False
+from_numpy: False
+checkpoint: True  # Used only for off-policy algorithms
+online: False
+prefetch: False
+on_device: False
+curious:
+  enabled: False
+  c: 10000
+  beta: 0.7
+  alpha: 0.7
+  epsilon: 0.01
+  initial_priority: 100000
+```
+
+The `size` is set by the experiment configs. For the off-policy algorithms it is the capacity of the replay buffer. The buffer of PPO and A2C holds one rollout, so its size must be equal to `algo.rollout_steps` (their experiment configs set `size: ${algo.rollout_steps}`); the buffer of PPO-recurrent always holds one rollout of `algo.rollout_steps` steps. For more information about the `memmap` and `checkpoint` parameters, check the [logs and checkpoints howto](./logs_and_checkpoints.md#buffer-checkpoint).
+
+The last four parameters are used only by the off-policy algorithms:
+
+- `online`: the batches start with the steps added since the previous ones, the oldest first, and only the rest of them is sampled uniformly (the online queue of DreamerV3): every step is trained on soon after it is played.
+- `prefetch`: the next batches are sampled in a thread while the training uses the current ones, and moved to the device on a CUDA stream of their own; the first ones of an iteration are sampled during the training of the previous one. It pays off when the samples are large (images, sequences): e.g. about 1.17x faster end to end for SAC-AE on pixels, 1.05x for DreamerV3 on Atari, nothing for SAC on states.
+- `on_device`: the replay buffer is kept in the memory of the device of the training, where its batches are gathered, with no copy from the CPU (`memmap` is then ignored). It must fit in the free memory of the device when it is created.
+- `curious` (DreamerV3 and DreamerV3.5): [Curious Replay](https://arxiv.org/abs/2306.15934) (Kauvar et al., 2023), as in its [implementation with DreamerV3](https://github.com/AutonomousAgentsLab/cr-dv3). With `enabled: True` the sequences are drawn in proportion to the priority of their last step, `c * beta ** visits + (|loss| + epsilon) ** alpha`: `visits` counts the batches that trained on the step (once per batch, also when two sequences of the batch hold it) and `loss` is the loss of the world model on it in the last of them, so the steps trained on the fewest times and the ones the world model predicts worst are trained on more. A new step has `initial_priority` and no visits. Every batch is sampled after the training on the previous one, whose losses (read on the CPU once per gradient step) give the priorities of its steps: the batches aren't prefetched (`prefetch` is ignored). The priorities are saved in the checkpoints with the buffer. The defaults are the values of the paper. It combines with `online`: the batches start with the sequences of the online queue, and only the rest of them is drawn by priority.
 
 ### Environment
 
@@ -401,28 +518,30 @@ The environment configs can be found under the `sheeprl/configs/env` folders. Sh
 * [Atari](https://ale.farama.org/environments/)
 * [Diambra](https://docs.diambra.ai/)
 * [Deepmind Control Suite (DMC)](https://github.com/deepmind/dm_control/)
-* [Gymnasium](https://www.gymlibrary.dev/)
+* [Gymnasium](https://gymnasium.farama.org/)
 * [MineRL (v0.4.4)](https://minerl.readthedocs.io/en/v0.4.4/)
 * [MineDojo (v0.1.0)](https://docs.minedojo.org/)
+* [Crafter](https://github.com/danijar/crafter)
+* [Super Mario Bros](https://github.com/Kautenja/gym-super-mario-bros)
 
 In this way, one can easily try out the overall framework with standard RL environments. The `default.yaml` config contains all the environment parameters shared by (possibly) all the environments:
 
 ```yaml
 id: ???
 num_envs: 4
-frame_stack: 1
 sync_env: False
 screen_size: 64
 action_repeat: 1
 grayscale: False
-clip_rewards: False
 capture_video: True
-frame_stack_dilation: 1
 actions_as_observation:
   num_stack: -1
   noop: "You MUST define the NOOP"
   dilation: 1
 max_episode_steps: null
+# The key under which the render of the environment is added to its observations (e.g. `rgb` to play CartPole from
+# pixels), `null` for none
+render_key: null
 reward_as_observation: False
 wrapper: ???
 ```
@@ -430,6 +549,21 @@ wrapper: ???
 > [!NOTE]
 > 
 > The actions as observations wrapper is used for adding the last `n` actions to the observations. For more information, check the corresponding [howto file](./actions_as_observation.md).
+
+> [!NOTE]
+>
+> The normalization of the observations and of the rewards (the `VecNormalize` of Stable-Baselines3) is made of transforms: `sheeprl.transforms.Standardize` in the transforms of an input standardizes its observations, `sheeprl.transforms.ScaleByReturnStd` in `algo.rewards.transforms` divides the rewards by the standard deviation of the discounted return (check the [inputs and outputs howto](./inputs_and_outputs.md)). They are for the on-policy algorithms (PPO, A2C, recurrent PPO): an off-policy algorithm raises an error, since its replay buffer would keep values normalized with statistics that change during the training. Every process updates the statistics at every step with the observations and the rewards of its environments, and at the end of the rollout of every iteration the processes merge them: from then on they are the same in every process, until the next rollout. They are saved in the checkpoints, and the test episode and `sheeprl-eval` normalize the observations with them, frozen. The logged episode returns are the ones of the environments. The models registered in MLflow don't include the transforms that run in the environments (`frame` and `envs`): their inputs must be transformed as the environments did, with the statistics in the checkpoint (`checkpoint["env"]["transforms"]`).
+>
+> The other normalizations of SheepRL live where they act, and are configured by the algorithms:
+>
+> | What | Where | Option |
+> |---|---|---|
+> | the bounded actions, exposed as [-1, 1] | `NormalizeAction` (`sheeprl/envs/wrappers.py`) | `algo.normalize_actions` |
+> | the images, scaled to [-0.5, 0.5] | `sheeprl.transforms.Scale` | `algo.inputs.image.transforms` |
+> | the vector observations of DreamerV3 and DreamerV3.5, squashed by the symlog | `sheeprl.transforms.Symlog` | `algo.inputs.vector.transforms` |
+> | the advantages of the on-policy algorithms | `normalize_tensor` (`sheeprl/utils/utils.py`) | `algo.normalize_advantages` |
+> | the returns of DreamerV3 and DreamerV3.5, by their percentiles | `Moments` (`sheeprl/algos/dreamer_v3/utils.py`) | `algo.actor.moments` |
+> | the layers of the networks | `LayerNorm`, `LayerNormChannelLast`, `LayerNormGRUCell` (`sheeprl/models/models.py`), `RMSNorm` (`sheeprl/algos/dreamer_v3_5/agent.py`) | per algorithm (e.g. `algo.layer_norm`) |
 
 Every custom environment must then "inherit" from this default config, override the particular parameters, and define the `wrapper` field, which is the one that will be directly instantiated at runtime. The `wrapper` field must define all the specific parameters to be passed to the `_target_` function when the wrapper will be instantiated. Take for example the `atari.yaml` config:
 
@@ -445,7 +579,7 @@ max_episode_steps: 27000
 
 # Wrapper to be instantiated
 wrapper:
-  _target_: gymnasium.wrappers.AtariPreprocessing  # https://gymnasium.farama.org/api/wrappers/misc_wrappers/#gymnasium.wrappers.AtariPreprocessing
+  _target_: gymnasium.wrappers.AtariPreprocessing # https://gymnasium.farama.org/api/wrappers/misc_wrappers/#gymnasium.wrappers.AtariPreprocessing
   env:
     _target_: gymnasium.make
     id: ${env.id}
@@ -472,6 +606,7 @@ The `experiment` configs are the main entrypoint for an experiment: it gathers a
 
 defaults:
   - dreamer_v3
+  - override /algo: dreamer_v3_S
   - override /env: atari
   - _self_
 
@@ -495,20 +630,8 @@ buffer:
 
 # Algorithm
 algo:
-  learning_starts: 1024
   total_steps: 100000
-  
-  dense_units: 512
-  mlp_layers: 2
-  world_model:
-    encoder:
-      cnn_channels_multiplier: 32
-    recurrent_model:
-      recurrent_state_size: 512
-    transition_model:
-      hidden_size: 512
-    representation_model:
-      hidden_size: 512
+  learning_starts: 1024
 ```
 
 Given this config, one can easily run an experiment to test the Dreamer-V3 algorithm on the Ms-PacMan environment with the following simple CLI command: 
@@ -519,7 +642,7 @@ python sheeprl.py exp=dreamer_v3_100k_ms_pacman
 
 > [!WARNING]
 >
-> The default hyperparameters specified in the configs gathered by the experiment config (in this example the hyperparameters specified by the `sheeprl/configs/exp/dreamer_v3.yaml`, `sheeprl/configs/env/atari.yaml` and all the configs coming with them) will be overwritten by the values in the current config whenever a naming collision happens, for example when the same field is defined in both configurations. Those naming collisions will be resolved by keeping the value defined in the current config. This behaviour is specified by letting the `_self_` keyword be the last one in the `defaults` list.
+> The default hyperparameters specified in the configs gathered by the experiment config (in this example the hyperparameters specified by the `sheeprl/configs/exp/dreamer_v3.yaml`, `sheeprl/configs/algo/dreamer_v3_S.yaml`, `sheeprl/configs/env/atari.yaml` and all the configs coming with them) will be overwritten by the values in the current config whenever a naming collision happens, for example when the same field is defined in both configurations. Those naming collisions will be resolved by keeping the value defined in the current config. This behaviour is specified by letting the `_self_` keyword be the last one in the `defaults` list.
 
 ### Fabric
 
@@ -532,6 +655,8 @@ This configuration file manages where and how to create folders or subfolders fo
 ```yaml
 run:
   dir: logs/runs/${root_dir}/${run_name}
+job:
+  chdir: False
 ```
 
 ### Metric
@@ -546,6 +671,8 @@ log_every: 5000
 # for more information
 sync_on_compute: False
 ```
+
+For more information about the metric config, check the [logs and checkpoints howto](./logs_and_checkpoints.md).
 
 ### Optimizer
 

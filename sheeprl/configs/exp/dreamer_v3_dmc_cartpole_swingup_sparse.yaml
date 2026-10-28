@@ -33,11 +33,11 @@ buffer:
 # Algorithm
 algo:
   total_steps: 500_000
-  cnn_keys:
-    encoder:
-      - rgb
-  mlp_keys:
-    encoder: []
+  inputs:
+    image:
+      keys: [rgb]
+    vector:
+      keys: []
   learning_starts: 1300
   
 

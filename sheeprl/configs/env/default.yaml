@@ -1,17 +1,17 @@
 id: ???
 num_envs: 4
-frame_stack: 1
 sync_env: False
 screen_size: 64
 action_repeat: 1
 grayscale: False
-clip_rewards: False
 capture_video: True
-frame_stack_dilation: 1
 actions_as_observation:
   num_stack: -1
   noop: "You MUST define the NOOP"
   dilation: 1
 max_episode_steps: null
+# The key under which the render of the environment is added to its observations (e.g. `rgb` to play CartPole from
+# pixels), `null` for none
+render_key: null
 reward_as_observation: False
 wrapper: ???

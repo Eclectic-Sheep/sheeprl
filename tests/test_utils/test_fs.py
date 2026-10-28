@@ -119,3 +119,18 @@ def test_the_buffers_of_a_moved_log_directory_are_found_next_to_its_checkpoint(t
     # Loaded with the checkpoint of the moved directory (`load_checkpoint`)
     buffers.checkpoint_path = str(tmp_path / "new" / "checkpoint" / "ckpt_8_0.ckpt")
     assert buffers[0] == {"rank": 0}
+
+
+@pytest.mark.parametrize("saved", [None, "0.5.0", "2.0.0"])
+def test_a_checkpoint_of_another_major_version_is_rejected(monkeypatch, saved):
+    from sheeprl import __version__
+
+    major = int(__version__.split(".")[0])
+    if saved is not None and int(saved.split(".")[0]) == major:
+        saved = f"{major + 1}.0.0"
+    state = {"agent": {}} if saved is None else {"agent": {}, "sheeprl_version": saved}
+    fabric = type("Fabric", (), {"load": lambda self, path, **kwargs: dict(state)})()
+    with pytest.raises(RuntimeError, match="major versions are not compatible"):
+        fs.load_checkpoint(fabric, "ckpt_8_0.ckpt")
+    state["sheeprl_version"] = f"{major}.99.0"
+    assert fs.load_checkpoint(fabric, "ckpt_8_0.ckpt")["agent"] == {}

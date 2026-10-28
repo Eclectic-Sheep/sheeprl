@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from functools import partial
-from typing import Dict, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
@@ -13,16 +13,20 @@ from lightning.fabric import Fabric
 from lightning.fabric.wrappers import _FabricModule
 from torch import Tensor, nn
 
+from sheeprl.algos.dreamer_policy import DreamerPolicy
 from sheeprl.algos.dreamer_v1.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
-from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
-from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.algos.dreamer_v2.utils import init_weights as dv2_init_weights
-from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
-from sheeprl.utils.compile import compiled_player
+from sheeprl.core.actions import ActionCodec
+from sheeprl.models.io import Encoder, build_decoder, build_encoder
+from sheeprl.models.models import MLP
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.utils import dotdict
+
+if TYPE_CHECKING:
+    from sheeprl.core.schedule import TrainSchedule
 
 # The initialization of the layers of Keras, which the official implementation uses: the uniform Glorot initializer
 # for the kernels, zero biases
@@ -44,7 +48,7 @@ class Actor(DV2Actor):
         self,
         latent_state_size: int,
         actions_dim: Sequence[int],
-        is_continuous: bool,
+        continuous: Sequence[bool],
         distribution_cfg: dotdict,
         init_std: float = 5.0,
         min_std: float = 1e-4,
@@ -59,7 +63,7 @@ class Actor(DV2Actor):
         super().__init__(
             latent_state_size=latent_state_size,
             actions_dim=actions_dim,
-            is_continuous=is_continuous,
+            continuous=continuous,
             distribution_cfg=distribution_cfg,
             init_std=init_std,
             min_std=min_std,
@@ -71,7 +75,7 @@ class Actor(DV2Actor):
             expl_decay=expl_decay,
             expl_min=expl_min,
         )
-        if is_continuous and distribution_cfg.get("type", "auto").lower() == "auto":
+        if any(continuous) and distribution_cfg.get("type", "auto").lower() == "auto":
             self.distribution = "tanh_normal"
         if self.distribution == "tanh_normal":
             # The inverse of the softplus of `init_std` (`raw_init_std` of the official implementation)
@@ -194,7 +198,7 @@ class RSSM(nn.Module):
             action (Tensor): the action taken by the agent.
             embedded_obs (Tensor): the embedded observations provided by the environment.
             is_first (Tensor): if this is the first step in the episode: the step starts from the zero state, as the
-                player does at the start of an episode.
+                policy does at the start of an episode.
 
         Returns:
             The recurrent state (Tensor): the recurrent state of the recurrent model.
@@ -298,8 +302,8 @@ class WorldModel(nn.Module):
         self.continue_model = continue_model
 
 
-class PlayerDV1(nn.Module):
-    """The model of the DreamerV1 player.
+class DreamerV1Policy(nn.Module, DreamerPolicy):
+    """The model of the DreamerV1 policy.
 
     Args:
         encoder (nn.Module| _FabricModule): the encoder.
@@ -307,11 +311,10 @@ class PlayerDV1(nn.Module):
         representation_model (nn.Module| _FabricModule): the representation model.
         actor (nn.Module| _FabricModule): the actor.
         actions_dim (Sequence[int]): the dimension of each action.
-        num_envs (int): the number of environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
         device (str | torch.device): the device where the model is stored.
-        actor_type (str, optional): which actor the player is using ('task' or 'exploration').
+        actor_type (str, optional): which actor the policy is using ('task' or 'exploration').
             Default to None.
         min_std (float): the minimum standard deviation of the posterior, as in the world model
             (`algo.world_model.min_std`).
@@ -320,55 +323,67 @@ class PlayerDV1(nn.Module):
 
     def __init__(
         self,
-        encoder: MultiEncoder | _FabricModule,
+        encoder: Encoder | _FabricModule,
         recurrent_model: RecurrentModel | _FabricModule,
         representation_model: MLP | _FabricModule,
         actor: Actor | _FabricModule,
-        actions_dim: Sequence[int],
-        num_envs: int,
+        codec: ActionCodec,
         stochastic_size: int,
         recurrent_state_size: int,
         device: str | torch.device,
         actor_type: str | None = None,
         min_std: float = 0.1,
+        keys: Sequence[str] = (),
+        mask_keys: Sequence[str] = (),
+        schedule: TrainSchedule | None = None,
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.recurrent_model = recurrent_model
         self.representation_model = representation_model
         self.actor = actor
-        self.actions_dim = actions_dim
-        self.num_envs = num_envs
+        self.codec = codec
+        # The keys of the inputs of the encoder (by default) and the action masks the actor reads
+        self.keys = tuple(keys) or tuple(encoder.keys)
+        self.mask_keys = tuple(mask_keys)
+        # The schedule of the training, whose policy steps decay the exploration noise of `act`
+        self.schedule = schedule
+        self.actions_dim = codec.dims
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.device = device
         self.actor_type = actor_type
         self.min_std = min_std
 
-    def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
-        """Initialize the states and the actions for the ended environments.
+    def init_states(self, num_envs: int) -> None:
+        """Zero latent states and actions of `num_envs` environments."""
+        self.num_envs = num_envs
+        self.actions = torch.zeros(1, num_envs, np.sum(self.actions_dim), device=self.device)
+        self.recurrent_state = torch.zeros(1, num_envs, self.recurrent_state_size, device=self.device)
+        self.stochastic_state = torch.zeros(1, num_envs, self.stochastic_size, device=self.device)
 
-        Args:
-            reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
-                If None, then all environments' states are reset.
-                Defaults to None.
-        """
-        if reset_envs is None or len(reset_envs) == 0:
-            self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            self.recurrent_state = torch.zeros(1, self.num_envs, self.recurrent_state_size, device=self.device)
-            self.stochastic_state = torch.zeros(1, self.num_envs, self.stochastic_size, device=self.device)
-        else:
-            self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs] = torch.zeros_like(self.recurrent_state[:, reset_envs])
-            self.stochastic_state[:, reset_envs] = torch.zeros_like(self.stochastic_state[:, reset_envs])
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
+        self.actions[:, env_idxes] = torch.zeros_like(self.actions[:, env_idxes])
+        self.recurrent_state[:, env_idxes] = torch.zeros_like(self.recurrent_state[:, env_idxes])
+        self.stochastic_state[:, env_idxes] = torch.zeros_like(self.stochastic_state[:, env_idxes])
+
+    def sample_actions(
+        self, obs: Dict[str, Tensor], mask: Optional[Dict[str, Tensor]], greedy: bool = False
+    ) -> Sequence[Tensor]:
+        """The actions with the exploration noise of the policy steps played after this step; the most likely ones,
+        without noise, with `greedy`."""
+        if greedy:
+            return self.get_actions(obs, greedy=True, mask=mask)
+        step = self.schedule.policy_step + self.schedule.policy_steps_per_step
+        return self.get_exploration_actions(obs, mask=mask, step=step)
 
     def get_exploration_actions(
-        self, obs: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
+        self, obs: Dict[str, Tensor], greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None, step: int = 0
     ) -> Sequence[Tensor]:
         """Return the actions with a certain amount of noise for exploration.
 
         Args:
-            obs (Tensor): the current observations.
+            obs (Dict[str, Tensor]): the current observations.
             greedy (bool): whether or not to sample the actions.
                 Default to False.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
@@ -387,12 +402,12 @@ class PlayerDV1(nn.Module):
         return expl_actions or actions
 
     def get_actions(
-        self, obs: Tensor, greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
+        self, obs: Dict[str, Tensor], greedy: bool = False, mask: Optional[Dict[str, Tensor]] = None
     ) -> Sequence[Tensor]:
         """Return the greedy actions.
 
         Args:
-            obs (Tensor): the current observations.
+            obs (Dict[str, Tensor]): the current observations.
             greedy (bool): whether or not to sample the actions.
                 Default to False.
             mask (Dict[str, Tensor], optional): the action mask (whether or not each action can be executed).
@@ -401,7 +416,7 @@ class PlayerDV1(nn.Module):
         Returns:
             The actions the agent has to perform (Sequence[Tensor]).
         """
-        embedded_obs = self.encoder(obs)
+        embedded_obs = self.encoder(obs, phase="act")
         _, self.recurrent_state = self.recurrent_model(
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
@@ -415,20 +430,19 @@ class PlayerDV1(nn.Module):
 
 def build_agent(
     fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
+    codec: ActionCodec,
     cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, PlayerDV1]:
+    schedule: Optional[TrainSchedule] = None,
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, DreamerV1Policy]:
     """Build the models and wrap them with Fabric.
 
     Args:
         fabric (Fabric): the fabric object.
-        actions_dim (Sequence[int]): the dimension of the actions.
-        is_continuous (bool): whether or not the actions are continuous.
+        codec (ActionCodec): the actions of the agent and of the environments.
         cfg (dotdict): the hyper-parameters of DreamerV1.
         obs_space (Dict[str, Any]): the observation space.
         world_model_state (Dict[str, Tensor], optional): the state loaded from a previous checkpoint of the world model.
@@ -443,7 +457,7 @@ def build_agent(
         reward models and the continue model.
         The actor (_FabricModule).
         The critic (_FabricModule).
-        The player (PlayerDV1).
+        The policy (DreamerV1Policy).
     """
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
@@ -451,42 +465,17 @@ def build_agent(
 
     # Sizes
     latent_state_size = world_model_cfg.stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
+    actions_dim = codec.dims
 
     # Define models
-    cnn_encoder = (
-        CNNEncoder(
-            keys=cfg.algo.cnn_keys.encoder,
-            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.encoder],
-            image_size=obs_space[cfg.algo.cnn_keys.encoder[0]].shape[-2:],
-            channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
-            layer_norm=False,
-            activation=hydra.utils.get_class(world_model_cfg.encoder.cnn_act),
-        )
-        if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
-        else None
-    )
-    mlp_encoder = (
-        MLPEncoder(
-            keys=cfg.algo.mlp_keys.encoder,
-            input_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder],
-            mlp_layers=world_model_cfg.encoder.mlp_layers,
-            dense_units=world_model_cfg.encoder.dense_units,
-            activation=hydra.utils.get_class(world_model_cfg.encoder.dense_act),
-            layer_norm=False,
-        )
-        if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
-        else None
-    )
-    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+    encoder = build_encoder(cfg, obs_space)
     recurrent_model = RecurrentModel(
         input_size=sum(actions_dim) + world_model_cfg.stochastic_size,
         recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
         activation=hydra.utils.get_class(world_model_cfg.recurrent_model.dense_act),
     )
     representation_model = MLP(
-        input_dims=(
-            world_model_cfg.recurrent_model.recurrent_state_size + encoder.cnn_output_dim + encoder.mlp_output_dim
-        ),
+        input_dims=(world_model_cfg.recurrent_model.recurrent_state_size + encoder.output_dim),
         output_dim=world_model_cfg.stochastic_size * 2,
         hidden_sizes=[world_model_cfg.representation_model.hidden_size],
         activation=hydra.utils.get_class(world_model_cfg.representation_model.dense_act),
@@ -506,34 +495,7 @@ def build_agent(
         distribution_cfg=cfg.distribution,
         min_std=world_model_cfg.min_std,
     )
-    cnn_decoder = (
-        CNNDecoder(
-            keys=cfg.algo.cnn_keys.decoder,
-            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.decoder],
-            channels_multiplier=world_model_cfg.observation_model.cnn_channels_multiplier,
-            latent_state_size=latent_state_size,
-            cnn_encoder_output_dim=cnn_encoder.output_dim,
-            image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
-            activation=hydra.utils.get_class(world_model_cfg.observation_model.cnn_act),
-            layer_norm=False,
-        )
-        if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
-        else None
-    )
-    mlp_decoder = (
-        MLPDecoder(
-            keys=cfg.algo.mlp_keys.decoder,
-            output_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.decoder],
-            latent_state_size=latent_state_size,
-            mlp_layers=world_model_cfg.observation_model.mlp_layers,
-            dense_units=world_model_cfg.observation_model.dense_units,
-            activation=hydra.utils.get_class(world_model_cfg.observation_model.dense_act),
-            layer_norm=False,
-        )
-        if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
-        else None
-    )
-    observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
+    observation_model = build_decoder(cfg, encoder, latent_size=latent_state_size)
     reward_model = MLP(
         input_dims=latent_state_size,
         output_dim=1,
@@ -560,7 +522,7 @@ def build_agent(
     actor: Union[Actor, MinedojoActor] = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
-        is_continuous=is_continuous,
+        continuous=codec.continuous_heads,
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
         mlp_layers=actor_cfg.mlp_layers,
@@ -602,24 +564,26 @@ def build_agent(
     actor = setup_module(fabric, actor)
     critic = setup_module(fabric, critic)
 
-    # The player plays with the modules of the agent, without the wrappers of the distributed training. A copy with the
+    # The policy plays with the modules of the agent, without the wrappers of the distributed training. A copy with the
     # weights tied lost them on CUDA, where the GRU moves its weights into a new buffer at every forward
-    # (`flatten_parameters`): the player played with the initial recurrent model for the whole training
-    fabric_player = get_single_device_fabric(fabric)
-    player = PlayerDV1(
-        fabric_player.setup_module(world_model.encoder.module),
-        fabric_player.setup_module(world_model.rssm.recurrent_model.module),
-        fabric_player.setup_module(world_model.rssm.representation_model.module),
-        fabric_player.setup_module(actor.module),
-        actions_dim,
-        cfg.env.num_envs,
+    # (`flatten_parameters`): the policy played with the initial recurrent model for the whole training
+    policy_fabric = get_single_device_fabric(fabric)
+    policy = DreamerV1Policy(
+        policy_fabric.setup_module(world_model.encoder.module),
+        policy_fabric.setup_module(world_model.rssm.recurrent_model.module),
+        policy_fabric.setup_module(world_model.rssm.representation_model.module),
+        policy_fabric.setup_module(actor.module),
+        codec,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
+        policy_fabric.device,
         min_std=cfg.algo.world_model.min_std,
+        keys=encoder.keys,
+        mask_keys=cfg.algo.extra_keys,
+        schedule=schedule,
     )
-    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes. Its exploration noise (`get_exploration_actions`) is added uncompiled: it changes with
     # the policy step
-    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
-    return world_model, actor, critic, player
+    policy.get_actions = compiled_policy(policy.get_actions, fabric, cfg, cuda_graphs=False)
+    return world_model, actor, critic, policy

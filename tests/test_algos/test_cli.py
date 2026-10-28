@@ -100,11 +100,11 @@ DREAMER_V3_ARGS = [
     "dry_run=True",
     "algo.dense_units=8",
     "algo.horizon=8",
-    "algo.cnn_keys.encoder=[rgb]",
-    "algo.cnn_keys.decoder=[rgb]",
-    "algo.mlp_keys.encoder=[state]",
-    "algo.mlp_keys.decoder=[state]",
-    "algo.world_model.encoder.cnn_channels_multiplier=2",
+    "algo.inputs.image.keys=[rgb]",
+    "algo.outputs.image.keys=[rgb]",
+    "algo.inputs.vector.keys=[state]",
+    "algo.outputs.vector.keys=[state]",
+    "algo.inputs.image.net.channels_multiplier=2",
     "algo.replay_ratio=1",
     "algo.world_model.recurrent_model.recurrent_state_size=8",
     "algo.world_model.representation_model.hidden_size=8",
@@ -137,8 +137,9 @@ def test_run_algo():
         "exp=ppo",
         "dry_run=True",
         "algo.rollout_steps=1",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
+        "env.render_key=rgb",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
         "checkpoint.save_last=False",
         "metric.log_level=0",
         "metric.disable_timer=True",
@@ -158,10 +159,10 @@ def test_resume_from_checkpoint():
         "root_dir=pytest_resume_ckpt",
         "run_name=test_resume",
         "metric.log_level=0",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
         *IN_PROCESS_ENV_ARGS,
     ]
     with mock.patch.object(sys, "argv", args):
@@ -232,11 +233,11 @@ def test_evaluate_without_seed():
         "fabric.accelerator=cpu",
         "algo.dense_units=8",
         "algo.horizon=8",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
-        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
+        "algo.inputs.image.net.channels_multiplier=2",
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
@@ -280,7 +281,7 @@ def test_evaluate_p2e_dv3_plays_the_task_actor():
     # The evaluation of a P2E-DV3 checkpoint must play the task actor stored in the checkpoint
     import torch
 
-    from sheeprl.algos.p2e_dv3 import evaluate as p2e_dv3_evaluate
+    from sheeprl.algos.p2e_dv3 import p2e_dv3_exploration
     from sheeprl.cli import evaluation
 
     root_dir = "pytest_test_evaluate_p2e_dv3"
@@ -299,11 +300,11 @@ def test_evaluate_p2e_dv3_plays_the_task_actor():
         "fabric.accelerator=cpu",
         "algo.dense_units=8",
         "algo.horizon=8",
-        "algo.cnn_keys.encoder=[rgb]",
-        "algo.cnn_keys.decoder=[rgb]",
-        "algo.mlp_keys.encoder=[state]",
-        "algo.mlp_keys.decoder=[state]",
-        "algo.world_model.encoder.cnn_channels_multiplier=2",
+        "algo.inputs.image.keys=[rgb]",
+        "algo.outputs.image.keys=[rgb]",
+        "algo.inputs.vector.keys=[state]",
+        "algo.outputs.vector.keys=[state]",
+        "algo.inputs.image.net.channels_multiplier=2",
         "algo.world_model.recurrent_model.recurrent_state_size=8",
         "algo.world_model.representation_model.hidden_size=8",
         "algo.world_model.transition_model.hidden_size=8",
@@ -327,18 +328,19 @@ def test_evaluate_p2e_dv3_plays_the_task_actor():
     ckpt_path = os.path.join(ckpt_root, ckpt_dir, "checkpoint")
     ckpt_path = os.path.join(ckpt_path, os.listdir(ckpt_path)[-1])
 
-    players = []
-    with mock.patch.object(p2e_dv3_evaluate, "test", lambda player, *args, **kwargs: players.append(player)):
+    policies = []
+    # The test of the algorithm (`P2EDV3Exploration.test`)
+    with mock.patch.object(p2e_dv3_exploration, "run_test", lambda policy, *args, **kwargs: policies.append(policy)):
         with mock.patch.object(
             sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False", "seed=42"]
         ):
             evaluation()
 
     actor_task_state = torch.load(ckpt_path, weights_only=False)["actor_task"]
-    player_actor_state = players[0].actor.state_dict()
-    assert player_actor_state.keys() == actor_task_state.keys()
+    policy_actor_state = policies[0].actor.state_dict()
+    assert policy_actor_state.keys() == actor_task_state.keys()
     for k, v in actor_task_state.items():
-        assert torch.equal(player_actor_state[k].cpu(), v.cpu())
+        assert torch.equal(policy_actor_state[k].cpu(), v.cpu())
 
     try:
         shutil.rmtree(os.path.join("logs", "runs", root_dir))

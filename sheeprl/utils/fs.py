@@ -170,8 +170,19 @@ class BufferFiles(list):
 
 
 def load_checkpoint(fabric: Any, path: str | os.PathLike, **kwargs: Any) -> Any:
-    """`fabric.load(path)`, whose replay buffers (`BufferFiles`) are also looked for next to `path`."""
+    """`fabric.load(path)`, whose replay buffers (`BufferFiles`) are also looked for next to `path`. The checkpoints
+    are not compatible across major versions: a checkpoint saved by another major version of sheeprl (or by sheeprl
+    0.x, which didn't save its version) raises an error."""
+    from sheeprl import __version__
+
     state = fabric.load(str(path), **kwargs)
+    saved = state.get("sheeprl_version") if isinstance(state, dict) else None
+    if saved is None or saved.split(".")[0] != __version__.split(".")[0]:
+        raise RuntimeError(
+            f"The checkpoint '{path}' was saved by sheeprl {saved or '0.x (or by a development version of 1.0)'}, but "
+            f"this is sheeprl {__version__}: the checkpoints of different major versions are not compatible. Resume, "
+            "evaluate or register it with the version that saved it (see `howto/migrate_to_v1.md`)"
+        )
     if isinstance(state, dict) and isinstance(state.get("rb"), BufferFiles):
         state["rb"].checkpoint_path = str(path)
     return state

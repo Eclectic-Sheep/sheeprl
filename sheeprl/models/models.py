@@ -286,21 +286,17 @@ class DeCNN(nn.Module):
 
 
 class NatureCNN(CNN):
-    """CNN from DQN Nature paper: Mnih, Volodymyr, et al. "Human-level control through deep reinforcement learning."
-    Nature 518.7540 (2015): 529-533.
+    """The CNN of the DQN Nature paper (Mnih, Volodymyr, et al. "Human-level control through deep reinforcement
+    learning." Nature 518.7540 (2015): 529-533), on images of shape `input_shape` (channels, height, width): three
+    convolutions, then a linear layer with ReLU to `features_dim` features (the flattened feature maps without it).
+    Accepts any leading dimensions."""
 
-    Args:
-        in_channels (int): the input channels to the first convolutional layer
-        features_dim (int): the features dimension in output from the last convolutional layer
-        screen_size (int, optional): the dimension of the input image as a single integer.
-            Needed to extract the features and compute the output dimension after all the
-            convolutional layers.
-            Defaults to 64.
-    """
-
-    def __init__(self, in_channels: int, features_dim: int, screen_size: int = 64):
+    def __init__(self, input_shape: Sequence[int], features_dim: Optional[int] = 512):
+        input_shape = tuple(int(d) for d in input_shape)
+        if len(input_shape) != 3:
+            raise ValueError(f"NatureCNN takes images of shape (channels, height, width), got {input_shape}")
         super().__init__(
-            in_channels,
+            input_shape[0],
             [32, 64, 64],
             layer_args=[
                 {"kernel_size": 8, "stride": 4},
@@ -308,9 +304,9 @@ class NatureCNN(CNN):
                 {"kernel_size": 3, "stride": 1},
             ],
         )
-
+        self.input_shape = input_shape
         with torch.no_grad():
-            x = self.model(torch.rand(1, in_channels, screen_size, screen_size, device=self.model[0].weight.device))
+            x = self.model(torch.rand(1, *input_shape, device=self.model[0].weight.device))
             out_dim = x.flatten(1).shape[1]
         self._output_dim = out_dim
         self.fc = None
@@ -324,8 +320,7 @@ class NatureCNN(CNN):
 
     def forward(self, x: Tensor) -> Tensor:
         x = cnn_forward(self.model, x, input_dim=x.shape[-3:], output_dim=(-1,))
-        x = F.relu(self.fc(x))
-        return x
+        return x if self.fc is None else F.relu(self.fc(x))
 
 
 class LayerNormGRUCell(nn.Module):
@@ -408,100 +403,6 @@ class LayerNormGRUCell(nn.Module):
             hx = hx.unsqueeze(0)
 
         return hx
-
-
-class MultiEncoder(nn.Module):
-    def __init__(
-        self,
-        cnn_encoder: ModuleType,
-        mlp_encoder: ModuleType,
-    ) -> None:
-        super().__init__()
-        if cnn_encoder is None and mlp_encoder is None:
-            raise ValueError("There must be at least one encoder, both cnn and mlp encoders are None")
-        self.has_cnn_encoder = False
-        self.has_mlp_encoder = False
-        if cnn_encoder is not None:
-            if getattr(cnn_encoder, "input_dim", None) is None:
-                raise AttributeError(
-                    "`cnn_encoder` must contain the `input_dim` attribute representing "
-                    "the dimension of the input tensor"
-                )
-            if getattr(cnn_encoder, "output_dim", None) is None:
-                raise AttributeError(
-                    "`cnn_encoder` must contain the `output_dim` attribute representing "
-                    "the dimension of the output tensor"
-                )
-            self.has_cnn_encoder = True
-        if mlp_encoder is not None:
-            if getattr(mlp_encoder, "input_dim", None) is None:
-                raise AttributeError(
-                    "`mlp_encoder` must contain the `input_dim` attribute representing "
-                    "the dimension of the input tensor"
-                )
-            if getattr(mlp_encoder, "output_dim", None) is None:
-                raise AttributeError(
-                    "`mlp_encoder` must contain the `output_dim` attribute representing "
-                    "the dimension of the output tensor"
-                )
-            self.has_mlp_encoder = True
-        self.has_both_encoders = self.has_cnn_encoder and self.has_mlp_encoder
-        self.cnn_encoder = cnn_encoder
-        self.mlp_encoder = mlp_encoder
-        self.cnn_input_dim = self.cnn_encoder.input_dim if self.cnn_encoder is not None else None
-        self.mlp_input_dim = self.mlp_encoder.input_dim if self.mlp_encoder is not None else None
-        self.cnn_output_dim = self.cnn_encoder.output_dim if self.cnn_encoder is not None else 0
-        self.mlp_output_dim = self.mlp_encoder.output_dim if self.mlp_encoder is not None else 0
-        self.output_dim = self.cnn_output_dim + self.mlp_output_dim
-
-    @property
-    def cnn_keys(self) -> Sequence[str]:
-        return self.cnn_encoder.keys if self.cnn_encoder is not None else []
-
-    @property
-    def mlp_keys(self) -> Sequence[str]:
-        return self.mlp_encoder.keys if self.mlp_encoder is not None else []
-
-    def forward(self, obs: Dict[str, Tensor], *args, **kwargs) -> Tensor:
-        if self.has_cnn_encoder:
-            cnn_out = self.cnn_encoder(obs, *args, **kwargs)
-        if self.has_mlp_encoder:
-            mlp_out = self.mlp_encoder(obs, *args, **kwargs)
-        if self.has_both_encoders:
-            return torch.cat((cnn_out, mlp_out), -1)
-        elif self.has_cnn_encoder:
-            return cnn_out
-        else:
-            return mlp_out
-
-
-class MultiDecoder(nn.Module):
-    def __init__(
-        self,
-        cnn_decoder: ModuleType,
-        mlp_decoder: ModuleType,
-    ) -> None:
-        super().__init__()
-        if cnn_decoder is None and mlp_decoder is None:
-            raise ValueError("There must be an decoder, both cnn and mlp decoders are None")
-        self.cnn_decoder = cnn_decoder
-        self.mlp_decoder = mlp_decoder
-
-    @property
-    def cnn_keys(self) -> Sequence[str]:
-        return self.cnn_decoder.keys if self.cnn_decoder is not None else []
-
-    @property
-    def mlp_keys(self) -> Sequence[str]:
-        return self.mlp_decoder.keys if self.mlp_decoder is not None else []
-
-    def forward(self, x: Tensor) -> Dict[str, Tensor]:
-        reconstructed_obs = {}
-        if self.cnn_decoder is not None:
-            reconstructed_obs.update(self.cnn_decoder(x))
-        if self.mlp_decoder is not None:
-            reconstructed_obs.update(self.mlp_decoder(x))
-        return reconstructed_obs
 
 
 class LayerNormChannelLast(nn.LayerNorm):

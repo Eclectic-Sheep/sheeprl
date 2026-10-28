@@ -9,7 +9,6 @@ defaults:
 # Env
 env:
   num_envs: 1
-  frame_stack: 4
   screen_size: 84
 
 # Checkpoint
@@ -39,10 +38,17 @@ algo:
   dense_act: torch.nn.ReLU
   layer_norm: False
   max_grad_norm: 0.5
-  mlp_keys:
-    encoder: []
-  cnn_keys:
-    encoder: ["rgb"]
+  # The frames of Atari, a bare observation (the key `state`)
+  inputs:
+    image:
+      keys: [state]
+      # The images stacked with the previous ones: the list replaces the one of the algorithm
+      transforms:
+        - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+        - {_target_: sheeprl.transforms.FrameStack, n: 4}
+        - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    vector:
+      keys: []
 
   # Encoder
   encoder:

@@ -45,12 +45,12 @@ def entries(saved: Dict[str, torch.Tensor], prefix: str) -> Dict[str, torch.Tens
 DREAMER_ARGS = [
     "env=dummy",
     "env.id=discrete_dummy",
-    "algo.cnn_keys.encoder=[rgb]",
-    "algo.cnn_keys.decoder=[rgb]",
-    "algo.mlp_keys.encoder=[state]",
-    "algo.mlp_keys.decoder=[state]",
+    "algo.inputs.image.keys=[rgb]",
+    "algo.outputs.image.keys=[rgb]",
+    "algo.inputs.vector.keys=[state]",
+    "algo.outputs.vector.keys=[state]",
     "algo.dense_units=8",
-    "algo.world_model.encoder.cnn_channels_multiplier=2",
+    "algo.inputs.image.net.channels_multiplier=2",
     "algo.world_model.recurrent_model.recurrent_state_size=8",
     "algo.world_model.representation_model.hidden_size=8",
     "algo.world_model.transition_model.hidden_size=8",
@@ -63,7 +63,7 @@ DREAMER_ARGS = [
 
 
 def dreamer_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torch.Tensor]:
-    """The weights of a Dreamer player: the encoder and the RSSM of the world model, and the actor `actor`."""
+    """The weights of a Dreamer policy: the encoder and the RSSM of the world model, and the actor `actor`."""
     return {
         **{k: v for k, v in saved["world_model"].items() if k.startswith(("encoder.", "rssm."))},
         **{"actor." + k: v for k, v in saved[actor].items()},
@@ -71,7 +71,7 @@ def dreamer_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torc
 
 
 def dreamer_v2_policy(saved: Dict[str, torch.Tensor], actor: str) -> Dict[str, torch.Tensor]:
-    """The weights of a DreamerV2 (or DreamerV1) player: the encoder, the recurrent and representation models of the
+    """The weights of a DreamerV2 (or DreamerV1) policy: the encoder, the recurrent and representation models of the
     world model, and the actor `actor`."""
     world_model = saved["world_model"]
     return {
@@ -114,8 +114,8 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
             "exp=a2c",
             "env=dummy",
             "env.id=discrete_dummy",
-            "algo.cnn_keys.encoder=[rgb]",
-            "algo.mlp_keys.encoder=[]",
+            "algo.inputs.image.keys=[rgb]",
+            "algo.inputs.vector.keys=[]",
             "algo.rollout_steps=4",
         ],
         "policy": lambda saved: saved["agent"],
@@ -144,9 +144,9 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
             # A rendered environment with bounded continuous actions (those of the dummy environments are unbounded)
             # whose renderer draws only shapes: Pendulum loads an image, which needs the PNG support of pygame
             "env.id=MountainCarContinuous-v0",
-            "env.frame_stack=1",
-            "algo.cnn_keys.encoder=[rgb]",
-            "algo.mlp_keys.encoder=[state]",
+            "env.render_key=rgb",
+            "algo.inputs.image.keys=[rgb]",
+            "algo.inputs.vector.keys=[state]",
             "algo.hidden_size=8",
             "algo.dense_units=8",
             "algo.cnn_channels_multiplier=1",
@@ -171,7 +171,7 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
             "algo.world_model.recurrent_model.recurrent_state_size=16",
             "algo.world_model.recurrent_model.hidden_size=8",
             "algo.world_model.recurrent_model.blocks=4",
-            "algo.world_model.observation_model.block_space=2",
+            "algo.outputs.image.net.block_space=2",
             "algo.world_model.stochastic_size=4",
             "algo.world_model.discrete_size=4",
         ],
@@ -286,19 +286,27 @@ def test_evaluation_plays_the_trained_models(name):
     ckpt_path = train(name, root_dir)
     saved = torch.load(ckpt_path, weights_only=False)
 
-    evaluate = importlib.import_module(f"sheeprl.algos.{ALGORITHMS[name].get('module', name)}.evaluate")
+    importlib.import_module(f"sheeprl.algos.{ALGORITHMS[name].get('module', name)}.evaluate")
     played: List[torch.nn.Module] = []
 
-    def test(policy, *args, **kwargs):
+    def run_test(policy, *args, **kwargs):
         played.append(policy)
 
+    # The test of the algorithms (`Algorithm.test`): `sheeprl.core.run_test`, where it is imported
+    modules = [
+        module
+        for module_name, module in list(sys.modules.items())
+        if module_name.startswith("sheeprl.") and hasattr(module, "run_test")
+    ]
     try:
-        with (
-            mock.patch.object(evaluate, "test", test),
-            mock.patch.object(
-                sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False"]
-            ),
-        ):
+        with contextlib.ExitStack() as stack:
+            for module in modules:
+                stack.enter_context(mock.patch.object(module, "run_test", run_test))
+            stack.enter_context(
+                mock.patch.object(
+                    sys, "argv", ["sheeprl_eval.py", f"checkpoint_path={ckpt_path}", "env.capture_video=False"]
+                )
+            )
             evaluation()
     finally:
         shutil.rmtree(os.path.join("logs", "runs", root_dir), ignore_errors=True)

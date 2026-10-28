@@ -20,8 +20,10 @@ algo:
   per_rank_batch_size: 16
   per_rank_sequence_length: 64
   # The decoder reconstructs the observations of the encoder
-  cnn_keys:
-    encoder: [rgb]
+  # The frames of Atari, a bare observation (the key `state`)
+  inputs:
+    image:
+      keys: [state]
 
 # Checkpoint
 checkpoint:

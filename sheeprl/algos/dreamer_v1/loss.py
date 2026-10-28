@@ -57,8 +57,7 @@ def actor_loss(lambda_values: Tensor) -> Tensor:
 
 
 def reconstruction_loss(
-    qo: Distribution,
-    observations: Dict[str, Tensor],
+    observation_log_probs: Dict[str, Tensor],
     qr: Distribution,
     rewards: Tensor,
     posteriors_dist: Distribution,
@@ -74,8 +73,8 @@ def reconstruction_loss(
     [https://arxiv.org/abs/1912.01603](https://arxiv.org/abs/1912.01603).
 
     Args:
-        qo (Distribution): the distribution returned by the observation_model (decoder).
-        observations (Dict[str, Tensor]): the observations provided by the environment.
+        observation_log_probs (Dict[str, Tensor]): the log-likelihood of every observation key under the
+            distribution of its reconstruction (`Decoder.log_probs`).
         qr (Distribution): the reward distribution returned by the reward_model.
         rewards (Tensor): the rewards obtained by the agent during the "Environment interaction" phase.
         posteriors_dist (Distribution): the distribution of the stochastic state.
@@ -100,7 +99,7 @@ def reconstruction_loss(
         continue_loss (Tensor): the value of the continue loss (0 if it is not computed).
         reconstruction_loss (Tensor): the value of the overall reconstruction loss.
     """
-    observation_loss = -sum([qo[k].log_prob(observations[k]).mean() for k in qo.keys()])
+    observation_loss = -sum([log_prob.mean() for log_prob in observation_log_probs.values()])
     reward_loss = -qr.log_prob(rewards).mean()
     kl = state_kl(posteriors_dist, priors_dist).mean()
     free_nats = torch.full_like(kl, kl_free_nats)

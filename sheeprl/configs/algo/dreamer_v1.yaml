@@ -19,21 +19,43 @@ learning_starts: 5000
 per_rank_pretrain_steps: 100
 per_rank_sequence_length: ???
 
-# Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start (a few minutes
-# the first time, then mostly reused from the cache of PyTorch).
-# `mode` is the one of `torch.compile`: `reduce-overhead` also replays the kernels of every loss with CUDA graphs
-# (with `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used).
-# `player` also compiles the step of the player: faster steps in the environments
-compile:
-  enabled: False
-  mode: reduce-overhead
-  player: True
 
-# Encoder and decoder keys
-cnn_keys:
-  decoder: ${algo.cnn_keys.encoder}
-mlp_keys:
-  decoder: ${algo.mlp_keys.encoder}
+# Inputs: the images resized and scaled to [-0.5, 0.5] into the CNN of the world model, the vectors into its MLP.
+# Outputs: the same keys reconstructed by the observation model, scored with a unit-variance Normal
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    net:
+      _target_: sheeprl.algos.dreamer_v2.agent.CNNEncoder
+      channels_multiplier: 32
+      activation: ${algo.cnn_act}
+  vector:
+    keys: []
+    transforms: []
+    net:
+      _target_: sheeprl.algos.dreamer_v2.agent.MLPEncoder
+      mlp_layers: ${algo.mlp_layers}
+      dense_units: ${algo.dense_units}
+      activation: ${algo.dense_act}
+outputs:
+  image:
+    keys: ${algo.inputs.image.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v2.agent.CNNDecoder
+      channels_multiplier: ${algo.inputs.image.net.channels_multiplier}
+      activation: ${algo.cnn_act}
+    likelihood: {_target_: sheeprl.utils.distribution.UnitNormal, _partial_: true}
+  vector:
+    keys: ${algo.inputs.vector.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v2.agent.MLPDecoder
+      mlp_layers: ${algo.mlp_layers}
+      dense_units: ${algo.dense_units}
+      activation: ${algo.dense_act}
+    likelihood: {_target_: sheeprl.utils.distribution.UnitNormal, _partial_: true}
 
 # Model related parameters
 dense_units: 400
@@ -52,14 +74,6 @@ world_model:
   continue_scale_factor: 10.0
   clip_gradients: 100.0
 
-  # Encoder
-  encoder:
-    cnn_channels_multiplier: 32
-    cnn_act: ${algo.cnn_act}
-    dense_act: ${algo.dense_act}
-    mlp_layers: ${algo.mlp_layers}
-    dense_units: ${algo.dense_units}
-
   # Recurrent model
   recurrent_model:
     recurrent_state_size: 200
@@ -75,14 +89,6 @@ world_model:
   representation_model:
     hidden_size: 200
     dense_act: ${algo.dense_act}
-
-  # Decoder
-  observation_model:
-    cnn_channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
-    cnn_act: ${algo.cnn_act}
-    dense_act: ${algo.dense_act}
-    mlp_layers: ${algo.mlp_layers}
-    dense_units: ${algo.dense_units}
 
   # Reward model (2 hidden layers in the official implementation)
   reward_model:

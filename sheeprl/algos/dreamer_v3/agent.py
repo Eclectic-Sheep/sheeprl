@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import copy
+import math
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import gymnasium
 import hydra
@@ -21,190 +22,138 @@ from torch.distributions import (
 )
 from torch.distributions.utils import probs_to_logits
 
+from sheeprl.algos.dreamer_policy import DreamerPolicy
 from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v3.utils import init_weights, uniform_init_weights
-from sheeprl.models.models import (
-    CNN,
-    MLP,
-    DeCNN,
-    LayerNorm,
-    LayerNormChannelLast,
-    LayerNormGRUCell,
-    MultiDecoder,
-    MultiEncoder,
-)
-from sheeprl.utils.compile import compiled_player
+from sheeprl.core.actions import ActionCodec
+from sheeprl.models.io import Encoder, build_decoder, build_encoder
+from sheeprl.models.models import CNN, MLP, DeCNN, LayerNorm, LayerNormGRUCell
+from sheeprl.utils.compile import compiled_policy
 from sheeprl.utils.distribution import SafeTanhTransform
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.model import ModuleType, cnn_forward
-from sheeprl.utils.utils import dotdict, symlog
+from sheeprl.utils.utils import dotdict
+
+
+def _layer_norm(layer_norm: Dict[str, Any]) -> Tuple[Callable[..., nn.Module], Dict[str, Any]]:
+    """The class and the arguments of a layer norm configured as `{cls: ..., kw: {...}}`."""
+    cls = layer_norm["cls"]
+    return (hydra.utils.get_class(cls) if isinstance(cls, str) else cls), dict(layer_norm.get("kw") or {})
+
+
+def _activation(activation: Union[str, ModuleType]) -> ModuleType:
+    return hydra.utils.get_class(activation) if isinstance(activation, str) else activation
 
 
 class CNNEncoder(nn.Module):
-    """The Dreamer-V3 image encoder. This is composed of 4 `nn.Conv2d` with
-    kernel_size=3, stride=2 and padding=1. No bias is used if a `nn.LayerNorm`
-    is used after the convolution. This 4-stages model assumes that the image
-    is a 64x64 and it ends with a resolution of 4x4. If more than one image is to be encoded, then those will
-    be concatenated on the channel dimension and fed to the encoder.
-
-    Args:
-        keys (Sequence[str]): the keys representing the image observations to encode.
-        input_channels (Sequence[int]): the input channels, one for each image observation to encode.
-        image_size (Tuple[int, int]): the image size as (Height,Width).
-        channels_multiplier (int): the multiplier for the output channels. Given the 4 stages, the 4 output channels
-            will be [1, 2, 4, 8] * `channels_multiplier`.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormChannelLast.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
-        activation (ModuleType, optional): the activation function.
-            Defaults to nn.SiLU.
-        stages (int, optional): how many stages for the CNN.
-    """
+    """The image encoder of DreamerV3, on images of shape `input_shape` (channels, height, width): `stages` convolutions
+    with kernel 4, stride 2 and padding 1, of [1, 2, 4, ...] * `channels_multiplier` channels, each normalized
+    (`layer_norm`, `{cls, kw}`; no bias when it is not `nn.Identity`) and activated; the feature maps flattened. The
+    sides of the images must be divisible by 2 ** `stages` (64 x 64 images to 4 x 4 feature maps with 4 stages)."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        input_channels: Sequence[int],
-        image_size: Tuple[int, int],
+        input_shape: Sequence[int],
         channels_multiplier: int,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLast,
-        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
-        activation: ModuleType = nn.SiLU,
         stages: int = 4,
+        layer_norm: Dict[str, Any] = {"cls": "sheeprl.models.models.LayerNormChannelLast", "kw": {"eps": 1e-3}},
+        activation: Union[str, ModuleType] = nn.SiLU,
     ) -> None:
         super().__init__()
-        self.keys = keys
-        self.input_dim = (sum(input_channels), *image_size)
+        self.input_shape = tuple(int(d) for d in input_shape)
+        if len(self.input_shape) != 3 or any(side % (2**stages) for side in self.input_shape[1:]):
+            raise ValueError(
+                f"The image encoder of DreamerV3 takes images (channels, height, width) whose sides are divisible by "
+                f"2 ** stages = {2 ** stages}, got {self.input_shape}"
+            )
+        layer_norm_cls, layer_norm_kw = _layer_norm(layer_norm)
         self.model = nn.Sequential(
             CNN(
-                input_channels=self.input_dim[0],
+                input_channels=self.input_shape[0],
                 hidden_channels=(torch.tensor([2**i for i in range(stages)]) * channels_multiplier).tolist(),
                 cnn_layer=nn.Conv2d,
                 layer_args={"kernel_size": 4, "stride": 2, "padding": 1, "bias": layer_norm_cls == nn.Identity},
-                activation=activation,
+                activation=_activation(activation),
                 norm_layer=[layer_norm_cls] * stages,
                 norm_args=[{**layer_norm_kw, "normalized_shape": (2**i) * channels_multiplier} for i in range(stages)],
             ),
             nn.Flatten(-3, -1),
         )
         with torch.no_grad():
-            self.output_dim = self.model(torch.zeros(1, *self.input_dim)).shape[-1]
+            self.output_dim = self.model(torch.zeros(1, *self.input_shape)).shape[-1]
 
-    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([obs[k] for k in self.keys], dim=-3)  # channels dimension
+    def forward(self, x: Tensor) -> Tensor:
         return cnn_forward(self.model, x, x.shape[-3:], (-1,))
 
 
 class MLPEncoder(nn.Module):
-    """The Dreamer-V3 vector encoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
-    If more than one vector is to be encoded, then those will concatenated on the last
-    dimension before being fed to the encoder.
-
-    Args:
-        keys (Sequence[str]): the keys representing the vector observations to encode.
-        input_dims (Sequence[int]): the dimensions of every vector to encode.
-        mlp_layers (int, optional): how many mlp layers.
-            Defaults to 4.
-        dense_units (int, optional): the dimension of every mlp.
-            Defaults to 512.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNorm.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
-        activation (ModuleType, optional): the activation function after every layer.
-            Defaults to nn.SiLU.
-        symlog_inputs (bool, optional): whether to squash the input with the symlog function.
-            Defaults to True.
-    """
+    """The vector encoder of DreamerV3, on vectors of shape `input_shape` (the symlog of the observations is a transform
+    of the input, `sheeprl.transforms.Symlog`): `mlp_layers` linear layers of `dense_units` units, each normalized
+    (`layer_norm`, `{cls, kw}`; no bias when it is not `nn.Identity`) and activated."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        input_dims: Sequence[int],
+        input_shape: Sequence[int],
         mlp_layers: int = 4,
         dense_units: int = 512,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
-        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
-        activation: ModuleType = nn.SiLU,
-        symlog_inputs: bool = True,
+        layer_norm: Dict[str, Any] = {"cls": "sheeprl.models.models.LayerNorm", "kw": {"eps": 1e-3}},
+        activation: Union[str, ModuleType] = nn.SiLU,
     ) -> None:
         super().__init__()
-        self.keys = keys
-        self.input_dim = sum(input_dims)
+        input_shape = tuple(int(d) for d in input_shape)
+        if len(input_shape) != 1:
+            raise ValueError(f"The vector encoder of DreamerV3 takes vectors, got the shape {input_shape}")
+        layer_norm_cls, layer_norm_kw = _layer_norm(layer_norm)
         self.model = MLP(
-            self.input_dim,
+            input_shape[0],
             None,
             [dense_units] * mlp_layers,
-            activation=activation,
+            activation=_activation(activation),
             layer_args={"bias": layer_norm_cls == nn.Identity},
             norm_layer=layer_norm_cls,
             norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
         self.output_dim = dense_units
-        self.symlog_inputs = symlog_inputs
 
-    def forward(self, obs: Dict[str, Tensor]) -> Tensor:
-        x = torch.cat([symlog(obs[k]) if self.symlog_inputs else obs[k] for k in self.keys], -1)
+    def forward(self, x: Tensor) -> Tensor:
         return self.model(x)
 
 
 class CNNDecoder(nn.Module):
-    """The exact inverse of the `CNNEncoder` class. It assumes an initial resolution
-    of 4x4, and in 4 stages reconstructs the observation image to 64x64. If multiple
-    images are to be reconstructed, then it will create a dictionary with an entry
-    for every reconstructed image. No bias is used if a `nn.LayerNorm` is used after
-    the `nn.Conv2dTranspose` layer.
-
-    Args:
-        keys (Sequence[str]): the keys of the image observation to be reconstructed.
-        output_channels (Sequence[int]): the output channels, one for every image observation.
-        channels_multiplier (int): the channels multiplier, same for the encoder network.
-        latent_state_size (int): the size of the latent state. Before applying the decoder,
-            a `nn.Linear` layer is used to project the latent state to a feature vector
-            of dimension [8 * `channels_multiplier`, 4, 4].
-        cnn_encoder_output_dim (int): the output of the image encoder. It should be equal to
-            8 * `channels_multiplier` * 4 * 4.
-        image_size (Tuple[int, int]): the final image size.
-        activation (nn.Module, optional): the activation function.
-            Defaults to nn.SiLU.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNormChannelLast.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
-        stages (int): how many stages in the CNN decoder.
-    """
+    """The inverse of `CNNEncoder`: a linear layer from the latent state to the feature maps of the last stage of the
+    encoder, then `stages` transposed convolutions back to images of shape `output_shape`, the last one without
+    normalization and activation."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        output_channels: Sequence[int],
+        latent_size: int,
+        output_shape: Sequence[int],
         channels_multiplier: int,
-        latent_state_size: int,
-        cnn_encoder_output_dim: int,
-        image_size: Tuple[int, int],
-        activation: nn.Module = nn.SiLU,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNormChannelLast,
-        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
         stages: int = 4,
+        layer_norm: Dict[str, Any] = {"cls": "sheeprl.models.models.LayerNormChannelLast", "kw": {"eps": 1e-3}},
+        activation: Union[str, ModuleType] = nn.SiLU,
     ) -> None:
         super().__init__()
-        self.keys = keys
-        self.output_channels = output_channels
-        self.cnn_encoder_output_dim = cnn_encoder_output_dim
-        self.image_size = image_size
-        self.output_dim = (sum(output_channels), *image_size)
+        self.output_shape = tuple(int(d) for d in output_shape)
+        channels, height, width = self.output_shape
+        if height % (2**stages) or width % (2**stages):
+            raise ValueError(
+                f"The image decoder of DreamerV3 reconstructs images whose sides are divisible by 2 ** stages = "
+                f"{2 ** stages}, got {self.output_shape}"
+            )
+        first_maps = (2 ** (stages - 1) * channels_multiplier, height // 2**stages, width // 2**stages)
+        layer_norm_cls, layer_norm_kw = _layer_norm(layer_norm)
+        activation = _activation(activation)
         self.model = nn.Sequential(
-            nn.Linear(latent_state_size, cnn_encoder_output_dim),
-            nn.Unflatten(1, (-1, 4, 4)),
+            nn.Linear(latent_size, int(np.prod(first_maps))),
+            nn.Unflatten(1, first_maps),
             DeCNN(
-                input_channels=(2 ** (stages - 1)) * channels_multiplier,
+                input_channels=first_maps[0],
                 hidden_channels=(
                     torch.tensor([2**i for i in reversed(range(stages - 1))]) * channels_multiplier
                 ).tolist()
-                + [self.output_dim[0]],
+                + [channels],
                 cnn_layer=nn.ConvTranspose2d,
                 layer_args=[
                     {"kernel_size": 4, "stride": 2, "padding": 1, "bias": layer_norm_cls == nn.Identity}
@@ -221,61 +170,49 @@ class CNNDecoder(nn.Module):
             ),
         )
 
-    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        cnn_out = cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_dim)
-        return {k: rec_obs for k, rec_obs in zip(self.keys, torch.split(cnn_out, self.output_channels, -3))}
+    def output_layers(self) -> List[nn.Module]:
+        """The layers the official implementation initializes uniformly (`hafner_initialization`): the last transposed
+        convolution, then the projection of the latent state to the first feature maps."""
+        return [self.model[-1].model[-1], self.model[0]]
+
+    def forward(self, latent_states: Tensor) -> Tensor:
+        return cnn_forward(self.model, latent_states, (latent_states.shape[-1],), self.output_shape)
 
 
 class MLPDecoder(nn.Module):
-    """The exact inverse of the MLPEncoder. This is composed of N `nn.Linear` layers, where
-    N is specified by `mlp_layers`. No bias is used if a `nn.LayerNorm` is used after the linear layer.
-    If more than one vector is to be decoded, then it will create a dictionary with an entry
-    for every reconstructed vector.
-
-    Args:
-        keys (Sequence[str]): the keys representing the vector observations to decode.
-        output_dims (Sequence[int]): the dimensions of every vector to decode.
-        latent_state_size (int): the dimension of the latent state.
-        mlp_layers (int, optional): how many mlp layers.
-            Defaults to 4.
-        dense_units (int, optional): the dimension of every mlp.
-            Defaults to 512.
-        layer_norm_cls (Callable[..., nn.Module]): the layer norm to apply after the input projection.
-            Defaults to LayerNorm.
-        layer_norm_kw (Dict[str, Any]): the kwargs of the layer norm.
-            Default to {"eps": 1e-3}.
-        activation (ModuleType, optional): the activation function after every layer.
-            Defaults to nn.SiLU.
-    """
+    """The inverse of `MLPEncoder`: `mlp_layers` normalized linear layers of `dense_units` units from the latent state,
+    then a linear head to `output_shape` (its values flat, then reshaped)."""
 
     def __init__(
         self,
-        keys: Sequence[str],
-        output_dims: Sequence[str],
-        latent_state_size: int,
+        latent_size: int,
+        output_shape: Sequence[int],
         mlp_layers: int = 4,
         dense_units: int = 512,
-        activation: ModuleType = nn.SiLU,
-        layer_norm_cls: Callable[..., nn.Module] = LayerNorm,
-        layer_norm_kw: Dict[str, Any] = {"eps": 1e-3},
+        layer_norm: Dict[str, Any] = {"cls": "sheeprl.models.models.LayerNorm", "kw": {"eps": 1e-3}},
+        activation: Union[str, ModuleType] = nn.SiLU,
     ) -> None:
         super().__init__()
-        self.output_dims = output_dims
-        self.keys = keys
+        layer_norm_cls, layer_norm_kw = _layer_norm(layer_norm)
         self.model = MLP(
-            latent_state_size,
+            latent_size,
             None,
             [dense_units] * mlp_layers,
-            activation=activation,
+            activation=_activation(activation),
             layer_args={"bias": layer_norm_cls == nn.Identity},
             norm_layer=layer_norm_cls,
             norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
-        self.heads = nn.ModuleList([nn.Linear(dense_units, mlp_dim) for mlp_dim in self.output_dims])
+        self.output_shape = tuple(int(d) for d in output_shape)
+        self.head = nn.Linear(dense_units, math.prod(self.output_shape))
 
-    def forward(self, latent_states: Tensor) -> Dict[str, Tensor]:
-        x = self.model(latent_states)
-        return {k: h(x) for k, h in zip(self.keys, self.heads)}
+    def output_layers(self) -> List[nn.Module]:
+        """The layers the official implementation initializes uniformly (`hafner_initialization`): the head."""
+        return [self.head]
+
+    def forward(self, latent_states: Tensor) -> Tensor:
+        out = self.head(self.model(latent_states))
+        return out.reshape(*out.shape[:-1], *self.output_shape)
 
 
 class RecurrentModel(nn.Module):
@@ -667,46 +604,48 @@ class DecoupledRSSM(RSSM):
         return logits, compute_stochastic_state(logits, discrete=self.discrete)
 
 
-class PlayerDV3(nn.Module):
+class DreamerV3Policy(nn.Module, DreamerPolicy):
     """
-    The model of the Dreamer_v3 player.
+    The model of the Dreamer_v3 policy.
 
     Args:
-        encoder (MultiEncoder): the encoder.
+        encoder (Encoder): the encoder.
         rssm (RSSM | DecoupledRSSM): the RSSM model.
         actor (_FabricModule): the actor.
-        actions_dim (Sequence[int]): the dimension of the actions.
-        num_envs (int): the number of environments.
+        codec (ActionCodec): the actions of the agent and of the environments.
         stochastic_size (int): the size of the stochastic state.
         recurrent_state_size (int): the size of the recurrent state.
-        transition_model (_FabricModule): the transition model.
         discrete_size (int): the dimension of a single Categorical variable in the
             stochastic state (prior or posterior).
             Defaults to 32.
-        actor_type (str, optional): which actor the player is using ('task' or 'exploration').
+        actor_type (str, optional): which actor the policy is using ('task' or 'exploration').
             Default to None.
         decoupled_rssm (bool, optional): whether to use the DecoupledRSSM model.
     """
 
     def __init__(
         self,
-        encoder: MultiEncoder | _FabricModule,
+        encoder: Encoder | _FabricModule,
         rssm: RSSM | DecoupledRSSM,
         actor: Actor | MinedojoActor | _FabricModule,
-        actions_dim: Sequence[int],
-        num_envs: int,
+        codec: ActionCodec,
         stochastic_size: int,
         recurrent_state_size: int,
         device: str | torch.device,
         discrete_size: int = 32,
         actor_type: str | None = None,
+        keys: Sequence[str] = (),
+        mask_keys: Sequence[str] = (),
     ) -> None:
         super().__init__()
         self.encoder = encoder
         self.rssm = rssm
         self.actor = actor
-        self.actions_dim = actions_dim
-        self.num_envs = num_envs
+        self.codec = codec
+        # The keys of the inputs of the encoder (by default) and the action masks the actor reads
+        self.keys = tuple(keys) or tuple(encoder.keys)
+        self.mask_keys = tuple(mask_keys)
+        self.actions_dim = codec.dims
         self.stochastic_size = stochastic_size
         self.recurrent_state_size = recurrent_state_size
         self.device = device
@@ -715,25 +654,21 @@ class PlayerDV3(nn.Module):
         self.decoupled_rssm = isinstance(rssm, DecoupledRSSM)
 
     @torch.no_grad()
-    def init_states(self, reset_envs: Optional[Sequence[int]] = None) -> None:
-        """Initialize the states and the actions for the ended environments.
+    def init_states(self, num_envs: int) -> None:
+        """The initial latent states (`RSSM.get_initial_states`) and zero actions of `num_envs` environments."""
+        self.num_envs = num_envs
+        self.actions = torch.zeros(1, num_envs, np.sum(self.actions_dim), device=self.device)
+        recurrent_state, stochastic_state = self.rssm.get_initial_states((1, num_envs))
+        # The initial recurrent state is one, expanded to the environments (their rows share the memory): a copy,
+        # since the states of the environments are then reset one by one
+        self.recurrent_state = recurrent_state.clone()
+        self.stochastic_state = stochastic_state.reshape(1, num_envs, -1)
 
-        Args:
-            reset_envs (Optional[Sequence[int]], optional): which environments' states to reset.
-                If None, then all environments' states are reset.
-                Defaults to None.
-        """
-        if reset_envs is None or len(reset_envs) == 0:
-            self.actions = torch.zeros(1, self.num_envs, np.sum(self.actions_dim), device=self.device)
-            recurrent_state, stochastic_state = self.rssm.get_initial_states((1, self.num_envs))
-            # The initial recurrent state is one, expanded to the environments (their rows share the memory): a copy,
-            # since the states of the environments are then reset one by one
-            self.recurrent_state = recurrent_state.clone()
-            self.stochastic_state = stochastic_state.reshape(1, self.num_envs, -1)
-        else:
-            self.actions[:, reset_envs] = torch.zeros_like(self.actions[:, reset_envs])
-            self.recurrent_state[:, reset_envs], stochastic_state = self.rssm.get_initial_states((1, len(reset_envs)))
-            self.stochastic_state[:, reset_envs] = stochastic_state.reshape(1, len(reset_envs), -1)
+    @torch.no_grad()
+    def reset_state(self, env_idxes: Sequence[int]) -> None:
+        self.actions[:, env_idxes] = torch.zeros_like(self.actions[:, env_idxes])
+        self.recurrent_state[:, env_idxes], stochastic_state = self.rssm.get_initial_states((1, len(env_idxes)))
+        self.stochastic_state[:, env_idxes] = stochastic_state.reshape(1, len(env_idxes), -1)
 
     def get_actions(
         self,
@@ -752,7 +687,7 @@ class PlayerDV3(nn.Module):
         Returns:
             The actions the agent has to perform.
         """
-        embedded_obs = self.encoder(obs)
+        embedded_obs = self.encoder(obs, phase="act")
         self.recurrent_state = self.rssm.recurrent_model(
             torch.cat((self.stochastic_state, self.actions), -1), self.recurrent_state
         )
@@ -766,6 +701,12 @@ class PlayerDV3(nn.Module):
         actions, _ = self.actor(torch.cat((self.stochastic_state, self.recurrent_state), -1), greedy, mask)
         self.actions = torch.cat(actions, -1)
         return actions
+
+
+def clip_head_actions(actions: Sequence[Tensor], continuous: Sequence[bool], action_clip: float) -> Tensor:
+    """The actions of the heads of the actor concatenated, the continuous ones (`continuous`) clipped to `action_clip`
+    (`clip_actions`), the categorical ones as they are."""
+    return torch.cat([clip_actions(a, action_clip) if c else a for a, c in zip(actions, continuous)], dim=-1)
 
 
 def clip_actions(actions: Tensor, action_clip: float) -> Tensor:
@@ -783,10 +724,11 @@ class Actor(nn.Module):
 
     Args:
         latent_state_size (int): the dimension of the latent state (stochastic size + recurrent_state_size).
-        actions_dim (Sequence[int]): the dimension in output of the actor.
-            The number of actions if continuous, the dimension of the action if discrete.
-        is_continuous (bool): whether or not the actions are continuous.
-        distribution_cfg (dotdict): The configs of the distributions.
+        actions_dim (Sequence[int]): the size of every action (head): its dimensions if continuous, its number of
+            choices if discrete.
+        continuous (Sequence[bool]): whether every action is continuous: the actions may mix continuous and discrete
+            ones, each with its own distribution.
+        distribution_cfg (dotdict): The configs of the distributions (the one of the continuous actions).
         init_std (float): the amount to sum to the standard deviation.
             Default to 0.0.
         min_std (float): the minimum standard deviation for the actions.
@@ -816,7 +758,7 @@ class Actor(nn.Module):
         self,
         latent_state_size: int,
         actions_dim: Sequence[int],
-        is_continuous: bool,
+        continuous: Sequence[bool],
         distribution_cfg: dotdict,
         init_std: float = 0.0,
         min_std: float = 1.0,
@@ -837,13 +779,13 @@ class Actor(nn.Module):
                 "The distribution must be on of: `auto`, `discrete`, `normal`, `tanh_normal` and `scaled_normal`. "
                 f"Found: {self.distribution}"
             )
-        if self.distribution == "discrete" and is_continuous:
-            raise ValueError("You have choose a discrete distribution but `is_continuous` is true")
+        self.continuous = tuple(bool(c) for c in continuous)
+        if len(self.continuous) != len(actions_dim):
+            raise ValueError(f"One kind per action: got {len(self.continuous)} for the actions {list(actions_dim)}")
+        if self.distribution == "discrete" and any(self.continuous):
+            raise ValueError("The `discrete` distribution plays categorical actions, but some actions are continuous")
         if self.distribution == "auto":
-            if is_continuous:
-                self.distribution = "scaled_normal"
-            else:
-                self.distribution = "discrete"
+            self.distribution = "scaled_normal" if any(self.continuous) else "discrete"
         self.model = MLP(
             input_dims=latent_state_size,
             output_dim=None,
@@ -854,12 +796,13 @@ class Actor(nn.Module):
             norm_layer=layer_norm_cls,
             norm_args={**layer_norm_kw, "normalized_shape": dense_units},
         )
-        if is_continuous:
-            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, np.sum(actions_dim) * 2)])
-        else:
-            self.mlp_heads = nn.ModuleList([nn.Linear(dense_units, action_dim) for action_dim in actions_dim])
+        # One layer per action: the means and the stds of a continuous one, the logits of a categorical one
+        self.mlp_heads = nn.ModuleList(
+            [nn.Linear(dense_units, dim * 2 if c else dim) for dim, c in zip(actions_dim, self.continuous)]
+        )
         self.actions_dim = actions_dim
-        self.is_continuous = is_continuous
+        # Whether all the actions are continuous: the default of the objective (`reinforce_weight`)
+        self.is_continuous = all(self.continuous)
         self.init_std = init_std
         self.min_std = min_std
         self.max_std = max_std
@@ -889,43 +832,40 @@ class Actor(nn.Module):
         """
         out: Tensor = self.model(state)
         pre_dist: List[Tensor] = [head(out) for head in self.mlp_heads]
-        if self.is_continuous:
-            mean, std = torch.chunk(pre_dist[0], 2, -1)
-            if self.distribution == "tanh_normal":
-                mean = 5 * torch.tanh(mean / 5)
-                std = F.softplus(std + self.init_std) + self.min_std
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(TransformedDistribution(actions_dist, SafeTanhTransform()), 1)
-            elif self.distribution == "normal":
-                # The std is the output of the network: made positive as the one of `tanh_normal`
-                std = F.softplus(std + self.init_std) + self.min_std
-                actions_dist = Normal(mean, std)
-                actions_dist = Independent(actions_dist, 1)
-            elif self.distribution == "scaled_normal":
-                std = (self.max_std - self.min_std) * torch.sigmoid(std + self.init_std) + self.min_std
-                dist = Normal(torch.tanh(mean), std)
-                actions_dist = Independent(dist, 1)
-            if not greedy:
-                actions = actions_dist.rsample()
-            else:
-                # The most likely of 100 samples, for every state
-                sample = actions_dist.sample((100,))
-                best = actions_dist.log_prob(sample).argmax(0, keepdim=True)
-                actions = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
-            if clip:
-                actions = clip_actions(actions, self._action_clip)
-            actions = [actions]
-            actions_dist = [actions_dist]
-        else:
-            actions_dist: List[Distribution] = []
-            actions: List[Tensor] = []
-            for logits in pre_dist:
-                actions_dist.append(OneHotCategoricalStraightThrough(logits=self._uniform_mix(logits)))
+        actions: List[Tensor] = []
+        actions_dist: List[Distribution] = []
+        for continuous, head_out in zip(self.continuous, pre_dist):
+            if continuous:
+                dist = self._continuous_distribution(head_out)
                 if not greedy:
-                    actions.append(actions_dist[-1].rsample())
+                    action = dist.rsample()
                 else:
-                    actions.append(actions_dist[-1].mode)
+                    # The most likely of 100 samples, for every state
+                    sample = dist.sample((100,))
+                    best = dist.log_prob(sample).argmax(0, keepdim=True)
+                    action = sample.gather(0, best.unsqueeze(-1).expand(1, *sample.shape[1:])).squeeze(0)
+                if clip:
+                    action = clip_actions(action, self._action_clip)
+            else:
+                dist = OneHotCategoricalStraightThrough(logits=self._uniform_mix(head_out))
+                action = dist.rsample() if not greedy else dist.mode
+            actions.append(action)
+            actions_dist.append(dist)
         return tuple(actions), tuple(actions_dist)
+
+    def _continuous_distribution(self, head_out: Tensor) -> Distribution:
+        """The distribution of a continuous action (`distribution`), from the output of its head."""
+        mean, std = torch.chunk(head_out, 2, -1)
+        if self.distribution == "tanh_normal":
+            mean = 5 * torch.tanh(mean / 5)
+            std = F.softplus(std + self.init_std) + self.min_std
+            return Independent(TransformedDistribution(Normal(mean, std), SafeTanhTransform()), 1)
+        if self.distribution == "normal":
+            # The std is the output of the network: made positive as the one of `tanh_normal`
+            std = F.softplus(std + self.init_std) + self.min_std
+            return Independent(Normal(mean, std), 1)
+        std = (self.max_std - self.min_std) * torch.sigmoid(std + self.init_std) + self.min_std
+        return Independent(Normal(torch.tanh(mean), std), 1)
 
     def _uniform_mix(self, logits: Tensor) -> Tensor:
         if self._unimix > 0.0:
@@ -941,7 +881,7 @@ class MinedojoActor(Actor):
         self,
         latent_state_size: int,
         actions_dim: Sequence[int],
-        is_continuous: bool,
+        continuous: Sequence[bool],
         distribution_cfg: dotdict,
         init_std: float = 0,
         min_std: float = 0.1,
@@ -957,7 +897,7 @@ class MinedojoActor(Actor):
         super().__init__(
             latent_state_size=latent_state_size,
             actions_dim=actions_dim,
-            is_continuous=is_continuous,
+            continuous=continuous,
             distribution_cfg=distribution_cfg,
             init_std=init_std,
             min_std=min_std,
@@ -1029,23 +969,21 @@ class MinedojoActor(Actor):
 
 def build_agent(
     fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
+    codec: ActionCodec,
     cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, Tensor]] = None,
     actor_state: Optional[Dict[str, Tensor]] = None,
     critic_state: Optional[Dict[str, Tensor]] = None,
     target_critic_state: Optional[Dict[str, Tensor]] = None,
-) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, PlayerDV3]:
+) -> Tuple[WorldModel, _FabricModule, _FabricModule, _FabricModule, DreamerV3Policy]:
     """Build the models and wrap them with Fabric.
 
     Args:
         fabric (Fabric): the fabric object.
-        actions_dim (Sequence[int]): the dimension of the actions.
-        is_continuous (bool): whether or not the actions are continuous.
-        cfg (dotdict): the configs of DreamerV3.
-        obs_space (Dict[str, Any]): the observation space.
+        codec (ActionCodec): the actions of the agent and of the environments.
+        cfg (dotdict): the configs of DreamerV3: the encoder of `algo.inputs`, the decoder of `algo.outputs`.
+        obs_space (Dict[str, Any]): the observation space of the store.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
             Default to None.
         actor_state: (Dict[str, Tensor], optional): the state of the actor.
@@ -1065,6 +1003,7 @@ def build_agent(
     world_model_cfg = cfg.algo.world_model
     actor_cfg = cfg.algo.actor
     critic_cfg = cfg.algo.critic
+    actions_dim = codec.dims
 
     # Sizes
     recurrent_state_size = world_model_cfg.recurrent_model.recurrent_state_size
@@ -1072,35 +1011,7 @@ def build_agent(
     latent_state_size = stochastic_size + recurrent_state_size
 
     # Define models
-    cnn_stages = int(np.log2(cfg.env.screen_size) - np.log2(4))
-    cnn_encoder = (
-        CNNEncoder(
-            keys=cfg.algo.cnn_keys.encoder,
-            input_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.encoder],
-            image_size=obs_space[cfg.algo.cnn_keys.encoder[0]].shape[-2:],
-            channels_multiplier=world_model_cfg.encoder.cnn_channels_multiplier,
-            layer_norm_cls=hydra.utils.get_class(world_model_cfg.encoder.cnn_layer_norm.cls),
-            layer_norm_kw=world_model_cfg.encoder.cnn_layer_norm.kw,
-            activation=hydra.utils.get_class(world_model_cfg.encoder.cnn_act),
-            stages=cnn_stages,
-        )
-        if cfg.algo.cnn_keys.encoder is not None and len(cfg.algo.cnn_keys.encoder) > 0
-        else None
-    )
-    mlp_encoder = (
-        MLPEncoder(
-            keys=cfg.algo.mlp_keys.encoder,
-            input_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.encoder],
-            mlp_layers=world_model_cfg.encoder.mlp_layers,
-            dense_units=world_model_cfg.encoder.dense_units,
-            activation=hydra.utils.get_class(world_model_cfg.encoder.dense_act),
-            layer_norm_cls=hydra.utils.get_class(world_model_cfg.encoder.mlp_layer_norm.cls),
-            layer_norm_kw=world_model_cfg.encoder.mlp_layer_norm.kw,
-        )
-        if cfg.algo.mlp_keys.encoder is not None and len(cfg.algo.mlp_keys.encoder) > 0
-        else None
-    )
-    encoder = MultiEncoder(cnn_encoder, mlp_encoder)
+    encoder = build_encoder(cfg, obs_space)
 
     recurrent_model = RecurrentModel(
         input_size=int(sum(actions_dim) + stochastic_size),
@@ -1162,37 +1073,7 @@ def build_agent(
         learnable_initial_recurrent_state=cfg.algo.world_model.learnable_initial_recurrent_state,
     ).to(fabric.device)
 
-    cnn_decoder = (
-        CNNDecoder(
-            keys=cfg.algo.cnn_keys.decoder,
-            output_channels=[int(np.prod(obs_space[k].shape[:-2])) for k in cfg.algo.cnn_keys.decoder],
-            channels_multiplier=world_model_cfg.observation_model.cnn_channels_multiplier,
-            latent_state_size=latent_state_size,
-            cnn_encoder_output_dim=cnn_encoder.output_dim,
-            image_size=obs_space[cfg.algo.cnn_keys.decoder[0]].shape[-2:],
-            activation=hydra.utils.get_class(world_model_cfg.observation_model.cnn_act),
-            layer_norm_cls=hydra.utils.get_class(world_model_cfg.observation_model.cnn_layer_norm.cls),
-            layer_norm_kw=world_model_cfg.observation_model.cnn_layer_norm.kw,
-            stages=cnn_stages,
-        )
-        if cfg.algo.cnn_keys.decoder is not None and len(cfg.algo.cnn_keys.decoder) > 0
-        else None
-    )
-    mlp_decoder = (
-        MLPDecoder(
-            keys=cfg.algo.mlp_keys.decoder,
-            output_dims=[obs_space[k].shape[0] for k in cfg.algo.mlp_keys.decoder],
-            latent_state_size=latent_state_size,
-            mlp_layers=world_model_cfg.observation_model.mlp_layers,
-            dense_units=world_model_cfg.observation_model.dense_units,
-            activation=hydra.utils.get_class(world_model_cfg.observation_model.dense_act),
-            layer_norm_cls=hydra.utils.get_class(world_model_cfg.observation_model.mlp_layer_norm.cls),
-            layer_norm_kw=world_model_cfg.observation_model.mlp_layer_norm.kw,
-        )
-        if cfg.algo.mlp_keys.decoder is not None and len(cfg.algo.mlp_keys.decoder) > 0
-        else None
-    )
-    observation_model = MultiDecoder(cnn_decoder, mlp_decoder)
+    observation_model = build_decoder(cfg, encoder, latent_size=latent_state_size)
 
     reward_ln_cls = hydra.utils.get_class(world_model_cfg.reward_model.layer_norm.cls)
     reward_model = MLP(
@@ -1235,7 +1116,7 @@ def build_agent(
     actor: Actor | MinedojoActor = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
-        is_continuous=is_continuous,
+        continuous=codec.continuous_heads,
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
         max_std=actor_cfg.max_std,
@@ -1273,13 +1154,13 @@ def build_agent(
         rssm.representation_model.model[-1].apply(uniform_init_weights(1.0))
         world_model.reward_model.model[-1].apply(uniform_init_weights(0.0))
         world_model.continue_model.model[-1].apply(uniform_init_weights(1.0))
-        if mlp_decoder is not None:
-            mlp_decoder.heads.apply(uniform_init_weights(1.0))
-        if cnn_decoder is not None:
-            cnn_decoder.model[-1].model[-1].apply(uniform_init_weights(1.0))
-            # The projection of the latent state to the first feature maps: the default initializer of the linear
-            # layers of the official implementation, which its image decoder doesn't override
-            cnn_decoder.model[0].apply(uniform_init_weights(1.0))
+        # The output layers of the decoders: the ones of the vectors, then the ones of the images (whose projection of
+        # the latent state to the first feature maps gets the default initializer of the linear layers of the official
+        # implementation, which its image decoder doesn't override)
+        decoder_nets = list(observation_model.named_nets().values())
+        for net in sorted(decoder_nets, key=lambda net: isinstance(net, CNNDecoder)):
+            for layer in net.output_layers() if hasattr(net, "output_layers") else ():
+                layer.apply(uniform_init_weights(1.0))
 
     # Load models from checkpoint
     if world_model_state:
@@ -1291,23 +1172,24 @@ def build_agent(
 
     if fabric.device.type == "cuda":
         # The convolutions of cuDNN run in the channels-last layout: weights in it spare the conversions of the
-        # activations from and to it (the values of the weights don't change). Before the copy of the player and the
-        # setup, which keep the layout: changing it later would replace the weights the player shares
+        # activations from and to it (the values of the weights don't change). Before the copy of the policy and the
+        # setup, which keep the layout: changing it later would replace the weights the policy shares
         world_model.encoder.to(memory_format=torch.channels_last)
         world_model.observation_model.to(memory_format=torch.channels_last)
 
-    # Create the player agent
-    fabric_player = get_single_device_fabric(fabric)
-    player = PlayerDV3(
+    # Create the policy agent
+    policy_fabric = get_single_device_fabric(fabric)
+    policy = DreamerV3Policy(
         copy.deepcopy(world_model.encoder),
         copy.deepcopy(world_model.rssm),
         copy.deepcopy(actor),
-        actions_dim,
-        cfg.env.num_envs,
+        codec,
         cfg.algo.world_model.stochastic_size,
         cfg.algo.world_model.recurrent_model.recurrent_state_size,
-        fabric_player.device,
+        policy_fabric.device,
         discrete_size=cfg.algo.world_model.discrete_size,
+        keys=encoder.keys,
+        mask_keys=cfg.algo.extra_keys,
     )
 
     # Setup models with Fabric
@@ -1328,21 +1210,21 @@ def build_agent(
         target_critic.load_state_dict(target_critic_state)
     target_critic = setup_module(fabric, target_critic)
 
-    # Setup the player agent with a single-device Fabric
-    player.encoder = fabric_player.setup_module(player.encoder)
-    player.rssm.recurrent_model = fabric_player.setup_module(player.rssm.recurrent_model)
-    player.rssm.transition_model = fabric_player.setup_module(player.rssm.transition_model)
-    player.rssm.representation_model = fabric_player.setup_module(player.rssm.representation_model)
-    player.actor = fabric_player.setup_module(player.actor)
+    # Setup the policy agent with a single-device Fabric
+    policy.encoder = policy_fabric.setup_module(policy.encoder)
+    policy.rssm.recurrent_model = policy_fabric.setup_module(policy.rssm.recurrent_model)
+    policy.rssm.transition_model = policy_fabric.setup_module(policy.rssm.transition_model)
+    policy.rssm.representation_model = policy_fabric.setup_module(policy.rssm.representation_model)
+    policy.actor = policy_fabric.setup_module(policy.actor)
 
-    # Tie weights between the agent and the player
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+    # Tie weights between the agent and the policy
+    for agent_p, p in zip(world_model.encoder.parameters(), policy.encoder.parameters()):
         p.data = agent_p.data
-    for agent_p, p in zip(world_model.rssm.parameters(), player.rssm.parameters()):
+    for agent_p, p in zip(world_model.rssm.parameters(), policy.rssm.parameters()):
         p.data = agent_p.data
-    for agent_p, p in zip(actor.parameters(), player.actor.parameters()):
+    for agent_p, p in zip(actor.parameters(), policy.actor.parameters()):
         p.data = agent_p.data
-    # The step of the player, compiled with `algo.compile` (`compiled_player`): without CUDA graphs, since it keeps its
+    # The step of the policy, compiled with `algo.compile` (`compiled_policy`): without CUDA graphs, since it keeps its
     # states in its attributes
-    player.get_actions = compiled_player(player.get_actions, fabric, cfg, cuda_graphs=False)
-    return world_model, actor, critic, target_critic, player
+    policy.get_actions = compiled_policy(policy.get_actions, fabric, cfg, cuda_graphs=False)
+    return world_model, actor, critic, target_critic, policy

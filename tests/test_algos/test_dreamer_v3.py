@@ -22,6 +22,7 @@ from sheeprl.algos.dreamer_v3.loss import categorical_kl
 from sheeprl.algos.dreamer_v3.utils import init_weights
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
+from tests.test_algos.codecs import codec_of
 
 from .compiled import same_random_numbers
 
@@ -53,10 +54,10 @@ def test_the_cnn_decoder_is_normalized_as_configured():
             overrides=[
                 "exp=dreamer_v3",
                 "env=dummy",
-                "algo.cnn_keys.encoder=[rgb]",
-                "algo.mlp_keys.encoder=[state]",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[state]",
                 "algo.dense_units=8",
-                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.inputs.image.net.channels_multiplier=2",
                 "algo.world_model.recurrent_model.recurrent_state_size=8",
                 "algo.world_model.representation_model.hidden_size=8",
                 "algo.world_model.transition_model.hidden_size=8",
@@ -70,8 +71,9 @@ def test_the_cnn_decoder_is_normalized_as_configured():
             "state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32),
         }
     )
-    world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
-    cnn_decoder, mlp_decoder = world_model.observation_model.cnn_decoder, world_model.observation_model.mlp_decoder
+    world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), codec_of([3], False), cfg, obs_space)
+    outputs = world_model.observation_model.outputs
+    cnn_decoder, mlp_decoder = outputs["image"].net, outputs["vector"].net
     assert {m.eps for m in cnn_decoder.modules() if isinstance(m, nn.LayerNorm)} == {0.123}
     assert {m.eps for m in mlp_decoder.modules() if isinstance(m, nn.LayerNorm)} == {1e-3}
 
@@ -86,10 +88,10 @@ def test_the_cnn_decoder_projects_the_latent_state_with_the_official_initializat
             overrides=[
                 "exp=dreamer_v3",
                 "env=dummy",
-                "algo.cnn_keys.encoder=[rgb]",
-                "algo.mlp_keys.encoder=[]",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[]",
                 "algo.dense_units=8",
-                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.inputs.image.net.channels_multiplier=2",
                 "algo.world_model.recurrent_model.recurrent_state_size=8",
                 "algo.world_model.representation_model.hidden_size=8",
                 "algo.world_model.transition_model.hidden_size=8",
@@ -98,8 +100,8 @@ def test_the_cnn_decoder_projects_the_latent_state_with_the_official_initializat
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"rgb": gym.spaces.Box(0, 255, shape=(3, 64, 64), dtype=np.uint8)})
     torch.manual_seed(0)
-    world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
-    layer = world_model.observation_model.cnn_decoder.model[0]
+    world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), codec_of([3], False), cfg, obs_space)
+    layer = world_model.observation_model.outputs["image"].net.model[0]
     weight = layer.weight.detach()
     limit = math.sqrt(3 / ((layer.in_features + layer.out_features) / 2))
     assert weight.abs().max().item() <= limit
@@ -108,9 +110,9 @@ def test_the_cnn_decoder_projects_the_latent_state_with_the_official_initializat
     assert torch.all(layer.bias == 0)
 
 
-def test_the_player_resets_the_environments_one_by_one(recwarn):
+def test_the_policy_resets_the_environments_one_by_one(recwarn):
     # After a full reset, the recurrent state was the initial one expanded to the environments, whose rows share the
-    # memory: resetting one environment (e.g. at the end of an episode during the random actions, when the player
+    # memory: resetting one environment (e.g. at the end of an episode during the random actions, when the policy
     # computes no new state) wrote in the expanded tensor (a deprecated `index_put_`, with a warning)
     with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
         cfg = compose(
@@ -119,9 +121,9 @@ def test_the_player_resets_the_environments_one_by_one(recwarn):
                 "exp=dreamer_v3",
                 "env=dummy",
                 "env.num_envs=3",
-                "algo.cnn_keys.encoder=[]",
-                "algo.cnn_keys.decoder=[]",
-                "algo.mlp_keys.encoder=[state]",
+                "algo.inputs.image.keys=[]",
+                "algo.outputs.image.keys=[]",
+                "algo.inputs.vector.keys=[state]",
                 "algo.dense_units=8",
                 "algo.world_model.recurrent_model.recurrent_state_size=8",
                 "algo.world_model.representation_model.hidden_size=8",
@@ -130,13 +132,13 @@ def test_the_player_resets_the_environments_one_by_one(recwarn):
         )
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
-    *_, player = build_agent(Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space)
-    player.init_states()
-    initial = player.recurrent_state.clone()
-    player.recurrent_state[:, 1] += 1.0
-    torch.testing.assert_close(player.recurrent_state[:, [0, 2]], initial[:, [0, 2]])
-    player.init_states([1])
-    torch.testing.assert_close(player.recurrent_state, initial)
+    *_, policy = build_agent(Fabric(accelerator="cpu", devices=1), codec_of([3], False), cfg, obs_space)
+    policy.init_states(3)
+    initial = policy.recurrent_state.clone()
+    policy.recurrent_state[:, 1] += 1.0
+    torch.testing.assert_close(policy.recurrent_state[:, [0, 2]], initial[:, [0, 2]])
+    policy.reset_state([1])
+    torch.testing.assert_close(policy.recurrent_state, initial)
     assert not [w for w in recwarn if "expanded tensors" in str(w.message)]
 
 
@@ -152,10 +154,10 @@ def initial_states_after_a_gradient_step(fabric: Fabric) -> bool:
             overrides=[
                 "exp=dreamer_v3",
                 "env=dummy",
-                "algo.cnn_keys.encoder=[]",
-                "algo.cnn_keys.decoder=[]",
-                "algo.mlp_keys.encoder=[state]",
-                "algo.mlp_keys.decoder=[state]",
+                "algo.inputs.image.keys=[]",
+                "algo.outputs.image.keys=[]",
+                "algo.inputs.vector.keys=[state]",
+                "algo.outputs.vector.keys=[state]",
                 "algo.dense_units=8",
                 "algo.world_model.recurrent_model.recurrent_state_size=8",
                 "algo.world_model.representation_model.hidden_size=8",
@@ -168,7 +170,7 @@ def initial_states_after_a_gradient_step(fabric: Fabric) -> bool:
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
     fabric.seed_everything(0)
-    world_model, actor, critic, target_critic, _ = build_agent(fabric, [3], False, cfg, obs_space)
+    world_model, actor, critic, target_critic, _ = build_agent(fabric, codec_of([3], False), cfg, obs_space)
     optimizers = fabric.setup_optimizers(
         *[torch.optim.Adam(m.parameters(), lr=1e-2) for m in (world_model, actor, critic)]
     )
@@ -189,7 +191,7 @@ def initial_states_after_a_gradient_step(fabric: Fabric) -> bool:
         "truncated": torch.zeros(T, B, 1),
         "is_first": torch.zeros(T, B, 1),
     }
-    train(fabric, world_model, actor, critic, target_critic, *optimizers, data, None, cfg, False, [3], moments)
+    train(fabric, world_model, actor, critic, target_critic, *optimizers, data, cfg, False, [3], moments)
     initial_states = fabric.all_gather(world_model.rssm.initial_recurrent_state.detach())
     return torch.equal(initial_states[0], initial_states[1])
 
@@ -216,10 +218,10 @@ def test_the_actors_of_dreamer_v3_and_p2e_dv3_follow_the_configuration_of_the_ac
             overrides=[
                 "exp=p2e_dv3_exploration",
                 "env=dummy",
-                "algo.cnn_keys.encoder=[]",
-                "algo.cnn_keys.decoder=[]",
-                "algo.mlp_keys.encoder=[state]",
-                "algo.mlp_keys.decoder=[state]",
+                "algo.inputs.image.keys=[]",
+                "algo.outputs.image.keys=[]",
+                "algo.inputs.vector.keys=[state]",
+                "algo.outputs.vector.keys=[state]",
                 "algo.dense_units=8",
                 "algo.world_model.recurrent_model.recurrent_state_size=8",
                 "algo.world_model.representation_model.hidden_size=8",
@@ -233,7 +235,7 @@ def test_the_actors_of_dreamer_v3_and_p2e_dv3_follow_the_configuration_of_the_ac
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
     _, _, actor_task, _, _, actor_exploration, *_ = build_p2e_agent(
-        Fabric(accelerator="cpu", devices=1), [3], False, cfg, obs_space
+        Fabric(accelerator="cpu", devices=1), codec_of([3], False), cfg, obs_space
     )
     for actor in (actor_task.module, actor_exploration.module):
         assert actor.max_std == 0.7
@@ -247,7 +249,7 @@ def test_the_actions_of_the_actor_are_its_samples_clipped():
     actor = dv3_agent.Actor(
         latent_state_size=4,
         actions_dim=[2],
-        is_continuous=True,
+        continuous=[True],
         distribution_cfg={"type": "auto"},
         init_std=2.0,
         min_std=0.1,
@@ -287,14 +289,14 @@ def test_the_actor_learns_by_the_dynamics_and_by_reinforce_as_objective_mix_mixe
 
     monkeypatch.setattr(dreamer_v3, "imagine", recording_imagine)
     mix = "null" if objective_mix is None else objective_mix
-    _, _, player, train_step = small_dreamer_v3([f"algo.actor.objective_mix={mix}"], continuous=continuous)
-    before = [p.detach().clone() for p in player.actor.parameters()]
-    metrics = train_step()
+    _, _, policy, train_step = small_dreamer_v3([f"algo.actor.objective_mix={mix}"], continuous=continuous)
+    before = [p.detach().clone() for p in policy.actor.parameters()]
+    metrics, _ = train_step()
     assert recorded["graph"] is graph
     if continuous:
         assert (recorded["actions"].abs() > 1).any()
     assert torch.isfinite(torch.as_tensor(metrics["Loss/policy_loss"]))
-    assert any(not torch.equal(b, a) for b, a in zip(before, player.actor.parameters()))
+    assert any(not torch.equal(b, a) for b, a in zip(before, policy.actor.parameters()))
 
 
 def test_the_representation_model_computes_the_part_of_the_observations_once():
@@ -330,31 +332,19 @@ def test_the_kl_of_the_latents_is_the_one_of_pytorch():
     torch.testing.assert_close(categorical_kl(p, q), expected, rtol=0, atol=0)
 
 
-class RecordingAggregator:
-    """A stand-in for the metric aggregator, which keeps the values of the last gradient step."""
-
-    disabled = False
-
-    def __init__(self):
-        self.values = {}
-
-    def update(self, name, value):
-        self.values[name] = value
-
-
 def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuous=False):
     """A small DreamerV3 on images and vectors, with 3 discrete actions (2 continuous ones with `continuous`), its
-    player, a batch for it, and its gradient step."""
+    policy, a batch for it, and its gradient step."""
     with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
         cfg = compose(
             config_name="config",
             overrides=[
                 "exp=dreamer_v3",
                 "env=dummy",
-                "algo.cnn_keys.encoder=[rgb]",
-                "algo.mlp_keys.encoder=[state]",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[state]",
                 "algo.dense_units=8",
-                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.inputs.image.net.channels_multiplier=2",
                 "algo.world_model.recurrent_model.recurrent_state_size=8",
                 "algo.world_model.representation_model.hidden_size=8",
                 "algo.world_model.transition_model.hidden_size=8",
@@ -374,7 +364,9 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuo
     )
     actions_dim = [2] if continuous else [3]
     torch.manual_seed(0)
-    world_model, actor, critic, target_critic, player = build_agent(fabric, actions_dim, continuous, cfg, obs_space)
+    world_model, actor, critic, target_critic, policy = build_agent(
+        fabric, codec_of(actions_dim, continuous), cfg, obs_space
+    )
     optimizers = fabric.setup_optimizers(
         *[torch.optim.Adam(module.parameters(), lr=1e-4) for module in (world_model, actor, critic)]
     )
@@ -402,9 +394,8 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuo
     batch = {k: v.to(fabric.device) for k, v in batch.items()}
 
     def train_step():
-        aggregator = RecordingAggregator()
         data = {k: v.clone() for k, v in batch.items()}
-        dreamer_v3.train(
+        return dreamer_v3.train(
             fabric,
             world_model,
             actor,
@@ -412,15 +403,13 @@ def small_dreamer_v3(overrides, accelerator="cpu", precision="32-true", continuo
             target_critic,
             *optimizers,
             data,
-            aggregator,
             cfg,
             continuous,
             actions_dim,
             moments,
         )
-        return aggregator.values
 
-    return cfg, world_model, player, train_step
+    return cfg, world_model, policy, train_step
 
 
 @pytest.mark.parametrize("decoupled_rssm", [False, True])
@@ -428,10 +417,19 @@ def test_a_gradient_step_of_dreamer_v3(decoupled_rssm):
     # Both RSSMs: the priors are computed after the unroll, the initial states once per sequence
     _, world_model, _, train_step = small_dreamer_v3([f"algo.world_model.decoupled_rssm={decoupled_rssm}"])
     before = [p.detach().clone() for p in world_model.parameters()]
-    metrics = train_step()
+    metrics, _ = train_step()
     assert all(torch.isfinite(torch.as_tensor(v)).all() for v in metrics.values())
     assert {"Loss/world_model_loss", "Loss/policy_loss", "Loss/value_loss", "State/kl"} <= set(metrics)
     assert any(not torch.equal(b, a) for b, a in zip(before, world_model.parameters()))
+
+
+def test_the_losses_of_the_steps_average_to_the_loss_of_the_world_model():
+    # The loss of the world model on every step of the batch: the priorities of Curious Replay
+    cfg, _, _, train_step = small_dreamer_v3([])
+    metrics, step_losses = train_step()
+    assert step_losses.shape == (cfg.algo.per_rank_sequence_length, cfg.algo.per_rank_batch_size)
+    assert not step_losses.requires_grad
+    torch.testing.assert_close(step_losses.mean(), metrics["Loss/world_model_loss"])
 
 
 def test_cuda_graphs_are_used_only_in_the_tested_precisions(monkeypatch):
@@ -486,16 +484,16 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, preci
         # prediction keeps them the same
         with torch.no_grad():
             world_model.continue_model.model[-1].bias.fill_(3.0)
-        losses.append({k: torch.as_tensor(v).float().clone() for k, v in train_step().items()})
+        losses.append({k: torch.as_tensor(v).float().clone() for k, v in train_step()[0].items()})
     for name in ("Loss/world_model_loss", "Loss/observation_loss", "Loss/state_loss", "Loss/value_loss"):
         torch.testing.assert_close(losses[1][name], losses[0][name], rtol=tolerance, atol=tolerance)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="The weights are channels-last only on CUDA")
-def test_the_player_shares_the_channels_last_weights_of_the_world_model():
-    # The weights of the convolutions are stored channels-last, also the ones the player shares with the world model:
-    # the player still plays with the weights of the last update
-    _, world_model, player, train_step = small_dreamer_v3([], accelerator="cuda")
+def test_the_policy_shares_the_channels_last_weights_of_the_world_model():
+    # The weights of the convolutions are stored channels-last, also the ones the policy shares with the world model:
+    # the policy still plays with the weights of the last update
+    _, world_model, policy, train_step = small_dreamer_v3([], accelerator="cuda")
     convolutions = [
         m.weight
         for model in (world_model.encoder, world_model.observation_model)
@@ -503,34 +501,82 @@ def test_the_player_shares_the_channels_last_weights_of_the_world_model():
         if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d))
     ]
     assert convolutions and all(w.is_contiguous(memory_format=torch.channels_last) for w in convolutions)
-    before = [p.detach().clone() for p in player.encoder.parameters()]
+    before = [p.detach().clone() for p in policy.encoder.parameters()]
     train_step()
-    for agent_p, p in zip(world_model.encoder.parameters(), player.encoder.parameters()):
+    for agent_p, p in zip(world_model.encoder.parameters(), policy.encoder.parameters()):
         assert p.data_ptr() == agent_p.data_ptr()
-    assert any(not torch.equal(b, p) for b, p in zip(before, player.encoder.parameters()))
+    assert any(not torch.equal(b, p) for b, p in zip(before, policy.encoder.parameters()))
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="The player is compiled on the GPU")
-def test_the_compiled_player_plays_as_the_eager_one(monkeypatch):
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="The policy is compiled on the GPU")
+def test_the_compiled_policy_plays_as_the_eager_one(monkeypatch):
     # The same weights, observations and random numbers: the same actions and recurrent states, with and without
-    # `torch.compile` (without CUDA graphs: the player keeps its states in its attributes), also after the states of
+    # `torch.compile` (without CUDA graphs: the policy keeps its states in its attributes), also after the states of
     # one of the environments are reset
     same_random_numbers(monkeypatch)
     played = []
     for enabled in (False, True):
-        _, _, player, _ = small_dreamer_v3([f"algo.compile.enabled={enabled}"], accelerator="cuda")
+        cfg, _, policy, _ = small_dreamer_v3([f"algo.compile.enabled={enabled}"], accelerator="cuda")
         torch.manual_seed(1)
-        n = player.num_envs
+        n = cfg.env.num_envs
         obs = {"rgb": torch.rand(1, n, 3, 64, 64, device="cuda") - 0.5, "state": torch.randn(1, n, 5, device="cuda")}
-        player.init_states()
+        policy.init_states(n)
         steps = []
         with torch.inference_mode():
             for t in range(4):
                 if t == 2:
-                    player.init_states([0])
-                actions = torch.cat(player.get_actions(obs), -1)
-                steps.append((actions.clone(), player.recurrent_state.clone()))
+                    policy.reset_state([0])
+                actions = torch.cat(policy.get_actions(obs), -1)
+                steps.append((actions.clone(), policy.recurrent_state.clone()))
         played.append(steps)
     for (eager_actions, eager_states), (actions, states) in zip(*played):
         torch.testing.assert_close(actions, eager_actions)
         torch.testing.assert_close(states, eager_states, rtol=1e-4, atol=1e-5)
+
+
+def test_dreamer_v3_builds_its_decoder_of_the_configured_class():
+    # The official initialization of the output layers goes through the networks of the outputs (`named_nets`)
+    with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
+        cfg = compose(
+            config_name="config",
+            overrides=[
+                "exp=dreamer_v3",
+                "env=dummy",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[state]",
+                "algo.dense_units=8",
+                "algo.inputs.image.net.channels_multiplier=2",
+                "algo.world_model.recurrent_model.recurrent_state_size=8",
+                "algo.world_model.representation_model.hidden_size=8",
+                "algo.world_model.transition_model.hidden_size=8",
+                "algo.decoder._target_=tests.test_models.test_io.RecordingDecoder",
+            ],
+        )
+    cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
+    obs_space = gym.spaces.Dict(
+        {
+            "rgb": gym.spaces.Box(0, 255, shape=(3, 64, 64), dtype=np.uint8),
+            "state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32),
+        }
+    )
+    world_model, *_ = build_agent(Fabric(accelerator="cpu", devices=1), codec_of([3], False), cfg, obs_space)
+    decoder = getattr(world_model.observation_model, "module", world_model.observation_model)
+    assert type(decoder).__name__ == "RecordingDecoder" and set(decoder.named_keys()) == {"image", "vector"}
+
+
+def test_the_imagination_clips_only_the_continuous_actions_of_a_mixed_actor():
+    actor = dv3_agent.Actor(
+        latent_state_size=4,
+        actions_dim=[3, 2],
+        continuous=[False, True],
+        distribution_cfg={"type": "auto"},
+        dense_units=8,
+        mlp_layers=1,
+    )
+    assert actor.distribution == "scaled_normal" and not actor.is_continuous
+    actions, dists = actor(torch.randn(5, 4), clip=False)
+    assert actions[0].shape == (5, 3) and actions[1].shape == (5, 2) and len(dists) == 2
+    big = (torch.zeros(5, 3), torch.full((5, 2), 4.0))
+    clipped = dv3_agent.clip_head_actions(big, actor.continuous, 1.0)
+    # The one-hot is untouched, the continuous actions scaled to the magnitude 1
+    assert torch.equal(clipped[:, :3], big[0]) and torch.allclose(clipped[:, 3:], torch.ones(5, 2))

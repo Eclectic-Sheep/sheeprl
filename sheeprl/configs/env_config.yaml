@@ -16,9 +16,12 @@ run_name: ${env.id}
 agent: ???
 
 algo:
-  cnn_keys:
-    encoder: []
-    decoder: ${algo.cnn_keys.encoder}
-  mlp_keys:
-    encoder: []
-    decoder: ${algo.mlp_keys.encoder}
+  inputs:
+    image:
+      keys: []
+      transforms:
+        - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+    vector:
+      keys: []
+      transforms: []
+  extra_keys: []

@@ -3,8 +3,36 @@ total_steps: ???
 per_rank_batch_size: ???
 run_test: True
 
-# Encoder and decoder keys
-cnn_keys:
-  encoder: []
-mlp_keys:
-  encoder: []
+# The observations the agent reads (`howto/inputs_and_outputs.md`): named inputs, each a group of observation keys
+# with the transforms of every key (`sheeprl/transforms`) and one network on their concatenation. Every algorithm
+# ships the inputs `image` and `vector` without keys: the experiment sets them, and an input without keys is skipped
+inputs: {}
+# The class of the encoder of the inputs (`sheeprl.models.io.build_encoder`), a subclass of `sheeprl.models.io.Encoder`:
+# `MultiEncoder` concatenates their features
+encoder:
+  _target_: sheeprl.models.io.MultiEncoder
+# The observations reconstructed from the latent state (the algorithms with a decoder): named outputs, each a group of
+# encoded keys with one network and, for the Dreamers, the likelihood of the reconstructions
+outputs: {}
+# The class of the decoder of the outputs (`sheeprl.models.io.build_decoder`), a subclass of `sheeprl.models.io.Decoder`:
+# `MultiDecoder` reconstructs every output with its own network
+decoder:
+  _target_: sheeprl.models.io.MultiDecoder
+# The observation keys stored as they are and never encoded, read by the algorithm (e.g. the action masks of MineDojo)
+extra_keys: []
+# The transforms of the rewards of the environments, applied before they are stored (`sheeprl/transforms/rewards.py`),
+# e.g. `[{_target_: sheeprl.transforms.ScaleByReturnStd, gamma: "${algo.gamma}"}, {_target_: sheeprl.transforms.Tanh}]`
+# for the rewards divided by the std of the discounted return, then squashed. The ones with statistics are for the
+# on-policy algorithms only
+rewards:
+  transforms: []
+
+# Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start (a few minutes the
+# first time, then mostly reused from the cache of PyTorch). `mode` is the one of `torch.compile`: `reduce-overhead`
+# also replays the kernels of every loss with CUDA graphs (with `fabric.precision` `32-true` or `bf16-mixed`; with
+# another precision the default mode is used). `policy` also compiles the step of the policy: faster steps in the
+# environments
+compile:
+  enabled: False
+  mode: reduce-overhead
+  policy: True

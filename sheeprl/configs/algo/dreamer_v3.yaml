@@ -20,21 +20,52 @@ replay_ratio: 1
 learning_starts: 1024
 per_rank_pretrain_steps: 0
 per_rank_sequence_length: ???
-# Compile the losses with `torch.compile`: faster gradient steps, after a compilation at the start (a few minutes
-# the first time, then mostly reused from the cache of PyTorch).
-# `mode` is the one of `torch.compile`: `reduce-overhead` also replays the kernels of every loss with CUDA graphs
-# (with `fabric.precision` `32-true` or `bf16-mixed`; with another precision the default mode is used).
-# `player` also compiles the step of the player: faster steps in the environments
-compile:
-  enabled: False
-  mode: reduce-overhead
-  player: True
 
-# Encoder and decoder keys
-cnn_keys:
-  decoder: ${algo.cnn_keys.encoder}
-mlp_keys:
-  decoder: ${algo.mlp_keys.encoder}
+# Inputs: the images resized and scaled to [-0.5, 0.5] into the CNN of the world model (`stages` convolutions of
+# stride 2: the sides of the images must be divisible by 2 ** stages), the vectors squashed with the symlog into its
+# MLP. Outputs: the same keys reconstructed by the observation model, both scored with the mean squared error to the
+# keys as the encoder reads them (the vectors in the symlog space)
+inputs:
+  image:
+    keys: []
+    transforms:
+      - {_target_: sheeprl.transforms.Image, size: "${env.screen_size}", grayscale: "${env.grayscale}"}
+      - {_target_: sheeprl.transforms.Scale, divisor: 255, shift: 0.5}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.CNNEncoder
+      channels_multiplier: 96
+      stages: 4
+      activation: ${algo.cnn_act}
+      layer_norm: ${algo.cnn_layer_norm}
+  vector:
+    keys: []
+    transforms: [{_target_: sheeprl.transforms.Symlog}]
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.MLPEncoder
+      mlp_layers: ${algo.mlp_layers}
+      dense_units: ${algo.dense_units}
+      activation: ${algo.dense_act}
+      layer_norm: ${algo.mlp_layer_norm}
+outputs:
+  image:
+    keys: ${algo.inputs.image.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.CNNDecoder
+      channels_multiplier: ${algo.inputs.image.net.channels_multiplier}
+      stages: ${algo.inputs.image.net.stages}
+      activation: ${algo.cnn_act}
+      layer_norm: ${algo.cnn_layer_norm}
+    likelihood: {_target_: sheeprl.utils.distribution.MSEDistribution, _partial_: true}
+  vector:
+    keys: ${algo.inputs.vector.keys}
+    net:
+      _target_: sheeprl.algos.dreamer_v3.agent.MLPDecoder
+      mlp_layers: ${algo.mlp_layers}
+      dense_units: ${algo.dense_units}
+      activation: ${algo.dense_act}
+      layer_norm: ${algo.mlp_layer_norm}
+    # The squared errors below the tolerance count as zero, as in the symlog likelihood of the official implementation
+    likelihood: {_target_: sheeprl.utils.distribution.MSEDistribution, _partial_: true, tol: 1e-8}
 
 # Model related parameters
 cnn_layer_norm:
@@ -65,16 +96,6 @@ world_model:
   decoupled_rssm: False
   learnable_initial_recurrent_state: True
 
-  # Encoder
-  encoder:
-    cnn_channels_multiplier: 96
-    cnn_act: ${algo.cnn_act}
-    dense_act: ${algo.dense_act}
-    mlp_layers: ${algo.mlp_layers}
-    cnn_layer_norm: ${algo.cnn_layer_norm}
-    mlp_layer_norm: ${algo.mlp_layer_norm}
-    dense_units: ${algo.dense_units}
-
   # Recurrent model
   recurrent_model:
     recurrent_state_size: 4096
@@ -92,16 +113,6 @@ world_model:
     hidden_size: 1024
     dense_act: ${algo.dense_act}
     layer_norm: ${algo.mlp_layer_norm}
-
-  # Decoder
-  observation_model:
-    cnn_channels_multiplier: ${algo.world_model.encoder.cnn_channels_multiplier}
-    cnn_act: ${algo.cnn_act}
-    dense_act: ${algo.dense_act}
-    mlp_layers: ${algo.mlp_layers}
-    cnn_layer_norm: ${algo.cnn_layer_norm}
-    mlp_layer_norm: ${algo.mlp_layer_norm}
-    dense_units: ${algo.dense_units}
 
   # Reward model
   reward_model:
@@ -182,7 +193,3 @@ critic:
     weight_decay: 0
     # One kernel for the whole update of the weights
     fused: True
-
-# Player agent (it interacts with the environment)
-player:
-  discrete_size: ${algo.world_model.discrete_size}

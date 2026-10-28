@@ -28,15 +28,16 @@ buffer:
 # Algorithm
 algo:
   total_steps: 1000000
-  cnn_keys:
-    encoder:
-      - rgb
-    decoder:
-      - rgb
-  mlp_keys:
-    encoder:
-      - reward
-    decoder: []
+  inputs:
+    image:
+      keys: [rgb]
+    vector:
+      keys: [reward]
+  outputs:
+    image:
+      keys: [rgb]
+    vector:
+      keys: []
   gamma: 0.999
   layer_norm: True
   learning_starts: 10000

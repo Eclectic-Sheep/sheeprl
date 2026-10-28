@@ -39,10 +39,10 @@ COMMON_ARGS = [
 DREAMER_ARGS = [
     "env=dummy",
     "env.id=discrete_dummy",
-    "algo.cnn_keys.encoder=[rgb]",
-    "algo.mlp_keys.encoder=[state]",
+    "algo.inputs.image.keys=[rgb]",
+    "algo.inputs.vector.keys=[state]",
     "algo.dense_units=8",
-    "algo.world_model.encoder.cnn_channels_multiplier=2",
+    "algo.inputs.image.net.channels_multiplier=2",
     "algo.world_model.recurrent_model.recurrent_state_size=8",
     "algo.world_model.representation_model.hidden_size=8",
     "algo.world_model.transition_model.hidden_size=8",
@@ -56,14 +56,14 @@ DREAMER_ARGS = [
 DREAMER_V3_5_ARGS = [
     "env=dummy",
     "env.id=discrete_dummy",
-    "algo.cnn_keys.encoder=[rgb]",
-    "algo.mlp_keys.encoder=[state]",
+    "algo.inputs.image.keys=[rgb]",
+    "algo.inputs.vector.keys=[state]",
     "algo.dense_units=8",
     "algo.cnn_channels_multiplier=2",
     "algo.world_model.recurrent_model.recurrent_state_size=16",
     "algo.world_model.recurrent_model.hidden_size=8",
     "algo.world_model.recurrent_model.blocks=4",
-    "algo.world_model.observation_model.block_space=2",
+    "algo.outputs.image.net.block_space=2",
     "algo.world_model.stochastic_size=4",
     "algo.world_model.discrete_size=4",
     "algo.horizon=4",
@@ -91,9 +91,9 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
             "exp=sac_ae",
             # A rendered environment with bounded continuous actions, whose renderer draws only shapes
             "env.id=MountainCarContinuous-v0",
-            "env.frame_stack=1",
-            "algo.cnn_keys.encoder=[rgb]",
-            "algo.mlp_keys.encoder=[state]",
+            "env.render_key=rgb",
+            "algo.inputs.image.keys=[rgb]",
+            "algo.inputs.vector.keys=[state]",
             "algo.hidden_size=8",
             "algo.dense_units=8",
             "algo.cnn_channels_multiplier=1",
@@ -111,6 +111,16 @@ ALGORITHMS: Dict[str, Dict[str, Any]] = {
     "dreamer_v3_5": {
         "module": "sheeprl.algos.dreamer_v3_5.dreamer_v3_5",
         "args": ["exp=dreamer_v3_5", *DREAMER_V3_5_ARGS],
+        "random_actions": False,
+    },
+    # With Curious Replay, whose priorities are saved in the checkpoints with the buffer
+    "dreamer_v3_curious": {
+        "module": "sheeprl.algos.dreamer_v3.dreamer_v3",
+        "args": ["exp=dreamer_v3", *DREAMER_ARGS, "buffer.curious.enabled=True"],
+    },
+    "dreamer_v3_5_curious": {
+        "module": "sheeprl.algos.dreamer_v3_5.dreamer_v3_5",
+        "args": ["exp=dreamer_v3_5", *DREAMER_V3_5_ARGS, "buffer.curious.enabled=True"],
         "random_actions": False,
     },
     "p2e_dv3_exploration": {
@@ -134,16 +144,18 @@ def train(name: str, args: List[str]) -> Tuple[int, int]:
     gradient_steps = []
 
     def counting_train(*args, **kwargs):
-        # DroQ's `train` does all the gradient steps of an iteration, the others one each
-        gradient_steps.append(args[-1] if name == "droq" else 1)
+        # One gradient step per call
+        gradient_steps.append(1)
         return module_train(*args, **kwargs)
 
-    module_train = module.train
+    # DroQ has no `train` of one gradient step: its `train_step` is one
+    patched, attribute = (module.DroQ, "train_step") if name == "droq" else (module, "train")
+    module_train = getattr(patched, attribute)
     argv = [os.path.join(ROOT_DIR, "__main__.py"), *COMMON_ARGS, *ALGORITHMS[name]["args"], *args]
     with (
         mock.patch.dict(os.environ, {"LT_DEVICES": "1"}),
         mock.patch.object(sys, "argv", argv),
-        mock.patch.object(module, "train", counting_train),
+        mock.patch.object(patched, attribute, counting_train),
         # The random actions of the vectorized environments: Pendulum's are a `Box`, the dummy environment's a
         # `MultiDiscrete`
         mock.patch.object(gym.spaces.Box, "sample", autospec=True, side_effect=gym.spaces.Box.sample) as box_sample,

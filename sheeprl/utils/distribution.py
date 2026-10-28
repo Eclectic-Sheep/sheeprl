@@ -7,7 +7,15 @@ from typing import Callable
 import torch
 import torch.nn.functional as F
 from torch import Tensor
-from torch.distributions import Bernoulli, Categorical, Distribution, Independent, TransformedDistribution, constraints
+from torch.distributions import (
+    Bernoulli,
+    Categorical,
+    Distribution,
+    Independent,
+    Normal,
+    TransformedDistribution,
+    constraints,
+)
 from torch.distributions.kl import _kl_categorical_categorical, register_kl
 from torch.distributions.transforms import TanhTransform
 from torch.distributions.utils import broadcast_all
@@ -240,10 +248,15 @@ class SymlogDistribution:
 
 
 class MSEDistribution:
-    def __init__(self, mode: Tensor, dims: int, agg: str = "sum"):
+    """The squared error to `mode`, summed (or averaged, `agg`) over the last `dims` dimensions, as a negative
+    log-likelihood; the squared errors below `tol` count as zero (as `SymlogDistribution`, e.g. to score targets already
+    in the symlog space)."""
+
+    def __init__(self, mode: Tensor, dims: int, agg: str = "sum", tol: float = 0.0):
         self._mode = mode
         self._dims = tuple([-x for x in range(1, dims + 1)])
         self._agg = agg
+        self._tol = tol
         self._batch_shape = mode.shape[: len(mode.shape) - dims]
         self._event_shape = mode.shape[len(mode.shape) - dims :]
 
@@ -258,6 +271,8 @@ class MSEDistribution:
     def log_prob(self, value: Tensor) -> Tensor:
         assert self._mode.shape == value.shape, (self._mode.shape, value.shape)
         distance = (self._mode - value) ** 2
+        if self._tol:
+            distance = torch.where(distance < self._tol, 0, distance)
         if self._agg == "mean":
             loss = distance.mean(self._dims)
         elif self._agg == "sum":
@@ -460,3 +475,15 @@ class BernoulliSafeMode(Bernoulli):
     def mode(self):
         mode = (self.probs > 0.5).to(self.probs)
         return mode
+
+
+def BernoulliLogits(reconstruction: Tensor, dims: int) -> Independent:
+    """The Bernoulli distribution of logits `reconstruction`, over its last `dims` dimensions: the likelihood of the
+    reconstructions of observations whose values are 0 or 1 (e.g. grids)."""
+    return Independent(BernoulliSafeMode(logits=reconstruction), dims)
+
+
+def UnitNormal(reconstruction: Tensor, dims: int) -> Independent:
+    """The Normal distribution of unit variance centered on `reconstruction`, over its last `dims` dimensions: the
+    likelihood of the reconstructions of DreamerV1 and DreamerV2."""
+    return Independent(Normal(reconstruction, 1), dims)

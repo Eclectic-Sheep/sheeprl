@@ -22,16 +22,14 @@ from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v2 import dreamer_v2
 from sheeprl.algos.dreamer_v2.agent import CNNDecoder, build_agent
 from sheeprl.algos.dreamer_v2.loss import reconstruction_loss
-from sheeprl.algos.dreamer_v2.utils import (
-    actor_objective,
-    build_buffer,
-    build_optimizer,
-    env_buffer_size,
-    sample_batches,
-)
-from sheeprl.data.buffers import EnvIndependentReplayBuffer, EpisodeBuffer
+from sheeprl.algos.dreamer_v2.utils import MAX_SAMPLED_BATCHES, actor_objective, build_optimizer
+from sheeprl.core import env_buffer_size, sequence_store
+from sheeprl.data.buffers import ReplayBuffer
+from sheeprl.data.samplers import EpisodeSampler, SequenceSampler
+from sheeprl.data.store import ReplayStore
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.utils import dotdict
+from tests.test_algos.codecs import codec_of
 
 from .compiled import assert_same_step, no_host_reads, recording, same_random_numbers
 
@@ -41,8 +39,7 @@ def kl_loss_of(posteriors_logits, priors_logits, kl_free_nats, kl_free_avg):
     po = {"state": Independent(Normal(torch.zeros(T, B, 2), 1), 1)}
     pr = Independent(Normal(torch.zeros(T, B, 1), 1), 1)
     _, kl, kl_loss, *_ = reconstruction_loss(
-        po,
-        {"state": torch.zeros(T, B, 2)},
+        {"state": po["state"].log_prob(torch.zeros(T, B, 2))},
         pr,
         torch.zeros(T, B, 1),
         priors_logits,
@@ -72,39 +69,45 @@ def test_the_free_nats_bound_the_kl_of_every_step_without_free_avg():
 
 @pytest.mark.parametrize("buffer_type", ["sequential", "episode"])
 def test_the_buffer_holds_buffer_size_steps_of_the_process(buffer_type, tmp_path):
-    # The episode buffer, shared by the environments of the process, held `buffer.size` divided by their number
+    # The episode buffer, shared by the environments of the process, held `buffer.size` divided by their number: now
+    # every environment holds its share of the steps, sampled in sequences anywhere or inside their episodes
     cfg = dotdict(
         {
             "dry_run": False,
             "seed": 0,
-            "buffer": {"size": 1000, "type": buffer_type, "memmap": False, "prioritize_ends": False},
+            "buffer": {
+                "size": 1000,
+                "type": buffer_type,
+                "memmap": False,
+                "prioritize_ends": False,
+                "online": False,
+                "from_numpy": False,
+                "prefetch": False,
+                "on_device": False,
+            },
             "env": {"num_envs": 4},
-            "algo": {"per_rank_sequence_length": 5, "cnn_keys": {"encoder": []}, "mlp_keys": {"encoder": ["state"]}},
+            "algo": {"per_rank_sequence_length": 5, "inputs": {"vector": {"keys": ["state"]}}},
         }
     )
-    buffer = build_buffer(SimpleNamespace(world_size=2, global_rank=0), cfg, str(tmp_path), dry_run_size=2)
-    if buffer_type == "episode":
-        assert isinstance(buffer, EpisodeBuffer) and buffer.buffer_size == 500
-    else:
-        assert isinstance(buffer, EnvIndependentReplayBuffer) and buffer.buffer_size == 125
+    fabric = SimpleNamespace(world_size=2, global_rank=0, device="cpu")
+    buffer_size = env_buffer_size(fabric, cfg, dry_run_size=2)
+    store = sequence_store(fabric, cfg, str(tmp_path), buffer_size, 5, buffer_type=buffer_type)
+    # Split among the environments of the process, also the episodes
+    assert isinstance(store.storage, ReplayBuffer) and store.storage.buffer_size == 125
+    assert isinstance(store.sampler, EpisodeSampler if buffer_type == "episode" else SequenceSampler)
 
 
 @pytest.mark.parametrize("output_channels", [[1], [3], [3, 3]])
 def test_the_cnn_decoder_normalizes_its_three_hidden_layers(output_channels):
     # The LayerNorms were one per output channel: only 3 channels (one RGB image) built a decoder
     decoder = CNNDecoder(
-        keys=[f"rgb{i}" for i in range(len(output_channels))],
-        output_channels=output_channels,
-        channels_multiplier=2,
-        latent_state_size=10,
-        cnn_encoder_output_dim=16,
-        image_size=(64, 64),
-        layer_norm=True,
+        latent_size=10, output_shape=(sum(output_channels), 64, 64), channels_multiplier=2, layer_norm=True
     )
     norms = [m for m in decoder.modules() if isinstance(m, nn.LayerNorm)]
     assert [n.normalized_shape for n in norms] == [(8,), (4,), (2,)]
     reconstructed = decoder(torch.randn(2, 3, 10))
-    assert [reconstructed[f"rgb{i}"].shape for i in range(len(output_channels))] == [
+    assert reconstructed.shape == (2, 3, sum(output_channels), 64, 64)
+    assert [part.shape for part in torch.split(reconstructed, output_channels, dim=-3)] == [
         (2, 3, c, 64, 64) for c in output_channels
     ]
 
@@ -144,10 +147,10 @@ DREAMER_ARGS = [
     "metric.log_level=0",
     "checkpoint.save_last=True",
     "algo.run_test=False",
-    "algo.cnn_keys.encoder=[]",
-    "algo.cnn_keys.decoder=[]",
-    "algo.mlp_keys.encoder=[state]",
-    "algo.mlp_keys.decoder=[state]",
+    "algo.inputs.image.keys=[]",
+    "algo.outputs.image.keys=[]",
+    "algo.inputs.vector.keys=[state]",
+    "algo.outputs.vector.keys=[state]",
     "algo.dense_units=8",
     "algo.world_model.recurrent_model.recurrent_state_size=8",
     "algo.world_model.representation_model.hidden_size=8",
@@ -207,7 +210,8 @@ def test_the_actors_are_trained_with_the_configured_objective(module, args, expe
         ("dreamer_v2", "sheeprl.algos.dreamer_v2.dreamer_v2"),
         ("p2e_dv2_exploration", "sheeprl.algos.p2e_dv2.p2e_dv2_exploration"),
         ("dreamer_v3", "sheeprl.algos.dreamer_v3.dreamer_v3"),
-        ("p2e_dv3_exploration", "sheeprl.algos.p2e_dv3.p2e_dv3_exploration"),
+        # Both actors of P2E-DV3 learn with the loss of DreamerV3
+        ("p2e_dv3_exploration", "sheeprl.algos.dreamer_v3.dreamer_v3"),
     ],
 )
 def test_the_entropy_of_the_tanh_normal_actors_is_estimated(exp, module):
@@ -258,18 +262,12 @@ def test_the_batches_of_an_iteration_are_sampled_16_at_a_time():
     # DreamerV2 (`algo.per_rank_pretrain_steps`) would take 100 batches on the device
     calls = []
 
-    class Buffer:
-        def sample_tensors(self, batch_size, sequence_length, n_samples, **kwargs):
+    class Sampler:
+        def sample(self, storage, batch_size, n_samples, online=None):
             calls.append(n_samples)
-            return {"rewards": torch.arange(n_samples).view(-1, 1, 1).expand(n_samples, sequence_length, batch_size)}
+            return {"rewards": np.arange(n_samples).reshape(-1, 1, 1).repeat(2, 1).repeat(batch_size, 2)}
 
-    cfg = dotdict(
-        {
-            "algo": {"per_rank_batch_size": 3, "per_rank_sequence_length": 2},
-            "buffer": {"from_numpy": False, "online": False},
-        }
-    )
-    batches = list(sample_batches(SimpleNamespace(device="cpu"), cfg, Buffer(), 40))
+    batches = list(ReplayStore(None, Sampler()).batches(40, 3, MAX_SAMPLED_BATCHES))
     assert calls == [16, 16, 8]
     assert len(batches) == 40
     assert all(batch["rewards"].shape == (2, 3) and batch["rewards"].dtype == torch.float32 for batch in batches)
@@ -342,11 +340,11 @@ def small_dreamer_v2(overrides=(), actions_dim=(3,), continuous=False, accelerat
             overrides=[
                 "exp=dreamer_v2",
                 "env=dummy",
-                "algo.cnn_keys.encoder=[rgb]",
-                "algo.mlp_keys.encoder=[state]",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[state]",
                 "algo.dense_units=8",
                 "algo.mlp_layers=2",
-                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.inputs.image.net.channels_multiplier=2",
                 "algo.world_model.recurrent_model.recurrent_state_size=16",
                 "algo.world_model.representation_model.hidden_size=8",
                 "algo.world_model.transition_model.hidden_size=8",
@@ -363,7 +361,7 @@ def small_dreamer_v2(overrides=(), actions_dim=(3,), continuous=False, accelerat
         }
     )
     world_model, actor, critic, target_critic, _ = build_agent(
-        Fabric(accelerator=accelerator, devices=1), actions_dim, continuous, cfg, obs_space
+        Fabric(accelerator=accelerator, devices=1), codec_of(actions_dim, continuous), cfg, obs_space
     )
     return cfg, (world_model, actor, critic, target_critic)
 
@@ -463,8 +461,6 @@ def test_the_losses_compile_into_single_graphs_without_host_reads(monkeypatch, c
     _, posteriors, recurrent_states, _ = graph(dreamer_v2.world_model_loss)(
         world_model,
         data,
-        cnn_keys=("rgb",),
-        mlp_keys=("state",),
         stochastic_size=world_model_cfg.stochastic_size,
         discrete_size=world_model_cfg.discrete_size,
         recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
@@ -517,6 +513,7 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, conti
         with monkeypatch.context() as patch:
             aggregator, losses, grads = recording(dreamer_v2, patch)
             torch.manual_seed(1)
-            dreamer_v2.train(fabric, *models, *optimizers, data, aggregator, cfg, actions_dim)
+            for name, value in dreamer_v2.train(fabric, *models, *optimizers, data, cfg, actions_dim).items():
+                aggregator.update(name, value)
         results.append((losses, grads))
     assert_same_step(*results)

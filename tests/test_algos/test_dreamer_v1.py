@@ -1,4 +1,4 @@
-"""DreamerV1 (and P2E-DV1): the continue loss, the exploration noise, the player, the episode starts, the actor and
+"""DreamerV1 (and P2E-DV1): the continue loss, the exploration noise, the policy, the episode starts, the actor and
 the initialization."""
 
 import copy
@@ -23,13 +23,13 @@ from torch.distributions import Bernoulli, Independent, Normal, TransformedDistr
 
 from sheeprl import ROOT_DIR
 from sheeprl.algos.dreamer_v1 import agent, dreamer_v1
-from sheeprl.algos.dreamer_v1.agent import RSSM, PlayerDV1, RecurrentModel, build_agent, gru_step
+from sheeprl.algos.dreamer_v1.agent import RSSM, DreamerV1Policy, RecurrentModel, build_agent, gru_step
 from sheeprl.algos.dreamer_v1.loss import reconstruction_loss, state_kl
-from sheeprl.algos.dreamer_v1.utils import add_is_first
 from sheeprl.algos.dreamer_v2.agent import Actor
 from sheeprl.utils import compile as compile_utils
 from sheeprl.utils.distribution import SafeTanhTransform
 from sheeprl.utils.utils import dotdict
+from tests.test_algos.codecs import codec_of
 
 from .compiled import assert_same_step, no_host_reads, recording, same_random_numbers
 
@@ -46,10 +46,10 @@ DREAMER_ARGS = [
     "metric.log_level=0",
     "checkpoint.save_last=False",
     "algo.run_test=False",
-    "algo.cnn_keys.encoder=[]",
-    "algo.cnn_keys.decoder=[]",
-    "algo.mlp_keys.encoder=[state]",
-    "algo.mlp_keys.decoder=[state]",
+    "algo.inputs.image.keys=[]",
+    "algo.outputs.image.keys=[]",
+    "algo.inputs.vector.keys=[state]",
+    "algo.outputs.vector.keys=[state]",
     "algo.dense_units=8",
     "algo.world_model.recurrent_model.recurrent_state_size=8",
     "algo.world_model.representation_model.hidden_size=8",
@@ -85,8 +85,9 @@ def test_the_continue_loss_is_the_mean_negative_log_likelihood():
     qo = {"state": Independent(Normal(torch.zeros(T, B, 2), 1), 1)}
     qr = Independent(Normal(torch.zeros(T, B, 1), 1), 1)
     states = Independent(Normal(torch.zeros(T, B, 5), 1), 1)
+    log_probs = {"state": qo["state"].log_prob(torch.randn(T, B, 2))}
     rec_loss, *_, continue_loss = reconstruction_loss(
-        qo, {"state": torch.randn(T, B, 2)}, qr, torch.zeros(T, B, 1), states, states, 3.0, 1.0, qc, targets, 2.0
+        log_probs, qr, torch.zeros(T, B, 1), states, states, 3.0, 1.0, qc, targets, 2.0
     )
     assert rec_loss.shape == continue_loss.shape == ()
     torch.testing.assert_close(continue_loss, -2.0 * qc.log_prob(targets).mean())
@@ -112,7 +113,7 @@ def test_each_environment_explores_on_its_own():
     torch.manual_seed(0)
     num_envs = 1000
     actions = torch.nn.functional.one_hot(torch.zeros(1, num_envs, dtype=torch.long), 4).float()
-    actor = SimpleNamespace(is_continuous=False, _get_expl_amount=lambda step: 0.5)
+    actor = SimpleNamespace(continuous=(False,), _get_expl_amount=lambda step: 0.5)
     (explored,) = Actor.add_exploration_noise(actor, [actions])
     assert explored.shape == actions.shape
     changed = (explored != actions).any(-1).sum().item()
@@ -120,8 +121,8 @@ def test_each_environment_explores_on_its_own():
     assert 300 < changed < 450, changed
 
 
-def test_the_player_samples_the_posterior_with_the_minimum_std_of_the_world_model(monkeypatch):
-    # The player used the default minimum std (0.1) whatever `algo.world_model.min_std`
+def test_the_policy_samples_the_posterior_with_the_minimum_std_of_the_world_model(monkeypatch):
+    # The policy used the default minimum std (0.1) whatever `algo.world_model.min_std`
     min_stds = []
 
     def compute_stochastic_state(state_information, event_shape=1, min_std=0.1):
@@ -129,20 +130,20 @@ def test_the_player_samples_the_posterior_with_the_minimum_std_of_the_world_mode
         return (None, None), torch.zeros(*state_information.shape[:-1], 4)
 
     monkeypatch.setattr(agent, "compute_stochastic_state", compute_stochastic_state)
-    player = PlayerDV1(
-        encoder=lambda obs: torch.zeros(1, 2, 5),
+    policy = DreamerV1Policy(
+        encoder=lambda obs, **kwargs: torch.zeros(1, 2, 5),
         recurrent_model=RecurrentModel(4 + 3, 8),
         representation_model=nn.Linear(8 + 5, 8),
         actor=lambda latent_state, greedy, mask: ([torch.zeros(1, 2, 3)], None),
-        actions_dim=[3],
-        num_envs=2,
+        codec=codec_of([3]),
+        keys=("state",),
         stochastic_size=4,
         recurrent_state_size=8,
         device="cpu",
         min_std=0.5,
     )
-    player.init_states()
-    player.get_actions({})
+    policy.init_states(2)
+    policy.get_actions({})
     assert min_stds == [0.5]
 
 
@@ -150,9 +151,9 @@ def test_the_player_samples_the_posterior_with_the_minimum_std_of_the_world_mode
     "accelerator",
     ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA only"))],
 )
-def test_the_player_follows_the_updates_of_the_agent(accelerator):
-    # The player was a copy of the agent with the weights tied: on CUDA its GRU moved them into a new buffer at its
-    # first forward (`flatten_parameters`), and the player played with the initial recurrent model for the whole
+def test_the_policy_follows_the_updates_of_the_agent(accelerator):
+    # The policy was a copy of the agent with the weights tied: on CUDA its GRU moved them into a new buffer at its
+    # first forward (`flatten_parameters`), and the policy played with the initial recurrent model for the whole
     # training. It also takes the minimum std of the world model
     from hydra import compose, initialize_config_module
     from lightning import Fabric
@@ -167,10 +168,10 @@ def test_the_player_follows_the_updates_of_the_agent(accelerator):
             overrides=[
                 "exp=dreamer_v1",
                 "env.num_envs=2",
-                "algo.cnn_keys.encoder=[]",
-                "algo.cnn_keys.decoder=[]",
-                "algo.mlp_keys.encoder=[state]",
-                "algo.mlp_keys.decoder=[state]",
+                "algo.inputs.image.keys=[]",
+                "algo.outputs.image.keys=[]",
+                "algo.inputs.vector.keys=[state]",
+                "algo.outputs.vector.keys=[state]",
                 "algo.dense_units=8",
                 "algo.world_model.recurrent_model.recurrent_state_size=8",
                 "algo.world_model.min_std=0.3",
@@ -179,28 +180,28 @@ def test_the_player_follows_the_updates_of_the_agent(accelerator):
     cfg = dotdict(OmegaConf.to_container(cfg, resolve=True))
     obs_space = gym.spaces.Dict({"state": gym.spaces.Box(-20, 20, shape=(5,), dtype=np.float32)})
     fabric = Fabric(accelerator=accelerator, devices=1)
-    world_model, actor, _, player = build_agent(fabric, [3], False, cfg, obs_space)
-    assert player.min_std == 0.3
-    player.init_states()
+    world_model, actor, _, policy = build_agent(fabric, codec_of([3], False), cfg, obs_space)
+    assert policy.min_std == 0.3
+    policy.init_states(2)
     with torch.no_grad():
-        player.get_actions({"state": torch.randn(1, 2, 5, device=fabric.device)})
+        policy.get_actions({"state": torch.randn(1, 2, 5, device=fabric.device)})
         for p in [*world_model.parameters(), *actor.parameters()]:
             p.add_(1.0)
-    for agent_module, player_module in (
-        (world_model.encoder, player.encoder),
-        (world_model.rssm.recurrent_model, player.recurrent_model),
-        (world_model.rssm.representation_model, player.representation_model),
-        (actor, player.actor),
+    for agent_module, policy_module in (
+        (world_model.encoder, policy.encoder),
+        (world_model.rssm.recurrent_model, policy.recurrent_model),
+        (world_model.rssm.representation_model, policy.representation_model),
+        (actor, policy.actor),
     ):
-        agent_params, player_params = list(agent_module.parameters()), list(player_module.parameters())
-        assert len(agent_params) == len(player_params) > 0
-        for agent_p, player_p in zip(agent_params, player_params):
-            assert torch.equal(agent_p, player_p)
+        agent_params, policy_params = list(agent_module.parameters()), list(policy_module.parameters())
+        assert len(agent_params) == len(policy_params) > 0
+        for agent_p, policy_p in zip(agent_params, policy_params):
+            assert torch.equal(agent_p, policy_p)
 
 
 def test_the_rssm_starts_the_episodes_from_the_zero_state():
     # The sequences cross the episodes: a step marked `is_first` starts from the zero state and the zero action, as the
-    # player does at the start of an episode; the other steps go on from the previous ones
+    # policy does at the start of an episode; the other steps go on from the previous ones
     torch.manual_seed(0)
     rssm = RSSM(RecurrentModel(4 + 2, 8), nn.Linear(8 + 5, 8), nn.Linear(8, 8), {}, min_std=0.1)
     posterior, recurrent_state, action, embedded_obs = (torch.randn(1, 3, n) for n in (4, 8, 2, 5))
@@ -226,16 +227,16 @@ def test_the_rssm_starts_the_episodes_from_the_zero_state():
 @pytest.mark.parametrize("exp", ["dreamer_v1", "p2e_dv1_exploration"])
 def test_the_rows_mark_the_first_observations_of_the_episodes(exp):
     # DreamerV1 stored no `is_first`: its sequences crossed the episodes with the recurrent state of the previous one
-    from sheeprl.data.buffers import EnvIndependentReplayBuffer
+    from sheeprl.data.buffers import ReplayBuffer
 
     rows = []
-    buffer_add = EnvIndependentReplayBuffer.add
+    buffer_add = ReplayBuffer.add
 
     def recording_add(self, data, indices=None, *args, **kwargs):
         rows.append((copy.deepcopy({k: np.asarray(v) for k, v in data.items()}), indices))
         return buffer_add(self, data, indices, *args, **kwargs)
 
-    with mock.patch.object(EnvIndependentReplayBuffer, "add", recording_add):
+    with mock.patch.object(ReplayBuffer, "add", recording_add):
         # Episodes of 3 steps (truncated) in 7 iterations
         run_dreamer_v1(
             [
@@ -258,44 +259,6 @@ def test_the_rows_mark_the_first_observations_of_the_episodes(exp):
     assert len(reset_rows) == 2 and all(row["is_first"].all() and indices == [0, 1] for row, indices in reset_rows)
 
 
-@pytest.mark.parametrize("memmap", [False, True])
-def test_a_buffer_saved_without_is_first_is_completed(memmap, tmp_path):
-    # The buffers of the runs before `is_first` was stored: resumed (or loaded by a finetuning), adding a row with it
-    # failed
-    from sheeprl.data.buffers import EnvIndependentReplayBuffer, SequentialReplayBuffer
-
-    rb = EnvIndependentReplayBuffer(
-        6, n_envs=2, memmap=memmap, memmap_dir=tmp_path, buffer_cls=SequentialReplayBuffer, obs_keys=["state"]
-    )
-    # Environment 0 ends an episode at its second row, environment 1 at its third (truncated)
-    terminated = np.array([[0, 0], [1, 0], [0, 0], [0, 0]], dtype=np.float32).reshape(4, 1, 2, 1)
-    truncated = np.array([[0, 0], [0, 0], [0, 1], [0, 0]], dtype=np.float32).reshape(4, 1, 2, 1)
-    for t in range(4):
-        rb.add(
-            {
-                "state": np.zeros((1, 2, 3), np.float32),
-                "terminated": terminated[t],
-                "truncated": truncated[t],
-                "actions": np.zeros((1, 2, 1), np.float32),
-                "rewards": np.zeros((1, 2, 1), np.float32),
-            }
-        )
-    add_is_first(rb)
-    is_first = [np.asarray(buffer["is_first"])[:4, 0, 0].tolist() for buffer in rb.buffer]
-    assert is_first == [[1, 0, 1, 0], [1, 0, 0, 1]]
-    # Rows with it can be added
-    rb.add(
-        {
-            "state": np.zeros((1, 2, 3), np.float32),
-            "terminated": np.zeros((1, 2, 1), np.float32),
-            "truncated": np.zeros((1, 2, 1), np.float32),
-            "actions": np.zeros((1, 2, 1), np.float32),
-            "rewards": np.zeros((1, 2, 1), np.float32),
-            "is_first": np.ones((1, 2, 1), np.float32),
-        }
-    )
-
-
 def dreamer_v1_cfg(exp: str, overrides=()) -> Dict[str, Any]:
     """The configuration of a small DreamerV1 (or P2E-DV1) on images."""
     with initialize_config_module(config_module="sheeprl.configs", version_base="1.3"):
@@ -304,10 +267,10 @@ def dreamer_v1_cfg(exp: str, overrides=()) -> Dict[str, Any]:
             overrides=[
                 f"exp={exp}",
                 "env=dummy",
-                "algo.cnn_keys.encoder=[rgb]",
-                "algo.mlp_keys.encoder=[]",
+                "algo.inputs.image.keys=[rgb]",
+                "algo.inputs.vector.keys=[]",
                 "algo.dense_units=8",
-                "algo.world_model.encoder.cnn_channels_multiplier=2",
+                "algo.inputs.image.net.channels_multiplier=2",
                 "algo.world_model.recurrent_model.recurrent_state_size=16",
                 "algo.world_model.representation_model.hidden_size=16",
                 "algo.world_model.transition_model.hidden_size=16",
@@ -332,7 +295,7 @@ def test_the_continuous_actions_come_from_a_tanh_normal_of_the_initial_std(exp):
     actor = get_class(actor_cfg.cls)(
         latent_state_size=4,
         actions_dim=[2],
-        is_continuous=True,
+        continuous=[True],
         distribution_cfg=cfg.distribution,
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
@@ -372,11 +335,14 @@ def test_the_weights_are_initialized_as_the_layers_of_keras(exp):
     cfg = dreamer_v1_cfg(exp, ["algo.dense_units=512"])
     fabric = Fabric(accelerator="cpu", devices=1)
     if exp == "dreamer_v1":
-        world_model, actor, critic, _ = build_agent(fabric, [3], False, cfg, IMAGES)
+        world_model, actor, critic, _ = build_agent(fabric, codec_of([3], False), cfg, IMAGES)
         actors_and_critics = [actor, critic]
     else:
-        world_model, _, *actors_and_critics, _ = p2e_dv1_build_agent(fabric, [3], False, cfg, IMAGES)
-    layers = [world_model.reward_model.module.model[2], world_model.encoder.module.cnn_encoder.model[0].model[2]]
+        world_model, _, *actors_and_critics, _ = p2e_dv1_build_agent(fabric, codec_of([3], False), cfg, IMAGES)
+    layers = [
+        world_model.reward_model.module.model[2],
+        world_model.encoder.module.inputs["image"].net.model[0].model[2],
+    ]
     for model in actors_and_critics:
         mlp = model.module.model
         layers.append((mlp if isinstance(mlp, nn.Sequential) else mlp.model)[2])
@@ -406,7 +372,7 @@ def test_the_imagination_starts_from_the_steps_that_are_not_terminal(monkeypatch
         ],
     )
     fabric = Fabric(accelerator="cpu", devices=1)
-    world_model, actor, critic, _ = build_agent(fabric, [3], False, cfg, IMAGES)
+    world_model, actor, critic, _ = build_agent(fabric, codec_of([3], False), cfg, IMAGES)
     rssm = world_model.rssm
     posteriors, starts = [], []
 
@@ -431,7 +397,7 @@ def test_the_imagination_starts_from_the_steps_that_are_not_terminal(monkeypatch
     }
     batch["terminated"][-1, 0] = 1
     optimizers = [torch.optim.Adam(m.parameters()) for m in (world_model, actor, critic)]
-    dreamer_v1.train(fabric, world_model, actor, critic, *optimizers, batch, None, cfg)
+    dreamer_v1.train(fabric, world_model, actor, critic, *optimizers, batch, cfg)
     steps = posteriors[:-1] if use_continues else posteriors
     torch.testing.assert_close(starts[0], torch.cat(steps).reshape(1, -1, posteriors[0].shape[-1]))
 
@@ -450,7 +416,7 @@ def compilable_dreamer_v1(continuous, overrides=(), accelerator="cpu"):
     )
     fabric = Fabric(accelerator=accelerator, devices=1)
     torch.manual_seed(0)
-    world_model, actor, critic, _ = build_agent(fabric, [2] if continuous else [3], continuous, cfg, IMAGES)
+    world_model, actor, critic, _ = build_agent(fabric, codec_of([2] if continuous else [3], continuous), cfg, IMAGES)
     optimizers = fabric.setup_optimizers(
         *(
             instantiate(optimizer, params=model.parameters(), _convert_="all")
@@ -491,8 +457,6 @@ def test_the_losses_compile_into_single_graphs_without_host_reads(monkeypatch, c
     _, posteriors, recurrent_states, _ = graph(dreamer_v1.world_model_loss)(
         world_model,
         data,
-        cnn_keys=("rgb",),
-        mlp_keys=(),
         stochastic_size=world_model_cfg.stochastic_size,
         recurrent_state_size=world_model_cfg.recurrent_model.recurrent_state_size,
         use_continues=True,
@@ -541,6 +505,7 @@ def test_the_compiled_losses_are_the_ones_of_the_eager_losses(monkeypatch, conti
         with monkeypatch.context() as patch:
             aggregator, losses, grads = recording(dreamer_v1, patch)
             torch.manual_seed(1)
-            dreamer_v1.train(fabric, *models, *optimizers, data, aggregator, cfg)
+            for name, value in dreamer_v1.train(fabric, *models, *optimizers, data, cfg).items():
+                aggregator.update(name, value)
         results.append((losses, grads))
     assert_same_step(*results)

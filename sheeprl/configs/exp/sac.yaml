@@ -10,9 +10,12 @@ defaults:
 algo:
   total_steps: 1000000
   per_rank_batch_size: 256
-  mlp_keys:
-    encoder: [state]
-    decoder: [state]
+  inputs:
+    vector:
+      keys: [state]
+  outputs:
+    vector:
+      keys: [state]
 
 # Checkpoint
 checkpoint:

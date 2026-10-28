@@ -1,5 +1,5 @@
 import copy
-from typing import Dict, Optional, Sequence, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import gymnasium
 import hydra
@@ -10,10 +10,12 @@ from lightning.pytorch.utilities.seed import isolate_rng
 from torch import nn
 
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
+from sheeprl.algos.dreamer_v2.agent import DreamerV2Policy
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
-from sheeprl.algos.dreamer_v2.agent import PlayerDV2, WorldModel
+from sheeprl.algos.dreamer_v2.agent import WorldModel
 from sheeprl.algos.dreamer_v2.agent import build_agent as dv2_build_agent
 from sheeprl.algos.dreamer_v2.utils import init_weights
+from sheeprl.core.actions import ActionCodec
 from sheeprl.models.models import MLP
 from sheeprl.utils.fabric import get_single_device_fabric, setup_module
 from sheeprl.utils.utils import dotdict, unwrap_fabric
@@ -27,8 +29,7 @@ MinedojoActor = DV2MinedojoActor
 
 def build_agent(
     fabric: Fabric,
-    actions_dim: Sequence[int],
-    is_continuous: bool,
+    codec: ActionCodec,
     cfg: dotdict,
     obs_space: gymnasium.spaces.Dict,
     world_model_state: Optional[Dict[str, torch.Tensor]] = None,
@@ -48,14 +49,13 @@ def build_agent(
     _FabricModule,
     _FabricModule,
     _FabricModule,
-    PlayerDV2,
+    DreamerV2Policy,
 ]:
     """Build the models and wrap them with Fabric.
 
     Args:
         fabric (Fabric): the fabric object.
-        action_dim (int): the dimension of the actions.
-        is_continuous (bool): whether or not the actions are continuous.
+        codec (ActionCodec): the actions of the agent and of the environments.
         cfg (dotdict): the configs of P2E_DV2.
         obs_space (Dict[str, Any]): The observations space of the environment.
         world_model_state (Dict[str, Tensor], optional): the state of the world model.
@@ -87,6 +87,7 @@ def build_agent(
         The target_critic_exploration (nn.Module): takes a EMA of the critic_exploration weights.
     """
     world_model_cfg = cfg.algo.world_model
+    actions_dim = codec.dims
     actor_cfg = cfg.algo.actor
     critic_cfg = cfg.algo.critic
 
@@ -95,10 +96,9 @@ def build_agent(
     latent_state_size = stochastic_size + world_model_cfg.recurrent_model.recurrent_state_size
 
     # Create exploration models
-    world_model, actor_exploration, critic_exploration, target_critic_exploration, player = dv2_build_agent(
+    world_model, actor_exploration, critic_exploration, target_critic_exploration, policy = dv2_build_agent(
         fabric,
-        actions_dim=actions_dim,
-        is_continuous=is_continuous,
+        codec=codec,
         cfg=cfg,
         obs_space=obs_space,
         world_model_state=world_model_state,
@@ -112,7 +112,7 @@ def build_agent(
     actor_task: Union[Actor, MinedojoActor] = actor_cls(
         latent_state_size=latent_state_size,
         actions_dim=actions_dim,
-        is_continuous=is_continuous,
+        continuous=codec.continuous_heads,
         init_std=actor_cfg.init_std,
         min_std=actor_cfg.min_std,
         mlp_layers=actor_cfg.mlp_layers,
@@ -189,12 +189,12 @@ def build_agent(
     for i in range(len(ensembles)):
         ensembles[i] = setup_module(fabric, ensembles[i])
 
-    # Setup player agent
-    if cfg.algo.player.actor_type != "exploration":
-        fabric_player = get_single_device_fabric(fabric)
-        player_actor = unwrap_fabric(actor_task)
-        player.actor = fabric_player.setup_module(player_actor)
-        for agent_p, p in zip(actor_task.parameters(), player.actor.parameters()):
+    # Setup policy agent
+    if cfg.algo.policy.actor_type != "exploration":
+        policy_fabric = get_single_device_fabric(fabric)
+        policy_actor = unwrap_fabric(actor_task)
+        policy.actor = policy_fabric.setup_module(policy_actor)
+        for agent_p, p in zip(actor_task.parameters(), policy.actor.parameters()):
             p.data = agent_p.data
 
     return (
@@ -206,5 +206,5 @@ def build_agent(
         actor_exploration,
         critic_exploration,
         target_critic_exploration,
-        player,
+        policy,
     )

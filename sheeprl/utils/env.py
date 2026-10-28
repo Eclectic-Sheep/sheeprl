@@ -5,7 +5,6 @@ import warnings
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
 
-import cv2
 import gymnasium as gym
 import hydra
 import numpy as np
@@ -13,12 +12,16 @@ import numpy as np
 from sheeprl.envs.wrappers import (
     ActionRepeat,
     ActionsAsObservationWrapper,
-    FrameStack,
+    FlattenNestedKeys,
     GrayscaleRenderWrapper,
     MaskVelocityWrapper,
     NormalizeAction,
     RewardAsObservationWrapper,
+    TransformsWrapper,
+    has_box_actions,
+    has_nested_observations,
 )
+from sheeprl.transforms.observations import frame_pipelines
 from sheeprl.utils import fs
 from sheeprl.utils.imports import _IS_ATARI_AVAILABLE, _IS_DIAMBRA_ARENA_AVAILABLE, _IS_DIAMBRA_AVAILABLE
 from sheeprl.utils.utils import dotdict
@@ -102,10 +105,9 @@ def make_env(
     prefix: str = "",
     vector_env_idx: int = 0,
 ) -> Callable[[], gym.Env]:
-    """
-    Create the callable function to create environment and
-    force the environment to return an observation space of type
-    gymnasium.spaces.Dict.
+    """The callable that creates one environment of `cfg.env`, whose observations are a dictionary of the keys the agent
+    stores (`algo.inputs`, `algo.extra_keys`), each through the `frame` stage of its transforms: a bare observation is
+    the key `state`, the render is the key `env.render_key` when set, and the keys nobody declares are dropped.
 
     Args:
         cfg (dotdict): the configs of the environment to initialize.
@@ -140,7 +142,7 @@ def make_env(
 
         # The bounded continuous actions exposed as [-1, 1], the range of the actor (the Dreamers). Read with a
         # default: the configurations saved before the option don't have it, and their checkpoints play as trained
-        if cfg.algo.get("normalize_actions", False) and isinstance(env.action_space, gym.spaces.Box):
+        if cfg.algo.get("normalize_actions", False) and has_box_actions(env.action_space):
             env = NormalizeAction(env)
 
         # action repeat: the Atari environments repeat the action through the `frame_skip`
@@ -155,148 +157,25 @@ def make_env(
         if "mask_velocities" in cfg.env and cfg.env.mask_velocities:
             env = MaskVelocityWrapper(env)
 
-        if not (
-            isinstance(cfg.algo.mlp_keys.encoder, list)
-            and isinstance(cfg.algo.cnn_keys.encoder, list)
-            and len(cfg.algo.cnn_keys.encoder + cfg.algo.mlp_keys.encoder) > 0
-        ):
-            raise ValueError(
-                "`algo.cnn_keys.encoder` and `algo.mlp_keys.encoder` must be lists of strings, got: "
-                f"cnn encoder keys `{cfg.algo.cnn_keys.encoder}` of type `{type(cfg.algo.cnn_keys.encoder)}` "
-                f"and mlp encoder keys `{cfg.algo.mlp_keys.encoder}` of type `{type(cfg.algo.mlp_keys.encoder)}`. "
-                "Both must be non-empty lists."
-            )
-
-        # Create observation dict
-        encoder_cnn_keys_length = len(cfg.algo.cnn_keys.encoder)
-        encoder_mlp_keys_length = len(cfg.algo.mlp_keys.encoder)
-        if isinstance(env.observation_space, gym.spaces.Box) and len(env.observation_space.shape) < 2:
-            # Vector only observation
-            if encoder_cnn_keys_length > 0:
-                if encoder_cnn_keys_length > 1:
-                    warnings.warn(
-                        "Multiple cnn keys have been specified and only one pixel observation "
-                        f"is allowed in {cfg.env.id}, "
-                        f"only the first one is kept: {cfg.algo.cnn_keys.encoder[0]}"
-                    )
-                cnn_key = cfg.algo.cnn_keys.encoder[0]
-                if encoder_mlp_keys_length > 0:
-                    env = gym.wrappers.AddRenderObservation(
-                        env, render_only=False, render_key=cnn_key, obs_key=cfg.algo.mlp_keys.encoder[0]
-                    )
-                else:
-                    env = gym.wrappers.AddRenderObservation(env, render_only=True)
-                    env = gym.wrappers.TransformObservation(
-                        env, lambda obs: {cnn_key: obs}, gym.spaces.Dict({cnn_key: env.observation_space})
-                    )
-            else:
-                if encoder_mlp_keys_length > 1:
-                    warnings.warn(
-                        "Multiple mlp keys have been specified and only one pixel observation "
-                        f"is allowed in {cfg.env.id}, "
-                        f"only the first one is kept: {cfg.algo.mlp_keys.encoder[0]}"
-                    )
-                mlp_key = cfg.algo.mlp_keys.encoder[0]
-                env = gym.wrappers.TransformObservation(
-                    env, lambda obs: {mlp_key: obs}, gym.spaces.Dict({mlp_key: env.observation_space})
-                )
-        elif isinstance(env.observation_space, gym.spaces.Box) and 2 <= len(env.observation_space.shape) <= 3:
-            # Pixel only observation
-            if encoder_cnn_keys_length > 1:
-                warnings.warn(
-                    "Multiple cnn keys have been specified and only one pixel observation "
-                    f"is allowed in {cfg.env.id}, "
-                    f"only the first one is kept: {cfg.algo.cnn_keys.encoder[0]}"
-                )
-            elif encoder_cnn_keys_length == 0:
-                raise ValueError(
-                    "You have selected a pixel observation but no cnn key has been specified. "
-                    "Please set at least one cnn key in the config file: `algo.cnn_keys.encoder=[your_cnn_key]`"
-                )
-            cnn_key = cfg.algo.cnn_keys.encoder[0]
+        # A bare observation is the key `state`; the render is added under `env.render_key` when set
+        if not isinstance(env.observation_space, gym.spaces.Dict):
             env = gym.wrappers.TransformObservation(
-                env, lambda obs: {cnn_key: obs}, gym.spaces.Dict({cnn_key: env.observation_space})
+                env, lambda obs: {"state": obs}, gym.spaces.Dict({"state": env.observation_space})
             )
-
-        if (
-            len(
-                set(k for k in env.observation_space.keys()).intersection(
-                    set(cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder)
-                )
-            )
-            == 0
-        ):
-            raise ValueError(
-                f"The user specified keys `{cfg.algo.mlp_keys.encoder + cfg.algo.cnn_keys.encoder}` "
-                "are not a subset of the "
-                f"environment `{env.observation_space.keys()}` observation keys. Please check your config file."
-            )
-
-        env_cnn_keys = set(
-            [k for k in env.observation_space.spaces.keys() if len(env.observation_space[k].shape) in {2, 3}]
-        )
-        cnn_keys = env_cnn_keys.intersection(set(cfg.algo.cnn_keys.encoder))
-
-        def transform_obs(obs: Dict[str, Any]):
-            for k in cnn_keys:
-                current_obs = obs[k]
-                shape = current_obs.shape
-                is_3d = len(shape) == 3
-                is_grayscale = not is_3d or shape[0] == 1 or shape[-1] == 1
-                channel_first = not is_3d or shape[0] in (1, 3)
-
-                # to 3D image
-                if not is_3d:
-                    current_obs = np.expand_dims(current_obs, axis=0)
-
-                # channel last (opencv needs it)
-                if channel_first:
-                    current_obs = np.transpose(current_obs, (1, 2, 0))
-
-                # resize
-                if current_obs.shape[:-1] != (cfg.env.screen_size, cfg.env.screen_size):
-                    current_obs = cv2.resize(
-                        current_obs, (cfg.env.screen_size, cfg.env.screen_size), interpolation=cv2.INTER_AREA
-                    )
-
-                # to grayscale
-                if cfg.env.grayscale and not is_grayscale:
-                    current_obs = cv2.cvtColor(current_obs, cv2.COLOR_RGB2GRAY)
-
-                # back to 3D
-                if len(current_obs.shape) == 2:
-                    current_obs = np.expand_dims(current_obs, axis=-1)
-                    if not cfg.env.grayscale:
-                        current_obs = np.repeat(current_obs, 3, axis=-1)
-
-                # channel first (PyTorch default)
-                obs[k] = current_obs.transpose(2, 0, 1)
-
-            return obs
-
-        transformed_cnn_space = gym.spaces.Box(
-            0, 255, (1 if cfg.env.grayscale else 3, cfg.env.screen_size, cfg.env.screen_size), np.uint8
-        )
-        env = gym.wrappers.TransformObservation(
-            env,
-            transform_obs,
-            gym.spaces.Dict(
-                {k: transformed_cnn_space if k in cnn_keys else v for k, v in env.observation_space.spaces.items()}
-            ),
-        )
-
-        if cnn_keys is not None and len(cnn_keys) > 0 and cfg.env.frame_stack > 1:
-            if cfg.env.frame_stack_dilation <= 0:
-                raise ValueError(
-                    f"The frame stack dilation argument must be greater than zero, got: {cfg.env.frame_stack_dilation}"
-                )
-            env = FrameStack(env, cfg.env.frame_stack, cnn_keys, cfg.env.frame_stack_dilation)
+        if cfg.env.get("render_key"):
+            env = gym.wrappers.AddRenderObservation(env, render_only=False, render_key=cfg.env.render_key)
+        # The parts of the nested observations as flat keys (`agent.pos`, `sensors.0`)
+        if has_nested_observations(env.observation_space):
+            env = FlattenNestedKeys(env)
 
         if cfg.env.actions_as_observation.num_stack > 0 and "diambra" not in cfg.env.wrapper._target_:
             env = ActionsAsObservationWrapper(env, **cfg.env.actions_as_observation)
 
         if cfg.env.reward_as_observation:
             env = RewardAsObservationWrapper(env)
+
+        # The `frame` stage of the keys the agent stores (`algo.inputs`, `algo.extra_keys`), the other keys dropped
+        env = TransformsWrapper(env, frame_pipelines(cfg, env.observation_space))
 
         env.action_space.seed(seed)
         env.observation_space.seed(seed)
@@ -317,7 +196,19 @@ def make_env(
 
 
 def get_dummy_env(id: str):
-    if "continuous" in id:
+    if "nested" in id:
+        from sheeprl.envs.dummy import NestedDummyEnv
+
+        env = NestedDummyEnv()
+    elif "mixed" in id:
+        from sheeprl.envs.dummy import MixedDummyEnv
+
+        env = MixedDummyEnv()
+    elif "grid" in id:
+        from sheeprl.envs.dummy import GridDummyEnv
+
+        env = GridDummyEnv()
+    elif "continuous" in id:
         from sheeprl.envs.dummy import ContinuousDummyEnv
 
         env = ContinuousDummyEnv()

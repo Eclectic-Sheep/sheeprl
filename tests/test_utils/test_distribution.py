@@ -61,7 +61,7 @@ def test_the_tanh_normal_actors_have_finite_log_probabilities_at_the_bounds(acto
     actor = actor_cls(
         latent_state_size=4,
         actions_dim=[2],
-        is_continuous=True,
+        continuous=[True],
         distribution_cfg={"type": "tanh_normal"},
         dense_units=8,
         mlp_layers=1,
