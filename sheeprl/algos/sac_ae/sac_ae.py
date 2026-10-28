@@ -424,7 +424,15 @@ def main(fabric: Fabric, cfg: dotdict):
         step_data["truncated"] = truncated.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["actions"] = actions.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
         step_data["rewards"] = rewards.reshape(1, cfg.env.num_envs, -1).astype(np.float32)
-        rb.add(step_data, validate_args=cfg.buffer.validate_args)
+        rb.add(
+            step_data,
+            validate_args=cfg.buffer.validate_args,
+            next_obs=(
+                {k: v.reshape(1, cfg.env.num_envs, *step_data[k].shape[2:]) for k, v in real_next_obs.items()}
+                if cfg.buffer.sample_next_obs
+                else None
+            ),
+        )
 
         # next_obs becomes the new obs
         obs = next_obs

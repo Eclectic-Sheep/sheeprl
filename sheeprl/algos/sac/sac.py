@@ -318,7 +318,11 @@ def main(fabric: Fabric, cfg: dotdict):
         if not cfg.buffer.sample_next_obs:
             step_data["next_observations"] = real_next_obs[np.newaxis]
         step_data["rewards"] = rewards[np.newaxis]
-        rb.add(step_data, validate_args=cfg.buffer.validate_args)
+        rb.add(
+            step_data,
+            validate_args=cfg.buffer.validate_args,
+            next_obs={"observations": real_next_obs[np.newaxis]} if cfg.buffer.sample_next_obs else None,
+        )
 
         # next_obs becomes the new obs
         obs = next_obs
