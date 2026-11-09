@@ -7,9 +7,8 @@ from lightning.fabric.strategies import SingleDeviceStrategy
 from torch import nn
 from torch.nn.parallel import DistributedDataParallel
 
-from sheeprl.utils.fabric import compilable, get_single_device_fabric
+from sheeprl.utils.fabric import compilable, get_single_device_fabric, update
 from sheeprl.utils.fabric import setup_module as fabric_setup_module  # `setup_module` would be a hook of pytest
-from sheeprl.utils.fabric import update
 
 
 def test_get_single_device_fabric():
