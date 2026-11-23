@@ -15,9 +15,8 @@ from torch import Tensor, nn
 
 from sheeprl.algos.dreamer_v1.utils import compute_stochastic_state
 from sheeprl.algos.dreamer_v2.agent import Actor as DV2Actor
-from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder
+from sheeprl.algos.dreamer_v2.agent import CNNDecoder, CNNEncoder, MLPDecoder, MLPEncoder
 from sheeprl.algos.dreamer_v2.agent import MinedojoActor as DV2MinedojoActor
-from sheeprl.algos.dreamer_v2.agent import MLPDecoder, MLPEncoder
 from sheeprl.algos.dreamer_v2.utils import init_weights as dv2_init_weights
 from sheeprl.models.models import MLP, MultiDecoder, MultiEncoder
 from sheeprl.utils.compile import compiled_player
